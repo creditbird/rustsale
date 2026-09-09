@@ -4045,10 +4045,13 @@ pub async fn send_zalo_outreach_internal<R: tauri::Runtime>(
                     };
 
                     {
-                        let conn = conn_mutex
+                        let mut conn = conn_mutex
                             .lock()
                             .map_err(|e| format!("Database lock error: {e}"))?;
-                        conn.execute(
+                        let tx = conn.transaction().map_err(|e| {
+                            format!("Database transaction error for lead {lead_id}: {e}")
+                        })?;
+                        tx.execute(
                             "UPDATE leads SET zalo_status = ?1 WHERE id = ?2",
                             rusqlite::params![status_str, lead_id],
                         )
@@ -4056,7 +4059,7 @@ pub async fn send_zalo_outreach_internal<R: tauri::Runtime>(
                             format!("Database write error updating lead {lead_id}: {e}")
                         })?;
                         if status_str == "VERIFIED_NOT_EXIST" {
-                            conn.execute(
+                            tx.execute(
                                 "UPDATE leads SET has_zalo = 0 WHERE id = ?1",
                                 rusqlite::params![lead_id],
                             )
@@ -4064,11 +4067,14 @@ pub async fn send_zalo_outreach_internal<R: tauri::Runtime>(
                                 format!("Database write error updating lead {lead_id}: {e}")
                             })?;
                         }
-                        conn.execute(
+                        tx.execute(
                             "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                             rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
                         )
                         .map_err(|e| format!("Database write error inserting outreach history for lead {lead_id}: {e}"))?;
+                        tx.commit().map_err(|e| {
+                            format!("Database transaction commit error for lead {lead_id}: {e}")
+                        })?;
                     }
 
                     if let Some(app) = app_handle {
@@ -4131,21 +4137,27 @@ pub async fn send_zalo_outreach_internal<R: tauri::Runtime>(
                         );
                         let now: String = chrono::Utc::now().to_rfc3339();
                         {
-                            let conn = conn_mutex
+                            let mut conn = conn_mutex
                                 .lock()
                                 .map_err(|e| format!("Database lock error: {e}"))?;
-                            conn.execute(
+                            let tx = conn.transaction().map_err(|e| {
+                                format!("Database transaction error for lead {lead_id}: {e}")
+                            })?;
+                            tx.execute(
                                 "UPDATE leads SET zalo_status = 'LOOKUP_FAILED' WHERE id = ?1",
                                 rusqlite::params![lead_id],
                             )
                             .map_err(|e| {
                                 format!("Database write error updating lead {lead_id}: {e}")
                             })?;
-                            conn.execute(
+                            tx.execute(
                                 "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                                 rusqlite::params![lead_id, template_id, "Invalid Zalo UID from provider", &now, &imei],
                             )
                             .map_err(|e| format!("Database write error inserting outreach history for lead {lead_id}: {e}"))?;
+                            tx.commit().map_err(|e| {
+                                format!("Database transaction commit error for lead {lead_id}: {e}")
+                            })?;
                         }
                         if let Some(app) = app_handle {
                             let _ = app.emit(
@@ -4165,19 +4177,25 @@ pub async fn send_zalo_outreach_internal<R: tauri::Runtime>(
                     );
                     let now: String = chrono::Utc::now().to_rfc3339();
                     {
-                        let conn = conn_mutex
+                        let mut conn = conn_mutex
                             .lock()
                             .map_err(|e| format!("Database lock error: {e}"))?;
-                        conn.execute(
+                        let tx = conn.transaction().map_err(|e| {
+                            format!("Database transaction error for lead {lead_id}: {e}")
+                        })?;
+                        tx.execute(
                             "UPDATE leads SET has_zalo = 0, zalo_status = 'VERIFIED_NOT_EXIST' WHERE id = ?1",
                             rusqlite::params![lead_id],
                         )
                         .map_err(|e| format!("Database write error updating lead {lead_id}: {e}"))?;
-                        conn.execute(
+                        tx.execute(
                             "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                             rusqlite::params![lead_id, template_id, "Phone number not found on Zalo", &now, &imei],
                         )
                         .map_err(|e| format!("Database write error inserting outreach history for lead {lead_id}: {e}"))?;
+                        tx.commit().map_err(|e| {
+                            format!("Database transaction commit error for lead {lead_id}: {e}")
+                        })?;
                     }
                     if let Some(app) = app_handle {
                         let _ = app.emit(
@@ -4392,16 +4410,26 @@ pub async fn send_zalo_outreach_internal<R: tauri::Runtime>(
                     "SEND_FAILED"
                 };
 
-                let conn_guard = conn_mutex.lock();
-                if let Ok(conn) = conn_guard {
-                    let _ = conn.execute(
+                {
+                    let mut conn = conn_mutex
+                        .lock()
+                        .map_err(|e| format!("Database lock error: {e}"))?;
+                    let tx = conn.transaction().map_err(|e| {
+                        format!("Database transaction error for lead {lead_id}: {e}")
+                    })?;
+                    tx.execute(
                         "UPDATE leads SET zalo_status = ?1 WHERE id = ?2",
                         rusqlite::params![status_str, lead_id],
-                    );
-                    let _ = conn.execute(
+                    )
+                    .map_err(|e| format!("Database write error updating lead {lead_id}: {e}"))?;
+                    tx.execute(
                         "INSERT INTO outreach_history (lead_id, template_id, status, error_message, sent_at, session_imei) VALUES (?1, ?2, 'FAILED', ?3, ?4, ?5)",
                         rusqlite::params![lead_id, template_id, format!("{:?}", e), &now, &imei],
-                    );
+                    )
+                    .map_err(|e| format!("Database write error inserting outreach history for lead {lead_id}: {e}"))?;
+                    tx.commit().map_err(|e| {
+                        format!("Database transaction commit error for lead {lead_id}: {e}")
+                    })?;
                 }
                 if let Some(app) = app_handle {
                     let _ = app.emit(
