@@ -16,6 +16,10 @@
     "best-of-n": "bun .agents/skills/best-of-n-implementation/scripts/orchestrate.ts",
     "best-of-n:setup-llm-verifier": "bun .agents/skills/best-of-n-implementation/scripts/setup-verifier.ts",
     "test:best-of-n": "bun test ./.agents/skills/best-of-n-implementation/scripts/orchestrate.test.ts ./.agents/skills/best-of-n-implementation/scripts/agy-ppt-runner.test.ts ./.agents/skills/best-of-n-implementation/scripts/llm-verifier-runner.test.ts",
+    "agent:run": "bun --no-env-file run scripts/agent/run.ts",
+    "agent:verify": "bun --no-env-file run scripts/agent/verify.ts",
+    "agent:eval": "bun test scripts/agent",
+    "agent:typecheck": "tsc -p scripts/agent/tsconfig.json",
     "release": "bun run scripts/publish-release.ts",
     "release:r2": "bun run scripts/generate-r2-release.ts",
     "tauri": "tauri"

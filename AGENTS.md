@@ -27,6 +27,12 @@
 > [!IMPORTANT]
 > **BEST-OF-N IMPLEMENTATION:** For explicitly requested Best-of-N work, or Tier 3 changes with multiple materially different valid implementations, read and follow [`.agents/skills/best-of-n-implementation/SKILL.md`](.agents/skills/best-of-n-implementation/SKILL.md). A ranking winner is only `SELECTED`; final readiness remains controlled by [`docs/IMPLEMENTATION_COMPLETION_HARNESS.md`](docs/IMPLEMENTATION_COMPLETION_HARNESS.md). Missing candidate, ranking, review, or quality-gate evidence produces `INCOMPLETE`, never implicit fallback or approval.
 
+> [!IMPORTANT]
+> **AUTOMATED COMMAND EVIDENCE & VERIFICATION HARNESS:**
+> • For every coding task in an AGY session, follow [`.agents/rules/command-evidence.md`](.agents/rules/command-evidence.md) and [`docs/agent-harness/README.md`](docs/agent-harness/README.md).
+> • Prepare `.agents/task.json` mapping requirements to executable checks before editing.
+> • After edits, execute `bun --no-env-file run agent:verify <sessionId>` and require exit code 0 + PASS status on the fresh snapshot before claiming completion.
+
 # Release & Auto-Update Workflow (Cloudflare R2)
 
 > [!IMPORTANT]
