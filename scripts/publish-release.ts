@@ -207,7 +207,6 @@ function scanForArtifacts(dir: string, platformKey: string) {
 
       if (existsSync(targetPath)) {
         const signature = readFileSync(sigPath, 'utf8').trim();
-        const downloadUrl = `${publicUrl.replace(/\/$/, '')}/v${version}/${encodeURIComponent(basename(targetFile))}`;
 
         let resolvedKey = platformKey;
         if (platformKey.startsWith('darwin')) {
@@ -217,6 +216,23 @@ function scanForArtifacts(dir: string, platformKey: string) {
             resolvedKey = 'darwin-x86_64';
           }
         }
+
+        let remoteFileName = basename(targetFile);
+        let remoteSigName = basename(file);
+        if (
+          resolvedKey.startsWith('darwin') &&
+          isUpdaterArchive &&
+          !remoteFileName.includes('aarch64') &&
+          !remoteFileName.includes('arm64') &&
+          !remoteFileName.includes('x64') &&
+          !remoteFileName.includes('x86_64')
+        ) {
+          const archSuffix = resolvedKey === 'darwin-aarch64' ? '_aarch64' : '_x64';
+          remoteFileName = remoteFileName.replace(/\.app\.tar\.gz$/, `${archSuffix}.app.tar.gz`);
+          remoteSigName = `${remoteFileName}.sig`;
+        }
+
+        const downloadUrl = `${publicUrl.replace(/\/$/, '')}/v${version}/${encodeURIComponent(remoteFileName)}`;
 
         platforms[resolvedKey] = {
           signature,
@@ -256,10 +272,10 @@ function scanForArtifacts(dir: string, platformKey: string) {
           ? 'application/vnd.appimage'
           : 'application/octet-stream';
 
-        addUploadFile(targetPath, `v${version}/${basename(targetFile)}`, contentType);
-        addUploadFile(sigPath, `v${version}/${file}`, 'text/plain');
+        addUploadFile(targetPath, `v${version}/${remoteFileName}`, contentType);
+        addUploadFile(sigPath, `v${version}/${remoteSigName}`, 'text/plain');
         const sizeMb = (statSync(targetPath).size / 1024 / 1024).toFixed(2);
-        console.log(`   ✅ Updater Artifact [${resolvedKey}]: ${targetFile} (${sizeMb} MB) [Signed]`);
+        console.log(`   ✅ Updater Artifact [${resolvedKey}]: ${remoteFileName} (${sizeMb} MB) [Signed]`);
       }
     } else if (
       file.endsWith('.deb') ||
