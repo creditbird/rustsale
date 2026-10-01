@@ -1,6 +1,6 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, join, basename } from 'node:path';
-import { S3Client, PutObjectCommand } from '@aws-sdk/client-s3';
+import { S3Client, PutObjectCommand, GetObjectCommand } from '@aws-sdk/client-s3';
 
 // Parse command line arguments
 // Usage: bun run release [--version 0.2.0] [--notes "Release changelog"] [--skip-build]
@@ -171,9 +171,11 @@ function scanForArtifacts(dir: string, platformKey: string) {
       file.endsWith('.msi') ||
       file.endsWith('.deb') ||
       file.endsWith('.AppImage') ||
-      file.endsWith('.zip')
+      file.endsWith('.zip') ||
+      file.endsWith('.tar.gz')
     ) {
-      if (!file.includes(version)) continue;
+      const isArchive = file.endsWith('.tar.gz') || file.endsWith('.zip');
+      if (!file.includes(version) && !isArchive) continue;
       const targetPath = join(dir, file);
       const sigPath = join(dir, `${file}.sig`);
       if (!existsSync(sigPath) && rawKey) {
@@ -198,17 +200,42 @@ function scanForArtifacts(dir: string, platformKey: string) {
   for (const file of refreshedFiles) {
     if (file.endsWith('.sig')) {
       const targetFile = file.slice(0, -4);
-      if (!targetFile.includes(version)) continue;
+      const isUpdaterArchive = targetFile.endsWith('.tar.gz') || targetFile.endsWith('.zip');
+      if (!targetFile.includes(version) && !isUpdaterArchive) continue;
       const targetPath = join(dir, targetFile);
       const sigPath = join(dir, file);
 
       if (existsSync(targetPath)) {
         const signature = readFileSync(sigPath, 'utf8').trim();
         const downloadUrl = `${publicUrl.replace(/\/$/, '')}/v${version}/${encodeURIComponent(basename(targetFile))}`;
-        platforms[platformKey] = {
+
+        let resolvedKey = platformKey;
+        if (platformKey.startsWith('darwin')) {
+          if (targetFile.includes('aarch64') || targetFile.includes('arm64')) {
+            resolvedKey = 'darwin-aarch64';
+          } else if (targetFile.includes('x64') || targetFile.includes('x86_64')) {
+            resolvedKey = 'darwin-x86_64';
+          }
+        }
+
+        platforms[resolvedKey] = {
           signature,
           url: downloadUrl,
         };
+
+        // Aliases for multi-platform compatibility
+        if (resolvedKey === 'darwin-aarch64') {
+          platforms['darwin-aarch64-app'] = platforms[resolvedKey];
+        } else if (resolvedKey === 'darwin-x86_64') {
+          platforms['darwin-x86_64-app'] = platforms[resolvedKey];
+        } else if (resolvedKey === 'linux-x86_64') {
+          if (targetFile.endsWith('.tar.gz') || targetFile.endsWith('.AppImage')) {
+            platforms['linux-x86_64-appimage'] = platforms[resolvedKey];
+          } else if (targetFile.endsWith('.deb')) {
+            platforms['linux-x86_64-deb'] = platforms[resolvedKey];
+          }
+        }
+
         const isExe = targetFile.endsWith('.exe');
         const isMsi = targetFile.endsWith('.msi');
         const isZip = targetFile.endsWith('.zip');
@@ -232,7 +259,7 @@ function scanForArtifacts(dir: string, platformKey: string) {
         addUploadFile(targetPath, `v${version}/${basename(targetFile)}`, contentType);
         addUploadFile(sigPath, `v${version}/${file}`, 'text/plain');
         const sizeMb = (statSync(targetPath).size / 1024 / 1024).toFixed(2);
-        console.log(`   ✅ Updater Artifact [${platformKey}]: ${targetFile} (${sizeMb} MB) [Signed]`);
+        console.log(`   ✅ Updater Artifact [${resolvedKey}]: ${targetFile} (${sizeMb} MB) [Signed]`);
       }
     } else if (
       file.endsWith('.deb') ||
@@ -291,6 +318,7 @@ for (const { dir: bDir, macKey } of targetDirs) {
   // Linux
   scanForArtifacts(join(bDir, 'appimage'), 'linux-x86_64');
   scanForArtifacts(join(bDir, 'deb'), 'linux-x86_64');
+  scanForArtifacts(join(bDir, 'rpm'), 'linux-x86_64');
 
   // macOS
   scanForArtifacts(join(bDir, 'dmg'), macKey);
@@ -305,22 +333,56 @@ if (platforms['windows-x86_64-msi'] && !platforms['windows-x86_64']) {
   platforms['windows-x86_64'] = platforms['windows-x86_64-msi'];
 }
 
-// Fetch and merge existing platforms from R2 if same version
+// Fetch and merge existing platforms directly from S3/R2 or via CDN
 let mergedPlatforms = { ...platforms };
-try {
-  const existingRes = await fetch(`${publicUrl.replace(/\/$/, '')}/latest.json`, { cache: 'no-store' });
-  if (existingRes.ok) {
-    const existingJson = await existingRes.json();
-    if (existingJson.version === version && existingJson.platforms) {
-      mergedPlatforms = {
-        ...existingJson.platforms,
-        ...platforms,
-      };
-      console.log(`🔄 Merged platforms for v${version}:`, Object.keys(mergedPlatforms));
+let s3Merged = false;
+
+if (accessKeyId && secretAccessKey) {
+  try {
+    const s3Checker = new S3Client({
+      region: 'auto',
+      endpoint,
+      credentials: { accessKeyId, secretAccessKey },
+      maxAttempts: 3,
+    });
+    const s3Resp = await s3Checker.send(new GetObjectCommand({
+      Bucket: bucketName,
+      Key: 'latest.json',
+    }));
+    if (s3Resp.Body) {
+      const s3Raw = await s3Resp.Body.transformToString();
+      const existingJson = JSON.parse(s3Raw);
+      if (existingJson.version === version && existingJson.platforms) {
+        mergedPlatforms = {
+          ...existingJson.platforms,
+          ...platforms,
+        };
+        console.log(`🔄 Merged platforms directly from R2 S3 for v${version}:`, Object.keys(mergedPlatforms));
+        s3Merged = true;
+      }
     }
+  } catch (err: any) {
+    // NoSuchKey is normal on new releases
   }
-} catch {
-  // Ignore network error on first release
+}
+
+if (!s3Merged) {
+  try {
+    const cacheBuster = `?t=${Date.now()}`;
+    const existingRes = await fetch(`${publicUrl.replace(/\/$/, '')}/latest.json${cacheBuster}`, { cache: 'no-store' });
+    if (existingRes.ok) {
+      const existingJson = await existingRes.json();
+      if (existingJson.version === version && existingJson.platforms) {
+        mergedPlatforms = {
+          ...existingJson.platforms,
+          ...platforms,
+        };
+        console.log(`🔄 Merged platforms from HTTP CDN for v${version}:`, Object.keys(mergedPlatforms));
+      }
+    }
+  } catch {
+    // Ignore network error on first release
+  }
 }
 
 // Generate latest.json
@@ -331,15 +393,17 @@ const manifest = {
   platforms: mergedPlatforms,
 };
 
+// 4. Upload to Cloudflare R2
+if (dryRun) {
+  console.log(`\n📄 [Dry-run] Generated latest.json manifest preview:`);
+  console.log(JSON.stringify(manifest, null, 2));
+  console.log(`\n🛑 [4/4] Dry-run enabled. Skipped writing latest.json and uploading to Cloudflare R2.`);
+  process.exit(0);
+}
+
 const outputManifestPath = resolve('latest.json');
 writeFileSync(outputManifestPath, JSON.stringify(manifest, null, 2), 'utf8');
 console.log(`📄 Generated latest.json saved to: ${outputManifestPath}`);
-
-// 4. Upload to Cloudflare R2
-if (dryRun) {
-  console.log(`\n🛑 [4/4] Dry-run enabled. Skipped uploading to Cloudflare R2.`);
-  process.exit(0);
-}
 
 if (!accessKeyId || !secretAccessKey) {
   console.error('\n❌ Missing R2_ACCESS_KEY_ID or R2_SECRET_ACCESS_KEY in .env. Cannot upload to Cloudflare R2.');

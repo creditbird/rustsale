@@ -22,6 +22,9 @@ jobs:
   build-and-release:
     name: Build & Publish (${{ matrix.platform }})
     runs-on: ${{ matrix.os }}
+    env:
+      APPIMAGE_EXTRACT_AND_RUN: '1'
+      NO_STRIP: 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -29,12 +32,19 @@ jobs:
           - os: windows-latest
             platform: windows-x86_64
             target: x86_64-pc-windows-msvc
+            args: --target x86_64-pc-windows-msvc
           - os: ubuntu-22.04
             platform: linux-x86_64
             target: x86_64-unknown-linux-gnu
+            args: --target x86_64-unknown-linux-gnu --bundles deb,appimage
           - os: macos-14
             platform: darwin-aarch64
             target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - os: macos-14
+            platform: darwin-x86_64
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
 
     steps:
       - name: Checkout repository
@@ -64,6 +74,7 @@ jobs:
             libssl-dev \
             libayatana-appindicator3-dev \
             librsvg2-dev \
+            patchelf \
             libfuse2
 
       - name: Install dependencies
@@ -73,6 +84,7 @@ jobs:
         run: bun run build:cloak-runtime
         env:
           SKIP_CLEAN_ROOM_SMOKE: '1'
+          TAURI_ENV_TARGET_TRIPLE: ${{ matrix.target }}
 
       - name: Setup Private Signing Key
         shell: bash
@@ -103,13 +115,15 @@ jobs:
           VITE_VIETQR_BANK_ID: ${{ vars.VITE_VIETQR_BANK_ID || 'ICB' }}
           VITE_VIETQR_ACCOUNT_NO: ${{ vars.VITE_VIETQR_ACCOUNT_NO || '101874355801' }}
           VITE_VIETQR_ACCOUNT_NAME: ${{ vars.VITE_VIETQR_ACCOUNT_NAME || 'TRAN TRONG TRI' }}
+          APPIMAGE_EXTRACT_AND_RUN: '1'
+          NO_STRIP: 'true'
         with:
           tagName: ${{ startsWith(github.ref_name, 'v') && github.ref_name || format('v{0}', github.event.inputs.version || github.ref_name) }}
           releaseName: ${{ startsWith(github.ref_name, 'v') && github.ref_name || format('v{0}', github.event.inputs.version || github.ref_name) }}
           releaseBody: ${{ github.event.inputs.notes || 'Bản phát hành cập nhật cho RustSale CRM' }}
           releaseDraft: false
           prerelease: false
-          args: ${{ matrix.platform == 'linux-x86_64' && '--bundles deb' || '' }}
+          args: ${{ matrix.args }}
 
       - name: Upload to Cloudflare R2
         shell: bash
