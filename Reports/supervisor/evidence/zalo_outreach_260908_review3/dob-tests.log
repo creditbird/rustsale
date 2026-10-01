@@ -1,0 +1,8 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.25s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/rustsale_crm_lib-c14637ba5f7f6223)
+
+running 1 test
+test commands_test::tests::test_zca_dob_all_models_both_negative_values ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 874 filtered out; finished in 0.00s
+

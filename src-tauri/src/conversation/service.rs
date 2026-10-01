@@ -1323,12 +1323,94 @@ impl ConversationService {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty());
 
-        let text = job.text_content.as_deref().unwrap_or("");
+        let has_attachment = job.attachment.is_some()
+            || matches!(
+                job.content_type.as_str(),
+                "attachment" | "media" | "image" | "video" | "audio" | "file" | "document"
+            );
 
-        match client
-            .send_messenger_message(page_id, page_token, &recipient_psid, text, message_tag)
-            .await
-        {
+        let send_res = if has_attachment {
+            if let Some(att) = &job.attachment {
+                if let Some(path) = &att.local_path {
+                    match std::fs::read(path) {
+                        Ok(bytes) => {
+                            client
+                                .send_messenger_attachment(
+                                    page_id,
+                                    page_token,
+                                    &recipient_psid,
+                                    bytes,
+                                    att.file_name.as_deref(),
+                                    Some(att.mime_type.as_str()),
+                                    &att.media_type,
+                                    message_tag,
+                                )
+                                .await
+                        }
+                        Err(e) => {
+                            Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e))
+                        }
+                    }
+                } else {
+                    Err(anyhow::anyhow!("Missing local_path for Messenger attachment"))
+                }
+            } else {
+                let local_path = job
+                    .content_json
+                    .get("local_path")
+                    .or_else(|| job.content_json.get("path"))
+                    .and_then(|v| v.as_str());
+                if let Some(path) = local_path {
+                    match std::fs::read(path) {
+                        Ok(bytes) => {
+                            let file_name = job
+                                .content_json
+                                .get("fileName")
+                                .or_else(|| job.content_json.get("file_name"))
+                                .and_then(|v| v.as_str());
+                            let mime_type = job
+                                .content_json
+                                .get("mimeType")
+                                .or_else(|| job.content_json.get("mime_type"))
+                                .and_then(|v| v.as_str());
+                            client
+                                .send_messenger_attachment(
+                                    page_id,
+                                    page_token,
+                                    &recipient_psid,
+                                    bytes,
+                                    file_name,
+                                    mime_type,
+                                    &job.content_type,
+                                    message_tag,
+                                )
+                                .await
+                        }
+                        Err(e) => {
+                            Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e))
+                        }
+                    }
+                } else {
+                    let text = job.text_content.as_deref().unwrap_or("");
+                    client
+                        .send_messenger_message(
+                            page_id,
+                            page_token,
+                            &recipient_psid,
+                            text,
+                            message_tag,
+                        )
+                        .await
+                }
+            }
+        } else {
+            let text = job.text_content.as_deref().unwrap_or("");
+            client
+                .send_messenger_message(page_id, page_token, &recipient_psid, text, message_tag)
+                .await
+        };
+
+        match send_res {
             Ok(resp) => {
                 self.repository
                     .complete_outbox_job(&job.job_id, &resp.message_id, "", &now)?;
@@ -1518,6 +1600,18 @@ impl ConversationService {
                     .text_content
                     .as_deref()
                     .or_else(|| job.content_json.get("caption").and_then(|v| v.as_str()));
+                let file_name = job
+                    .attachment
+                    .as_ref()
+                    .and_then(|a| a.file_name.as_deref())
+                    .or_else(|| job.content_json.get("fileName").and_then(|v| v.as_str()))
+                    .or_else(|| job.content_json.get("file_name").and_then(|v| v.as_str()));
+                let mime_type = job
+                    .attachment
+                    .as_ref()
+                    .map(|a| a.mime_type.as_str())
+                    .or_else(|| job.content_json.get("mimeType").and_then(|v| v.as_str()))
+                    .or_else(|| job.content_json.get("mime_type").and_then(|v| v.as_str()));
                 client
                     .send_media_message(
                         &recipient_jid,
@@ -1525,6 +1619,8 @@ impl ConversationService {
                         media_url,
                         caption,
                         quote_opt.as_ref(),
+                        file_name,
+                        mime_type,
                     )
                     .await
             }
@@ -1603,8 +1699,28 @@ impl ConversationService {
                         .get("caption")
                         .and_then(|v| v.as_str())
                         .or(job.text_content.as_deref());
+                    let file_name = job
+                        .attachment
+                        .as_ref()
+                        .and_then(|a| a.file_name.as_deref())
+                        .or_else(|| job.content_json.get("fileName").and_then(|v| v.as_str()))
+                        .or_else(|| job.content_json.get("file_name").and_then(|v| v.as_str()));
+                    let mime_type = job
+                        .attachment
+                        .as_ref()
+                        .map(|a| a.mime_type.as_str())
+                        .or_else(|| job.content_json.get("mimeType").and_then(|v| v.as_str()))
+                        .or_else(|| job.content_json.get("mime_type").and_then(|v| v.as_str()));
                     client
-                        .send_media_message(&recipient_jid, media_type, media_url, caption, None)
+                        .send_media_message(
+                            &recipient_jid,
+                            media_type,
+                            media_url,
+                            caption,
+                            None,
+                            file_name,
+                            mime_type,
+                        )
                         .await
                 } else {
                     client

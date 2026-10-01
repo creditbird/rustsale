@@ -1,0 +1,18 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.33s
+     Running tests/native_autostart_linux_test.rs (target/debug/deps/native_autostart_linux_test-39ec629490bdb35b)
+
+running 1 test
+
+thread 'test_linux_native_xdg_autostart_lifecycle' (30113) panicked at tests/native_autostart_linux_test.rs:37:5:
+Desktop file must be created on disk in ~/.config/autostart
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test test_linux_native_xdg_autostart_lifecycle ... FAILED
+
+failures:
+
+failures:
+    test_linux_native_xdg_autostart_lifecycle
+
+test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+error: test failed, to rerun pass `--test native_autostart_linux_test`

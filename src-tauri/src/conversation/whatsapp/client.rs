@@ -141,6 +141,8 @@ pub trait WhatsAppClient: Send + Sync {
         media_data_or_url: &str,
         caption: Option<&str>,
         quote: Option<&RawWhatsAppQuote>,
+        file_name: Option<&str>,
+        mime_type: Option<&str>,
     ) -> Result<WhatsAppSendResponse>;
 
     /// Sends an emoji reaction to a target message.
@@ -253,6 +255,8 @@ impl WhatsAppClient for RealWhatsAppClient {
         media_data_or_url: &str,
         caption: Option<&str>,
         _quote: Option<&RawWhatsAppQuote>,
+        file_name: Option<&str>,
+        mime_type: Option<&str>,
     ) -> Result<WhatsAppSendResponse> {
         let jid: whatsapp_rust::Jid = recipient_jid
             .parse()
@@ -358,6 +362,7 @@ impl WhatsAppClient for RealWhatsAppClient {
                 );
             }
             _ => {
+                let resolved_title = file_name.or(caption).map(str::to_string);
                 msg.document_message = whatsapp_rust::prelude::MessageField::some(
                     whatsapp_rust::prelude::wa::message::DocumentMessage {
                         url: Some(upload_res.url),
@@ -367,7 +372,9 @@ impl WhatsAppClient for RealWhatsAppClient {
                         file_sha256: Some(upload_res.file_sha256.to_vec()),
                         file_length: Some(data_len),
                         caption: caption.map(str::to_string),
-                        title: caption.map(str::to_string),
+                        title: resolved_title.clone(),
+                        file_name: file_name.map(str::to_string).or(resolved_title),
+                        mimetype: mime_type.map(str::to_string),
                         ..Default::default()
                     },
                 );
@@ -539,6 +546,8 @@ pub struct MockSentMediaMessage {
     pub media_data_or_url: String,
     pub caption: Option<String>,
     pub quote: Option<RawWhatsAppQuote>,
+    pub file_name: Option<String>,
+    pub mime_type: Option<String>,
 }
 
 /// Recorded payload for sent reaction in `MockWhatsAppClient`.
@@ -700,6 +709,8 @@ impl WhatsAppClient for MockWhatsAppClient {
         media_data_or_url: &str,
         caption: Option<&str>,
         quote: Option<&RawWhatsAppQuote>,
+        file_name: Option<&str>,
+        mime_type: Option<&str>,
     ) -> Result<WhatsAppSendResponse> {
         self.sent_media.lock().unwrap().push(MockSentMediaMessage {
             recipient_jid: recipient_jid.to_string(),
@@ -707,6 +718,8 @@ impl WhatsAppClient for MockWhatsAppClient {
             media_data_or_url: media_data_or_url.to_string(),
             caption: caption.map(str::to_string),
             quote: quote.cloned(),
+            file_name: file_name.map(str::to_string),
+            mime_type: mime_type.map(str::to_string),
         });
 
         if let Some(res) = self.next_send_result.lock().unwrap().take() {

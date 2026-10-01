@@ -1,0 +1,10 @@
+phone="" uid=Some(" -1 "): sql=true preflight=false worker_target=false
+phone="" uid=Some("cached-uid"): sql=false preflight=true worker_target=true
+phone="+84-90-123" uid=None: sql=true preflight=true worker_target=false
+phone="1" uid=None: sql=true preflight=true worker_target=false
+phone="0901234567" uid=Some("0"): sql=true preflight=true worker_target=true
+phone="\t\n" uid=None: sql=false preflight=false worker_target=false
+phone="" uid=Some("0"): sql=false preflight=false worker_target=false
+helper read-only invalid lead: Err(SqliteFailure(Error { code: ReadOnly, extended_code: 8 }, Some("attempt to write a readonly database")))
+helper missing table: Err(SqliteFailure(Error { code: Unknown, extended_code: 1 }, Some("no such table: leads")))
+verbatim worker invalid-phone guard after failed read-only write: continued, stored status=UNTESTED

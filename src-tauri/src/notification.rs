@@ -2,7 +2,7 @@ use crate::conversation::types::Channel;
 use std::collections::HashMap;
 use std::sync::{Mutex, RwLock};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_notification::NotificationExt;
 
 const RATE_LIMIT_WINDOW: Duration = Duration::from_millis(1500);
@@ -343,6 +343,30 @@ where
     }
 }
 
+pub fn load_notification_settings(conn: &rusqlite::Connection) -> NotificationSettings {
+    conn.query_row(
+        "SELECT value FROM app_metadata WHERE key = 'notification_settings'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|raw| serde_json::from_str::<NotificationSettings>(&raw).ok())
+    .unwrap_or_default()
+}
+
+pub fn save_notification_settings(
+    conn: &rusqlite::Connection,
+    settings: &NotificationSettings,
+) -> Result<(), rusqlite::Error> {
+    let json = serde_json::to_string(settings).unwrap_or_default();
+    conn.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('notification_settings', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![json],
+    )?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_notification_settings(
     state: tauri::State<'_, std::sync::Arc<NotificationManager>>,
@@ -351,11 +375,19 @@ pub fn get_notification_settings(
 }
 
 #[tauri::command]
-pub fn update_notification_settings(
+pub fn update_notification_settings<R: Runtime>(
+    app: AppHandle<R>,
     settings: NotificationSettings,
     state: tauri::State<'_, std::sync::Arc<NotificationManager>>,
 ) -> Result<(), String> {
-    state.update_settings(settings);
+    state.update_settings(settings.clone());
+    if let Some(db_state) = app.try_state::<crate::commands::DbState>() {
+        if let Ok(conn) = db_state.conn.lock() {
+            if let Err(err) = save_notification_settings(&conn, &settings) {
+                tracing::warn!(target: "notification", %err, "Failed to persist notification settings to database");
+            }
+        }
+    }
     Ok(())
 }
 

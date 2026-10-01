@@ -279,11 +279,26 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
                 crate::conversation::types::ConversationCapabilities::zalo_phase_one()
             } else if channel == "whatsapp" {
                 crate::conversation::types::ConversationCapabilities::whatsapp()
+            } else if channel == "messenger" {
+                crate::conversation::types::ConversationCapabilities::messenger()
             } else {
                 crate::conversation::types::ConversationCapabilities::text_only()
             }
         } else {
-            crate::conversation::types::ConversationCapabilities::from_json(&json_str)
+            let parsed = crate::conversation::types::ConversationCapabilities::from_json(&json_str);
+            if parsed.supported_doc_types.is_empty() {
+                if channel == "zalo" {
+                    crate::conversation::types::ConversationCapabilities::zalo_phase_one()
+                } else if channel == "whatsapp" {
+                    crate::conversation::types::ConversationCapabilities::whatsapp()
+                } else if channel == "messenger" {
+                    crate::conversation::types::ConversationCapabilities::messenger()
+                } else {
+                    parsed
+                }
+            } else {
+                parsed
+            }
         };
         caps_map.insert(acc_id, (caps, connection_status == "connected"));
     }

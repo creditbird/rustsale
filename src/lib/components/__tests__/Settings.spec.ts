@@ -236,4 +236,39 @@ describe('Settings', () => {
     expect(alert.textContent).toContain('QR login expired. Start again.');
     expect(screen.getByRole('button', { name: /Try again/i })).toBeTruthy();
   });
+
+  test('displays scanned user profile upon receiving zalo-qr-scanned event', async () => {
+    render(Settings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Add Zalo account/i }));
+    const qrCodeListener = await waitForListener('zalo-qr-code');
+    qrCodeListener({ payload: { image_base64: 'base64-mock-qr' } });
+
+    expect(await screen.findByAltText('Zalo QR code')).toBeTruthy();
+
+    const scannedListener = await waitForListener('zalo-qr-scanned');
+    scannedListener({ payload: { avatar: 'https://example.com/avatar.jpg', display_name: 'Nguyễn Văn A' } });
+
+    expect(await screen.findByText('Nguyễn Văn A')).toBeTruthy();
+    expect(await screen.findByText(/Confirm the login on your phone/i)).toBeTruthy();
+  });
+
+  test('shows success feedback and automatically closes QR modal on zalo-qr-success', async () => {
+    render(Settings);
+
+    await fireEvent.click(await screen.findByRole('button', { name: /Add Zalo account/i }));
+    const scannedListener = await waitForListener('zalo-qr-scanned');
+    scannedListener({ payload: { avatar: 'https://example.com/avatar.jpg', display_name: 'Nguyễn Văn A' } });
+
+    const successListener = await waitForListener('zalo-qr-success');
+    successListener({ payload: { imei: 'imei-1' } });
+
+    expect(await screen.findByText(/Connected as Nguyễn Văn A/i)).toBeTruthy();
+    expect(await screen.findByText(/Zalo login successful/i)).toBeTruthy();
+
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.queryByText(/Scan once\. RustSale will hand realtime/i)).toBeNull();
+    }, { timeout: 15000 });
+  });
 });

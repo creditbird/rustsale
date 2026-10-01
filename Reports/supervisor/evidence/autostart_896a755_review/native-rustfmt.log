@@ -1,0 +1,45 @@
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/tests/native_autostart_linux_test.rs:29:
+         .build()
+         .expect("Failed to build AutoLaunch instance");
+ 
+[31m-    assert!(!auto.is_enabled().expect("Failed to query initial is_enabled state"));
+(B[m[32m+    assert!(!auto
+(B[m[32m+        .is_enabled()
+(B[m[32m+        .expect("Failed to query initial is_enabled state"));
+(B[m 
+     // 1. Enable autostart via auto_launch
+[31m-    auto.enable().expect("Failed to enable autostart via auto_launch");
+(B[m[31m-    assert!(auto.is_enabled().expect("Failed to query is_enabled after enable"));
+(B[m[31m-    assert!(desktop_file_path.exists(), "Desktop file must be created on disk in ~/.config/autostart");
+(B[m[32m+    auto.enable()
+(B[m[32m+        .expect("Failed to enable autostart via auto_launch");
+(B[m[32m+    assert!(auto
+(B[m[32m+        .is_enabled()
+(B[m[32m+        .expect("Failed to query is_enabled after enable"));
+(B[m[32m+    assert!(
+(B[m[32m+        desktop_file_path.exists(),
+(B[m[32m+        "Desktop file must be created on disk in ~/.config/autostart"
+(B[m[32m+    );
+(B[m 
+[31m-    let read_content = std::fs::read_to_string(&desktop_file_path).expect("Failed to read desktop file");
+(B[m[32m+    let read_content =
+(B[m[32m+        std::fs::read_to_string(&desktop_file_path).expect("Failed to read desktop file");
+(B[m     assert!(read_content.contains("Exec=/usr/bin/rustsale-crm --autostart"));
+     assert!(read_content.contains("Type=Application"));
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/tests/native_autostart_linux_test.rs:43:
+     // 2. Disable autostart via auto_launch
+[31m-    auto.disable().expect("Failed to disable autostart via auto_launch");
+(B[m[31m-    assert!(!auto.is_enabled().expect("Failed to query is_enabled after disable"));
+(B[m[31m-    assert!(!desktop_file_path.exists(), "Desktop file must be deleted after disable");
+(B[m[32m+    auto.disable()
+(B[m[32m+        .expect("Failed to disable autostart via auto_launch");
+(B[m[32m+    assert!(!auto
+(B[m[32m+        .is_enabled()
+(B[m[32m+        .expect("Failed to query is_enabled after disable"));
+(B[m[32m+    assert!(
+(B[m[32m+        !desktop_file_path.exists(),
+(B[m[32m+        "Desktop file must be deleted after disable"
+(B[m[32m+    );
+(B[m }
+ 

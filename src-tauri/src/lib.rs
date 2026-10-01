@@ -123,6 +123,9 @@ pub fn run() {
     let notification_manager = std::sync::Arc::new(notification::NotificationManager::default());
     notification_manager.set_tray_state(tray_state.clone());
 
+    let notif_mgr_for_setup = notification_manager.clone();
+    let tray_state_for_setup = tray_state.clone();
+
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
@@ -193,6 +196,13 @@ pub fn run() {
             let mut conn = db::init_db(db_path_str).expect("Failed to initialize database");
             #[cfg(debug_assertions)]
             db::seed_data(&mut conn).expect("Failed to seed database");
+
+            let loaded_settings = notification::load_notification_settings(&conn);
+            notif_mgr_for_setup.update_settings(loaded_settings);
+
+            let loaded_tray = tray::load_tray_config(&conn);
+            tray_state_for_setup.set_close_to_tray(loaded_tray.close_to_tray);
+            tray_state_for_setup.set_dnd_enabled(loaded_tray.dnd_enabled);
 
             app.manage(commands::DbState {
                 conn: std::sync::Mutex::new(conn),

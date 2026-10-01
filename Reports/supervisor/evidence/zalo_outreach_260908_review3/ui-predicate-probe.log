@@ -1,0 +1,10 @@
+{"phone":"1","uid":null,"ui":false}
+{"phone":"+84-90-123","uid":null,"ui":false}
+{"phone":"+84 901234567","uid":null,"ui":true}
+{"phone":"\t0901234567","uid":null,"ui":true}
+{"phone":"090[123]4567","uid":null,"ui":true}
+{"phone":"090,1234567","uid":null,"ui":true}
+{"phone":"","uid":" -1 ","ui":false}
+{"phone":"","uid":"cached-uid","ui":true}
+{"phone":"","uid":"0\t0","ui":false}
+{"phone":"","uid":" 0 ","ui":false}

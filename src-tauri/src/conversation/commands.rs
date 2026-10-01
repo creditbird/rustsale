@@ -203,6 +203,7 @@ pub fn start_direct_conversation(
         .map_err(|error| error.to_string())?;
     state.zalo_supervisor.notify_outbox();
     state.whatsapp_supervisor.notify_outbox();
+    state.facebook_supervisor.notify_outbox();
     Ok(msg)
 }
 
@@ -229,6 +230,7 @@ pub fn send_conversation_batch(
         .map_err(|error| error.command_error())?;
     state.zalo_supervisor.notify_outbox();
     state.whatsapp_supervisor.notify_outbox();
+    state.facebook_supervisor.notify_outbox();
     Ok(result)
 }
 

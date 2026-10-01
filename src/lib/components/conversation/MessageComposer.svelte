@@ -562,6 +562,9 @@
   }
 
   function supportsAttachment(staged: StagedConversationAttachment): boolean {
+    if (selectedCapabilities.maxAttachmentsPerBatch <= 0) {
+      return false;
+    }
     const supportedTypes =
       staged.mediaType === 'image'
         ? selectedCapabilities.supportedImageTypes
@@ -570,7 +573,22 @@
           : staged.mediaType === 'audio'
             ? selectedCapabilities.supportedAudioTypes
             : selectedCapabilities.supportedDocTypes;
-    return supportedTypes.includes(staged.mimeType);
+    if (!supportedTypes || supportedTypes.length === 0) {
+      return false;
+    }
+    if (supportedTypes.includes('*') || supportedTypes.includes('*/*')) {
+      return true;
+    }
+    if (supportedTypes.includes(staged.mimeType)) {
+      return true;
+    }
+    if (
+      (staged.mediaType === 'file' || staged.mediaType === 'document') &&
+      (supportedTypes.includes('application/octet-stream') || staged.mimeType === 'application/octet-stream')
+    ) {
+      return true;
+    }
+    return false;
   }
 
   function validateStagedAttachment(staged: StagedConversationAttachment): string | null {

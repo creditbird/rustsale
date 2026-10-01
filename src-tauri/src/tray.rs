@@ -114,6 +114,15 @@ pub fn init_tray<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
                     let new_val = !state.is_dnd_enabled();
                     state.set_dnd_enabled(new_val);
                     let _ = app.emit("tray-dnd-changed", new_val);
+                    if let Some(db_state) = app.try_state::<crate::commands::DbState>() {
+                        if let Ok(conn) = db_state.conn.lock() {
+                            let config = TrayConfig {
+                                close_to_tray: state.is_close_to_tray_enabled(),
+                                dnd_enabled: new_val,
+                            };
+                            let _ = save_tray_config(&conn, &config);
+                        }
+                    }
                 }
             }
             "quit" => {
@@ -145,6 +154,30 @@ pub fn init_tray<R: Runtime>(app: &AppHandle<R>) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn load_tray_config(conn: &rusqlite::Connection) -> TrayConfig {
+    conn.query_row(
+        "SELECT value FROM app_metadata WHERE key = 'tray_config'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|raw| serde_json::from_str::<TrayConfig>(&raw).ok())
+    .unwrap_or_default()
+}
+
+pub fn save_tray_config(
+    conn: &rusqlite::Connection,
+    config: &TrayConfig,
+) -> Result<(), rusqlite::Error> {
+    let json = serde_json::to_string(config).unwrap_or_default();
+    conn.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('tray_config', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        rusqlite::params![json],
+    )?;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn get_tray_state(state: tauri::State<'_, TrayState>) -> Result<TrayConfig, String> {
     Ok(TrayConfig {
@@ -154,8 +187,23 @@ pub fn get_tray_state(state: tauri::State<'_, TrayState>) -> Result<TrayConfig, 
 }
 
 #[tauri::command]
-pub fn set_close_to_tray(enabled: bool, state: tauri::State<'_, TrayState>) -> Result<(), String> {
+pub fn set_close_to_tray<R: Runtime>(
+    app: AppHandle<R>,
+    enabled: bool,
+    state: tauri::State<'_, TrayState>,
+) -> Result<(), String> {
     state.set_close_to_tray(enabled);
+    if let Some(db_state) = app.try_state::<crate::commands::DbState>() {
+        if let Ok(conn) = db_state.conn.lock() {
+            let config = TrayConfig {
+                close_to_tray: enabled,
+                dnd_enabled: state.is_dnd_enabled(),
+            };
+            if let Err(err) = save_tray_config(&conn, &config) {
+                tracing::warn!(target: "tray", %err, "Failed to persist tray config to database");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -167,6 +215,17 @@ pub fn set_tray_dnd<R: Runtime>(
 ) -> Result<(), String> {
     state.set_dnd_enabled(enabled);
     let _ = app.emit("tray-dnd-changed", enabled);
+    if let Some(db_state) = app.try_state::<crate::commands::DbState>() {
+        if let Ok(conn) = db_state.conn.lock() {
+            let config = TrayConfig {
+                close_to_tray: state.is_close_to_tray_enabled(),
+                dnd_enabled: enabled,
+            };
+            if let Err(err) = save_tray_config(&conn, &config) {
+                tracing::warn!(target: "tray", %err, "Failed to persist tray config to database");
+            }
+        }
+    }
     Ok(())
 }
 

@@ -3458,6 +3458,188 @@ mod group_member_import_events {
     }
 
     #[tokio::test]
+    async fn test_process_whatsapp_outbox_job_docx_attachment() {
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+        crate::conversation::whatsapp::migration::apply_whatsapp_migrations(&conn).unwrap();
+
+        let temp_dir = std::env::temp_dir();
+        let docx_file = temp_dir.join(format!("test_wa_{}.docx", rand::random::<u64>()));
+        std::fs::write(&docx_file, b"PK\x03\x04test_docx_payload").unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts 
+             (id, channel, provider_account_key, display_name, enabled, connection_status, capabilities_json, created_at, updated_at)
+             VALUES (825, 'whatsapp', '84901234567', 'WA Sales', 1, 'connected', '{}', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations 
+             (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (826, 825, '84909999999@s.whatsapp.net', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages 
+             (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (827, 826, 'outbound', 'wa_docx_msg', 'attachment', 'Attached report', '{\"caption\":\"Attached report\"}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_attachments
+             (id, message_id, attachment_type, file_name, mime_type, size_bytes, local_path, created_at)
+             VALUES (828, 827, 'file', 'quarterly_report.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 2048, ?1, ?2)",
+            rusqlite::params![docx_file.to_string_lossy().to_string(), now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs 
+             (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_wa_827', 825, 827, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = crate::conversation::whatsapp::client::MockWhatsAppClient::new();
+        let processed = harness
+            .service
+            .process_next_whatsapp_outbox_job(825, &mock_client)
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_file(&docx_file);
+
+        assert!(processed);
+
+        let sent_media = mock_client.get_sent_media();
+        assert_eq!(sent_media.len(), 1);
+        assert_eq!(sent_media[0].media_type, "file");
+        assert_eq!(sent_media[0].file_name.as_deref(), Some("quarterly_report.docx"));
+        assert_eq!(
+            sent_media[0].mime_type.as_deref(),
+            Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_process_messenger_outbox_job_docx_attachment() {
+        use crate::conversation::facebook::client::{FacebookGraphClient, SendFacebookMessageResponse};
+
+        struct MockMessengerAttachmentClient {
+            sent_file_name: std::sync::Mutex<Option<String>>,
+            sent_mime_type: std::sync::Mutex<Option<String>>,
+            sent_media_type: std::sync::Mutex<Option<String>>,
+            sent_bytes_len: std::sync::Mutex<Option<usize>>,
+        }
+
+        #[async_trait::async_trait]
+        impl FacebookGraphClient for MockMessengerAttachmentClient {
+            async fn fetch_page_conversations(&self, _: &str, _: &str, _: usize, _: Option<&str>) -> anyhow::Result<crate::conversation::facebook::client::FacebookConversationsPage> { unimplemented!() }
+            async fn fetch_thread_messages(&self, _: &str, _: &str, _: usize, _: Option<&str>) -> anyhow::Result<crate::conversation::facebook::client::FacebookMessagesPage> { unimplemented!() }
+            async fn send_messenger_message(&self, _: &str, _: &str, _: &str, _: &str, _: Option<&str>) -> anyhow::Result<SendFacebookMessageResponse> { unimplemented!() }
+
+            async fn send_messenger_attachment(
+                &self,
+                _page_id: &str,
+                _page_token: &str,
+                _recipient_psid: &str,
+                file_bytes: Vec<u8>,
+                file_name: Option<&str>,
+                mime_type: Option<&str>,
+                media_type: &str,
+                _message_tag: Option<&str>,
+            ) -> anyhow::Result<SendFacebookMessageResponse> {
+                *self.sent_file_name.lock().unwrap() = file_name.map(str::to_string);
+                *self.sent_mime_type.lock().unwrap() = mime_type.map(str::to_string);
+                *self.sent_media_type.lock().unwrap() = Some(media_type.to_string());
+                *self.sent_bytes_len.lock().unwrap() = Some(file_bytes.len());
+                Ok(SendFacebookMessageResponse {
+                    recipient_id: "PSID_123".to_string(),
+                    message_id: "mid_att_123".to_string(),
+                })
+            }
+        }
+
+        let harness = ServiceHarness::new();
+        let conn = harness.open_conn();
+
+        let temp_dir = std::env::temp_dir();
+        let docx_file = temp_dir.join(format!("test_fb_{}.docx", rand::random::<u64>()));
+        std::fs::write(&docx_file, b"PK\x03\x04fb_docx_payload").unwrap();
+
+        let now = utc_now();
+        conn.execute(
+            "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+             VALUES (950, 'messenger', 'PAGE_950', 'FB Page', 'connected', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_conversations (id, channel_account_id, external_thread_id, kind, title, status, created_at, updated_at)
+             VALUES (951, 950, 't_PSID_999', 'direct', 'Customer', 'active', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO channel_identities (id, channel, channel_account_id, identity_namespace, external_id, display_name, created_at, updated_at)
+             VALUES (952, 'messenger', 950, 'psid', 'PSID_999', 'Customer', ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO conversation_participants (conversation_id, identity_id, participant_role, joined_at)
+             VALUES (951, 952, 'member', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO messages (id, conversation_id, direction, provider_message_id, content_type, text_content, content_json, status, ingested_at)
+             VALUES (954, 951, 'outbound', 'fb_docx_msg', 'attachment', 'Sent contract', '{\"caption\":\"Sent contract\"}', 'queued', ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_attachments
+             (id, message_id, attachment_type, file_name, mime_type, size_bytes, local_path, created_at)
+             VALUES (955, 954, 'file', 'contract.docx', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', 2048, ?1, ?2)",
+            rusqlite::params![docx_file.to_string_lossy().to_string(), now],
+        ).unwrap();
+
+        conn.execute(
+            "INSERT INTO message_outbox_jobs (id, channel_account_id, message_id, status, attempt_count, next_attempt_at, created_at, updated_at)
+             VALUES ('job_fb_954', 950, 954, 'pending', 0, ?1, ?1, ?1)",
+            rusqlite::params![now],
+        ).unwrap();
+
+        let mock_client = MockMessengerAttachmentClient {
+            sent_file_name: std::sync::Mutex::new(None),
+            sent_mime_type: std::sync::Mutex::new(None),
+            sent_media_type: std::sync::Mutex::new(None),
+            sent_bytes_len: std::sync::Mutex::new(None),
+        };
+
+        let processed = harness
+            .service
+            .process_next_messenger_outbox_job(950, &mock_client, "PAGE_950", "PAGE_TOKEN_VALID")
+            .await
+            .unwrap();
+
+        let _ = std::fs::remove_file(&docx_file);
+
+        assert!(processed);
+        assert_eq!(mock_client.sent_file_name.lock().unwrap().as_deref(), Some("contract.docx"));
+        assert_eq!(
+            mock_client.sent_mime_type.lock().unwrap().as_deref(),
+            Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+        );
+        assert_eq!(mock_client.sent_media_type.lock().unwrap().as_deref(), Some("file"));
+        assert_eq!(mock_client.sent_bytes_len.lock().unwrap().as_ref(), Some(&b"PK\x03\x04fb_docx_payload".len()));
+    }
+
+    #[tokio::test]
     async fn test_process_whatsapp_outbox_job_reaction() {
         let harness = ServiceHarness::new();
         let conn = harness.open_conn();

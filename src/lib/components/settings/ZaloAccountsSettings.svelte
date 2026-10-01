@@ -41,7 +41,9 @@
   let qrStatus = $state('Preparing secure Zalo login...');
   let qrError = $state<string | null>(null);
   let qrStarting = $state(false);
+  let qrSuccess = $state(false);
   let qrUnlistens: UnlistenFn[] = [];
+  let autoCloseTimeout: ReturnType<typeof setTimeout> | null = null;
 
   const authLabels: Record<ZaloAuthStatus, string> = {
     unknown: 'Authentication Unknown',
@@ -141,8 +143,22 @@
     }
   }
 
+  function clearTimers() {
+    if (autoCloseTimeout) {
+      clearTimeout(autoCloseTimeout);
+      autoCloseTimeout = null;
+    }
+  }
+
   function cleanupQrListeners() {
-    qrUnlistens.forEach((unlisten) => unlisten());
+    clearTimers();
+    qrUnlistens.forEach((unlisten) => {
+      try {
+        unlisten();
+      } catch {
+        // ignore unlisten cleanup errors
+      }
+    });
     qrUnlistens = [];
   }
 
@@ -157,6 +173,7 @@
     qrImage = null;
     qrUser = null;
     qrError = null;
+    qrSuccess = false;
     qrStatus = targetAccount
       ? `Reconnecting ${accountName(targetAccount)}...`
       : 'Connecting to Zalo...';
@@ -167,6 +184,7 @@
         await listen<{ image_base64: string }>('zalo-qr-code', (event) => {
           qrImage = event.payload.image_base64;
           qrStatus = 'Scan this QR code with the Zalo mobile app.';
+          qrStarting = false;
         })
       );
       qrUnlistens.push(
@@ -180,14 +198,27 @@
       );
       qrUnlistens.push(
         await listen<{ imei: string }>('zalo-qr-success', async (event) => {
-          qrStatus = 'Account updated. Starting realtime connection...';
-          await reconnectZaloAccount(event.payload.imei);
-          await loadAccounts();
+          clearTimers();
+          qrSuccess = true;
+          qrStarting = false;
+          qrStatus = 'Zalo login successful! Realtime connection active.';
           cleanupQrListeners();
+
+          try {
+            await reconnectZaloAccount(event.payload.imei);
+          } catch (e) {
+            console.warn('Zalo post-login reconnect notice:', e);
+          }
+          await loadAccounts(true);
+
+          autoCloseTimeout = setTimeout(() => {
+            closeQrDialog();
+          }, 1200);
         })
       );
       qrUnlistens.push(
         await listen<{ message: string }>('zalo-qr-error', (event) => {
+          clearTimers();
           qrError = event.payload.message;
           qrStatus = event.payload.message;
           qrStarting = false;
@@ -196,6 +227,7 @@
       );
       await startZaloQrLogin();
     } catch (error) {
+      clearTimers();
       qrError = error instanceof Error ? error.message : String(error);
       qrStatus = qrError;
       cleanupQrListeners();
@@ -205,7 +237,11 @@
   }
 
   function closeQrDialog() {
+    clearTimers();
     qrOpen = false;
+    qrStarting = false;
+    qrError = null;
+    qrSuccess = false;
     cleanupQrListeners();
   }
 
@@ -376,26 +412,42 @@
           <p role="alert" class="max-w-sm text-sm font-medium text-destructive">{qrError}</p>
           <Button variant="outline" size="sm" onclick={() => beginQrLogin()}>Try again</Button>
         </div>
+      {:else if qrSuccess}
+        <div class="flex flex-col items-center gap-3">
+          <div class="rounded-full bg-emerald-500/10 p-3 text-emerald-600">
+            <CheckCircle2 class="size-8" />
+          </div>
+          <p class="text-sm font-semibold text-foreground">
+            {qrUser?.displayName ? `Connected as ${qrUser.displayName}` : 'Login Successful'}
+          </p>
+          <p class="text-xs text-muted-foreground">{qrStatus}</p>
+        </div>
+      {:else if qrUser}
+        <div class="flex flex-col items-center gap-3">
+          {#if qrUser.avatar}
+            <img src={qrUser.avatar} alt={qrUser.displayName} class="size-16 rounded-full border object-cover" />
+          {:else}
+            <div class="flex size-16 shrink-0 items-center justify-center rounded-full bg-emerald-500/10 font-semibold text-emerald-700">
+              {qrUser.displayName.slice(0, 1).toUpperCase()}
+            </div>
+          {/if}
+          <p class="text-sm font-semibold text-foreground">{qrUser.displayName}</p>
+          <p class="text-xs text-muted-foreground">{qrStatus}</p>
+        </div>
       {:else if qrImage}
         <img
           src={qrImage.startsWith('data:image/') ? qrImage : `data:image/png;base64,${qrImage}`}
           alt="Zalo QR code"
           class="size-56 rounded-xl border bg-white p-2 shadow-sm"
         />
-      {:else if qrUser}
-        <div class="flex flex-col items-center gap-3">
-          <img src={qrUser.avatar} alt={qrUser.displayName} class="size-16 rounded-full border object-cover" />
-          <p class="text-sm font-semibold">{qrUser.displayName}</p>
-        </div>
+        <p class="text-xs text-muted-foreground">{qrStatus}</p>
       {:else}
         <LoaderCircle class="size-10 animate-spin text-primary" />
-      {/if}
-      {#if !qrError}
         <p class="text-xs text-muted-foreground">{qrStatus}</p>
       {/if}
     </div>
     <Dialog.Footer>
-      <Button variant="outline" onclick={closeQrDialog} disabled={qrStarting}>Close</Button>
+      <Button variant="outline" onclick={closeQrDialog} disabled={qrStarting && !qrError}>Close</Button>
     </Dialog.Footer>
   </Dialog.Content>
 </Dialog.Root>

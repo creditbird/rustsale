@@ -133,6 +133,20 @@ pub trait FacebookGraphClient: Send + Sync {
         text: &str,
         message_tag: Option<&str>,
     ) -> Result<SendFacebookMessageResponse>;
+
+    async fn send_messenger_attachment(
+        &self,
+        _page_id: &str,
+        _page_token: &str,
+        _recipient_psid: &str,
+        _file_bytes: Vec<u8>,
+        _file_name: Option<&str>,
+        _mime_type: Option<&str>,
+        _media_type: &str,
+        _message_tag: Option<&str>,
+    ) -> Result<SendFacebookMessageResponse> {
+        Err(anyhow!("send_messenger_attachment not implemented"))
+    }
 }
 
 pub struct RealFacebookGraphClient {
@@ -303,6 +317,101 @@ impl FacebookGraphClient for RealFacebookGraphClient {
             .get("message_id")
             .and_then(|v| v.as_str())
             .ok_or_else(|| anyhow!("Missing message_id in Meta send response"))?
+            .to_string();
+
+        Ok(SendFacebookMessageResponse {
+            recipient_id,
+            message_id,
+        })
+    }
+
+    async fn send_messenger_attachment(
+        &self,
+        page_id: &str,
+        page_token: &str,
+        recipient_psid: &str,
+        file_bytes: Vec<u8>,
+        file_name: Option<&str>,
+        mime_type: Option<&str>,
+        media_type: &str,
+        message_tag: Option<&str>,
+    ) -> Result<SendFacebookMessageResponse> {
+        let url = format!(
+            "https://graph.facebook.com/v26.0/{}/messages",
+            urlencoding::encode(page_id)
+        );
+
+        let attachment_type = match media_type {
+            "image" => "image",
+            "video" => "video",
+            "audio" => "audio",
+            _ => "file",
+        };
+
+        let message_payload = serde_json::json!({
+            "attachment": {
+                "type": attachment_type,
+                "payload": {
+                    "is_reusable": true
+                }
+            }
+        });
+
+        let mut form = reqwest::multipart::Form::new()
+            .text("recipient", serde_json::json!({ "id": recipient_psid }).to_string())
+            .text("message", message_payload.to_string());
+
+        if let Some(tag) = message_tag {
+            form = form.text("messaging_type", "MESSAGE_TAG");
+            form = form.text("tag", tag.to_string());
+        } else {
+            form = form.text("messaging_type", "RESPONSE");
+        }
+
+        let mut part = reqwest::multipart::Part::bytes(file_bytes);
+        if let Some(name) = file_name {
+            part = part.file_name(name.to_string());
+        }
+        if let Some(mime) = mime_type {
+            if let Ok(p) = part.mime_str(mime) {
+                part = p;
+            } else {
+                return Err(anyhow!("Invalid attachment MIME type: {}", mime));
+            }
+        }
+        form = form.part("filedata", part);
+
+        let resp = self
+            .client
+            .post(&url)
+            .header("Authorization", format!("Bearer {}", page_token))
+            .multipart(form)
+            .send()
+            .await
+            .map_err(|e| anyhow!("Network error sending attachment to {}: {}", recipient_psid, e))?;
+
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body_val: Value = resp.json().await.unwrap_or_else(|_| serde_json::json!({}));
+            let meta_err = super::error::MetaGraphError::parse(status.as_u16(), &body_val);
+            return Err(anyhow!(meta_err));
+        }
+
+        let body: Value = resp
+            .json()
+            .await
+            .map_err(|e| anyhow!("Failed to parse send attachment response JSON: {}", e))?;
+
+        let recipient_id = body
+            .get("recipient_id")
+            .and_then(|v| v.as_str())
+            .unwrap_or(recipient_psid)
+            .to_string();
+
+        let message_id = body
+            .get("message_id")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| anyhow!("Missing message_id in Meta send attachment response"))?
             .to_string();
 
         Ok(SendFacebookMessageResponse {

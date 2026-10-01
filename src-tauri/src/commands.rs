@@ -2124,20 +2124,30 @@ pub fn save_managed_facebook_account_internal(
         .unchecked_transaction()
         .map_err(|e| format!("Database transaction error: {}", e))?;
 
+    let fb_caps_json = serde_json::to_string(
+        &crate::conversation::types::ConversationCapabilities::messenger(),
+    )
+    .unwrap_or_else(|_| "{}".to_string());
+
     // 1. Insert or update channel_accounts
     tx.execute(
         "INSERT INTO channel_accounts (
-            channel, provider_account_key, display_name, avatar_url, enabled, connection_status, last_connected_at, created_at, updated_at
-        ) VALUES ('messenger', ?1, ?2, ?3, 1, 'connected', datetime('now'), datetime('now'), datetime('now'))
+            channel, provider_account_key, display_name, avatar_url, enabled, connection_status, capabilities_json, last_connected_at, created_at, updated_at
+        ) VALUES ('messenger', ?1, ?2, ?3, 1, 'connected', ?4, datetime('now'), datetime('now'), datetime('now'))
         ON CONFLICT(channel, provider_account_key) DO UPDATE SET
             display_name = COALESCE(EXCLUDED.display_name, channel_accounts.display_name),
             avatar_url = COALESCE(EXCLUDED.avatar_url, channel_accounts.avatar_url),
             enabled = 1,
             connection_status = 'connected',
+            capabilities_json = CASE
+                WHEN channel_accounts.capabilities_json IS NULL OR channel_accounts.capabilities_json = '' OR channel_accounts.capabilities_json = '{}'
+                THEN EXCLUDED.capabilities_json
+                ELSE channel_accounts.capabilities_json
+            END,
             last_connected_at = datetime('now'),
             last_error = NULL,
             updated_at = datetime('now')",
-        rusqlite::params![page_id, page_name, avatar_url],
+        rusqlite::params![page_id, page_name, avatar_url, fb_caps_json],
     )
     .map_err(|e| format!("Failed to upsert channel account: {}", e))?;
 

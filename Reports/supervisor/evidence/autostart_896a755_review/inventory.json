@@ -1,0 +1,51 @@
+{
+  "plugins": [
+    "updater",
+    "process",
+    "dialog",
+    "shell",
+    "opener",
+    "notification",
+    "autostart"
+  ],
+  "capabilities": 8,
+  "switches": 6,
+  "locales": {
+    "vi": [
+      {
+        "key": "settings_notif_autostart",
+        "present": true
+      },
+      {
+        "key": "settings_notif_autostart_desc",
+        "present": true
+      },
+      {
+        "key": "settings_notif_status_autostart",
+        "present": true
+      },
+      {
+        "key": "settings_notif_err_update_autostart",
+        "present": true
+      }
+    ],
+    "en": [
+      {
+        "key": "settings_notif_autostart",
+        "present": true
+      },
+      {
+        "key": "settings_notif_autostart_desc",
+        "present": true
+      },
+      {
+        "key": "settings_notif_status_autostart",
+        "present": true
+      },
+      {
+        "key": "settings_notif_err_update_autostart",
+        "present": true
+      }
+    ]
+  }
+}

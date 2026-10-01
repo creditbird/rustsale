@@ -3256,14 +3256,23 @@ impl ConversationRepository {
             })?;
             let status_str: String = row.get(4)?;
             let status = AccountConnectionStatus::from_db(&status_str)?;
+            let raw_caps: String = row.get(7)?;
+            let capabilities = if raw_caps.trim().is_empty() || raw_caps.trim() == "{}" {
+                crate::conversation::types::ConversationCapabilities::default_for_channel(channel)
+            } else {
+                let parsed = crate::conversation::types::ConversationCapabilities::from_json(&raw_caps);
+                if parsed.supported_doc_types.is_empty() {
+                    crate::conversation::types::ConversationCapabilities::default_for_channel(channel)
+                } else {
+                    parsed
+                }
+            };
             Ok(ConversationAccountRuntime {
                 channel_account_id: row.get(0)?,
                 channel,
                 provider_account_key: row.get(2)?,
                 display_name: row.get(3)?,
-                capabilities: crate::conversation::types::ConversationCapabilities::from_json(
-                    &row.get::<_, String>(7)?,
-                ),
+                capabilities,
                 status,
                 last_connected_at: row.get(5)?,
                 last_error: row.get(6)?,

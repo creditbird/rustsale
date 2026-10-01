@@ -1,0 +1,1062 @@
+{
+  "definitions": [
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename20:normalizePhoneDigitsarity0:occurrence78:def:src/lib/components/ZaloOutreach.svelte#564:2:Function:normalizePhoneDigitsscope65:scope:src/lib/components/ZaloOutreach.svelte#564:2-577:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "normalizePhoneDigits",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 1,
+      "resolutionGapActionability": {
+        "review": 10
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 10
+      },
+      "resolutionGapCount": 10,
+      "resolutionGapKinds": {
+        "unresolved_call": 7,
+        "unresolved_type_reference": 3
+      },
+      "resolutionGapTopTargets": {
+        "digits.slice": 2,
+        "digits.startsWith": 2,
+        "phone": 1,
+        "phone.search": 2,
+        "phonePart.replace": 2
+      },
+      "score": 142,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname25:is_valid_zalo_lead_targetarity1:2occurrence71:def:src-tauri/src/commands.rs#3012:0:Function:is_valid_zalo_lead_targetscope54:scope:src-tauri/src/commands.rs#3012:0-3017:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "is_valid_zalo_lead_target",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 2,
+      "resolutionGapActionability": {
+        "review": 5
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 5
+      },
+      "resolutionGapCount": 5,
+      "resolutionGapKinds": {
+        "unresolved_call": 3,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "Option\u003c\u0026str\u003e": 2,
+        "phone.map": 1,
+        "phone.map(is_vn_mobile).unwrap_or": 1,
+        "sanitize_valid_zalo_uid(zalo_uid).is_some": 1
+      },
+      "score": 139,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename18:isLeadOutreachablearity0:occurrence76:def:src/lib/components/ZaloOutreach.svelte#587:2:Function:isLeadOutreachablescope65:scope:src/lib/components/ZaloOutreach.svelte#587:2-592:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "isLeadOutreachable",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 3,
+      "resolutionGapActionability": {
+        "review": 4
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 4
+      },
+      "resolutionGapCount": 4,
+      "resolutionGapKinds": {
+        "unresolved_access": 2,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "lead.phone": 1,
+        "lead.zalo_uid": 1,
+        "phone": 1,
+        "zalo_uid": 1
+      },
+      "score": 119,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname27:send_zalo_outreach_internalarity1:7occurrence73:def:src-tauri/src/commands.rs#3290:0:Function:send_zalo_outreach_internalscope54:scope:src-tauri/src/commands.rs#3290:0-4521:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "send_zalo_outreach_internal",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 4,
+      "resolutionGapActionability": {
+        "review": 393
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 393
+      },
+      "resolutionGapCount": 393,
+      "resolutionGapKinds": {
+        "unresolved_access": 19,
+        "unresolved_call": 350,
+        "unresolved_type_reference": 24
+      },
+      "resolutionGapTopTargets": {
+        "String": 22,
+        "app.emit": 54,
+        "conn_mutex.lock": 16,
+        "display_total.max": 16,
+        "msg.clone": 18
+      },
+      "score": 112,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/administrative_catalog/repository.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file50:src-tauri/src/administrative_catalog/repository.rsname10:repositoryarity1:0occurrence80:def:src-tauri/src/administrative_catalog/repository.rs#738:4:Function:repositoryscope77:scope:src-tauri/src/administrative_catalog/repository.rs#738:4-743:5:Functionowner0:",
+      "matchReasons": [
+        "id",
+        "filePath",
+        "semanticSurface"
+      ],
+      "name": "repository",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 5,
+      "resolutionGapActionability": {
+        "review": 5
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 5
+      },
+      "resolutionGapCount": 5,
+      "resolutionGapKinds": {
+        "unresolved_call": 5
+      },
+      "resolutionGapTopTargets": {
+        "AdministrativeCatalogRepository::new(temp.path().join(\"catalog.db\")).expect": 1,
+        "temp.path": 1,
+        "temp.path().join": 1,
+        "tempdir": 1,
+        "tempfile::tempdir().expect": 1
+      },
+      "score": 110,
+      "type": "Function"
+    }
+  ],
+  "fileLayer": {
+    "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+    "filesReturned": 5,
+    "sampleLimit": 5
+  },
+  "files": [
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname22:default_outreach_queryarity1:0occurrence73:def:src-tauri/src/commands_test.rs#2618:4:Function:default_outreach_queryscope59:scope:src-tauri/src/commands_test.rs#2618:4-2629:5:Functionowner0:",
+          "name": "default_outreach_query",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname28:test_email_outreach_commandsarity1:0occurrence79:def:src-tauri/src/commands_test.rs#2390:4:Function:test_email_outreach_commandsscope59:scope:src-tauri/src/commands_test.rs#2390:4-2494:5:Functionowner0:",
+          "name": "test_email_outreach_commands",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname28:test_send_zalo_campaign_mockarity1:0occurrence79:def:src-tauri/src/commands_test.rs#1738:4:Function:test_send_zalo_campaign_mockscope59:scope:src-tauri/src/commands_test.rs#1738:4-1938:5:Functionowner0:",
+          "name": "test_send_zalo_campaign_mock",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname28:test_send_zalo_outreach_mockarity1:0occurrence79:def:src-tauri/src/commands_test.rs#1227:4:Function:test_send_zalo_outreach_mockscope59:scope:src-tauri/src/commands_test.rs#1227:4-1422:5:Functionowner0:",
+          "name": "test_send_zalo_outreach_mock",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname31:test_parse_meta_app_permissionsarity1:0occurrence81:def:src-tauri/src/commands_test.rs#950:4:Function:test_parse_meta_app_permissionsscope57:scope:src-tauri/src/commands_test.rs#950:4-966:5:Functionowner0:",
+          "name": "test_parse_meta_app_permissions",
+          "type": "Function"
+        }
+      ],
+      "path": "src-tauri/src/commands_test.rs",
+      "rank": 1,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 0,
+        "linkedFlows": 0,
+        "linkedTests": 0,
+        "local": 75,
+        "outbound": 22,
+        "risk": "high",
+        "unresolved": 2588
+      },
+      "score": 14276,
+      "summary": {
+        "path": "src-tauri/src/commands_test.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 898,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 0,
+        "outboundRefCount": 22,
+        "localRelationshipCount": 75,
+        "unresolved": 2588,
+        "linkedFlowCount": 0,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    },
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname11:delete_leadarity1:2occurrence56:def:src-tauri/src/commands.rs#946:0:Function:delete_leadscope52:scope:src-tauri/src/commands.rs#946:0-967:1:Functionowner0:",
+          "name": "delete_lead",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname11:update_leadarity2:12occurrence56:def:src-tauri/src/commands.rs#848:0:Function:update_leadscope52:scope:src-tauri/src/commands.rs#848:0-869:1:Functionowner0:",
+          "name": "update_lead",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname12:is_public_iparity1:1occurrence58:def:src-tauri/src/commands.rs#7839:0:Function:is_public_ipscope54:scope:src-tauri/src/commands.rs#7839:0-7898:1:Functionowner0:",
+          "name": "is_public_ip",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname12:is_vn_mobilearity1:1occurrence58:def:src-tauri/src/commands.rs#3002:0:Function:is_vn_mobilescope54:scope:src-tauri/src/commands.rs#3002:0-3010:1:Functionowner0:",
+          "name": "is_vn_mobile",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname16:extract_zalo_uidarity1:2occurrence62:def:src-tauri/src/commands.rs#2645:0:Function:extract_zalo_uidscope54:scope:src-tauri/src/commands.rs#2645:0-2692:1:Functionowner0:",
+          "name": "extract_zalo_uid",
+          "type": "Function"
+        }
+      ],
+      "path": "src-tauri/src/commands.rs",
+      "rank": 2,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 6,
+        "linkedFlows": 19,
+        "linkedTests": 0,
+        "local": 386,
+        "outbound": 17,
+        "risk": "high",
+        "unresolved": 4006
+      },
+      "score": 11172,
+      "summary": {
+        "path": "src-tauri/src/commands.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 1256,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 6,
+        "outboundRefCount": 17,
+        "localRelationshipCount": 386,
+        "unresolved": 4006,
+        "linkedFlowCount": 19,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    },
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file49:src-tauri/src/conversation/whatsapp/normalizer.rsname28:is_whatsapp_remote_referencearity1:1occurrence97:def:src-tauri/src/conversation/whatsapp/normalizer.rs#218:0:Function:is_whatsapp_remote_referencescope76:scope:src-tauri/src/conversation/whatsapp/normalizer.rs#218:0-226:1:Functionowner0:",
+          "name": "is_whatsapp_remote_reference",
+          "type": "Function"
+        },
+        {
+          "id": "Method:file49:src-tauri/src/conversation/whatsapp/normalizer.rsname36:WhatsAppNormalizer.normalize_messagearity1:3occurrence84:def:src-tauri/src/conversation/whatsapp/normalizer.rs#607:4:Method:normalize_messagescope76:scope:src-tauri/src/conversation/whatsapp/normalizer.rs#607:4-753:5:Functionowner85:def:src-tauri/src/conversation/whatsapp/normalizer.rs#455:0:Struct:WhatsAppNormalizer",
+          "name": "normalize_message",
+          "type": "Method"
+        },
+        {
+          "id": "Method:file49:src-tauri/src/conversation/whatsapp/normalizer.rsname40:WhatsAppNormalizer.resolve_lead_by_phonearity1:2occurrence88:def:src-tauri/src/conversation/whatsapp/normalizer.rs#510:4:Method:resolve_lead_by_phonescope76:scope:src-tauri/src/conversation/whatsapp/normalizer.rs#510:4-604:5:Functionowner85:def:src-tauri/src/conversation/whatsapp/normalizer.rs#455:0:Struct:WhatsAppNormalizer",
+          "name": "resolve_lead_by_phone",
+          "type": "Method"
+        },
+        {
+          "id": "Method:file49:src-tauri/src/conversation/whatsapp/normalizer.rsname42:WhatsAppNormalizer.normalize_iso_timestamparity1:1occurrence90:def:src-tauri/src/conversation/whatsapp/normalizer.rs#459:4:Method:normalize_iso_timestampscope76:scope:src-tauri/src/conversation/whatsapp/normalizer.rs#459:4-489:5:Functionowner85:def:src-tauri/src/conversation/whatsapp/normalizer.rs#455:0:Struct:WhatsAppNormalizer",
+          "name": "normalize_iso_timestamp",
+          "type": "Method"
+        },
+        {
+          "id": "Method:file49:src-tauri/src/conversation/whatsapp/normalizer.rsname45:WhatsAppNormalizer.ensure_conversation_existsarity1:4occurrence94:def:src-tauri/src/conversation/whatsapp/normalizer.rs#1581:4:Method:ensure_conversation_existsscope78:scope:src-tauri/src/conversation/whatsapp/normalizer.rs#1581:4-1710:5:Functionowner85:def:src-tauri/src/conversation/whatsapp/normalizer.rs#455:0:Struct:WhatsAppNormalizer",
+          "name": "ensure_conversation_exists",
+          "type": "Method"
+        }
+      ],
+      "path": "src-tauri/src/conversation/whatsapp/normalizer.rs",
+      "rank": 3,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 11,
+        "linkedFlows": 0,
+        "linkedTests": 0,
+        "local": 158,
+        "outbound": 1,
+        "risk": "high",
+        "unresolved": 1473
+      },
+      "score": 6462,
+      "summary": {
+        "path": "src-tauri/src/conversation/whatsapp/normalizer.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 318,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 11,
+        "outboundRefCount": 1,
+        "localRelationshipCount": 158,
+        "unresolved": 1473,
+        "linkedFlowCount": 0,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    },
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname19:insert_zalo_accountarity1:2occurrence85:def:src-tauri/src/conversation/repository_test.rs#1170:0:Function:insert_zalo_accountscope74:scope:src-tauri/src/conversation/repository_test.rs#1170:0-1180:1:Functionowner0:",
+          "name": "insert_zalo_account",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname39:test_pin_unpin_and_list_pinned_messagesarity1:0occurrence105:def:src-tauri/src/conversation/repository_test.rs#4976:0:Function:test_pin_unpin_and_list_pinned_messagesscope74:scope:src-tauri/src/conversation/repository_test.rs#4976:0-4999:1:Functionowner0:",
+          "name": "test_pin_unpin_and_list_pinned_messages",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname40:duplicate_provider_message_is_idempotentarity1:0occurrence105:def:src-tauri/src/conversation/repository_test.rs#830:0:Function:duplicate_provider_message_is_idempotentscope72:scope:src-tauri/src/conversation/repository_test.rs#830:0-844:1:Functionowner0:",
+          "name": "duplicate_provider_message_is_idempotent",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname45:hydrated_reactions_sum_persisted_actor_countsarity1:0occurrence111:def:src-tauri/src/conversation/repository_test.rs#1549:0:Function:hydrated_reactions_sum_persisted_actor_countsscope74:scope:src-tauri/src/conversation/repository_test.rs#1549:0-1582:1:Functionowner0:",
+          "name": "hydrated_reactions_sum_persisted_actor_counts",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname47:relink_lead_moves_all_identities_to_target_leadarity1:0occurrence113:def:src-tauri/src/conversation/repository_test.rs#3347:0:Function:relink_lead_moves_all_identities_to_target_leadscope74:scope:src-tauri/src/conversation/repository_test.rs#3347:0-3395:1:Functionowner0:",
+          "name": "relink_lead_moves_all_identities_to_target_lead",
+          "type": "Function"
+        }
+      ],
+      "path": "src-tauri/src/conversation/repository_test.rs",
+      "rank": 4,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 0,
+        "linkedFlows": 0,
+        "linkedTests": 0,
+        "local": 113,
+        "outbound": 113,
+        "risk": "high",
+        "unresolved": 3337
+      },
+      "score": 5876,
+      "summary": {
+        "path": "src-tauri/src/conversation/repository_test.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 786,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 0,
+        "outboundRefCount": 113,
+        "localRelationshipCount": 113,
+        "unresolved": 3337,
+        "linkedFlowCount": 0,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    },
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file40:src-tauri/src/conversation/repository.rsname18:validated_zalo_uidarity1:1occurrence79:def:src-tauri/src/conversation/repository.rs#5950:0:Function:validated_zalo_uidscope69:scope:src-tauri/src/conversation/repository.rs#5950:0-5959:1:Functionowner0:",
+          "name": "validated_zalo_uid",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file40:src-tauri/src/conversation/repository.rsname21:is_composite_id_matcharity1:2occurrence82:def:src-tauri/src/conversation/repository.rs#6337:0:Function:is_composite_id_matchscope69:scope:src-tauri/src/conversation/repository.rs#6337:0-6351:1:Functionowner0:",
+          "name": "is_composite_id_match",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file40:src-tauri/src/conversation/repository.rsname24:canonicalize_zalo_uid_txarity1:4occurrence85:def:src-tauri/src/conversation/repository.rs#5961:0:Function:canonicalize_zalo_uid_txscope69:scope:src-tauri/src/conversation/repository.rs#5961:0-6201:1:Functionowner0:",
+          "name": "canonicalize_zalo_uid_tx",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file40:src-tauri/src/conversation/repository.rsname27:invalid_group_member_importarity1:1occurrence88:def:src-tauri/src/conversation/repository.rs#5759:0:Function:invalid_group_member_importscope69:scope:src-tauri/src/conversation/repository.rs#5759:0-5761:1:Functionowner0:",
+          "name": "invalid_group_member_import",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file40:src-tauri/src/conversation/repository.rsname29:exact_lead_id_for_zalo_uid_txarity1:2occurrence90:def:src-tauri/src/conversation/repository.rs#5921:0:Function:exact_lead_id_for_zalo_uid_txscope69:scope:src-tauri/src/conversation/repository.rs#5921:0-5941:1:Functionowner0:",
+          "name": "exact_lead_id_for_zalo_uid_tx",
+          "type": "Function"
+        }
+      ],
+      "path": "src-tauri/src/conversation/repository.rs",
+      "rank": 5,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 127,
+        "linkedFlows": 10,
+        "linkedTests": 0,
+        "local": 460,
+        "outbound": 43,
+        "risk": "high",
+        "unresolved": 2794
+      },
+      "score": 5456,
+      "summary": {
+        "path": "src-tauri/src/conversation/repository.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 979,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 127,
+        "outboundRefCount": 43,
+        "localRelationshipCount": 460,
+        "unresolved": 2794,
+        "linkedFlowCount": 10,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    }
+  ],
+  "process_symbols": [
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename13:startCampaignarity0:occurrence71:def:src/lib/components/ZaloOutreach.svelte#612:2:Function:startCampaignscope65:scope:src/lib/components/ZaloOutreach.svelte#612:2-665:3:Functionowner0:",
+      "matchReasons": [
+        "id",
+        "filePath"
+      ],
+      "name": "startCampaign",
+      "process": "StartCampaign -\u003e NormalizePhoneDigits",
+      "processRank": 1,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 29
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 29
+      },
+      "resolutionGapCount": 29,
+      "resolutionGapKinds": {
+        "unresolved_access": 16,
+        "unresolved_call": 10,
+        "unresolved_type_reference": 3
+      },
+      "resolutionGapTopTargets": {
+        "Number": 3,
+        "campaignUnlistens.push": 3,
+        "event.payload": 6,
+        "event.payload.message": 4,
+        "listen": 6
+      },
+      "sourceRank": 1,
+      "step": 1,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename22:resolveSelectedLeadIdsarity0:occurrence80:def:src/lib/components/ZaloOutreach.svelte#594:2:Function:resolveSelectedLeadIdsscope65:scope:src/lib/components/ZaloOutreach.svelte#594:2-602:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "resolveSelectedLeadIds",
+      "process": "StartCampaign -\u003e NormalizePhoneDigits",
+      "processRank": 1,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 6
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 6
+      },
+      "resolutionGapCount": 6,
+      "resolutionGapKinds": {
+        "unresolved_access": 1,
+        "unresolved_call": 3,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "Promise": 1,
+        "l.id": 1,
+        "leads.find": 2,
+        "resolveOutreachLeadIds": 1,
+        "selectedLeadIds.filter": 1
+      },
+      "sourceRank": 2,
+      "step": 2,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename18:isLeadOutreachablearity0:occurrence76:def:src/lib/components/ZaloOutreach.svelte#587:2:Function:isLeadOutreachablescope65:scope:src/lib/components/ZaloOutreach.svelte#587:2-592:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "isLeadOutreachable",
+      "process": "StartCampaign -\u003e NormalizePhoneDigits",
+      "processRank": 1,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 4
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 4
+      },
+      "resolutionGapCount": 4,
+      "resolutionGapKinds": {
+        "unresolved_access": 2,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "lead.phone": 1,
+        "lead.zalo_uid": 1,
+        "phone": 1,
+        "zalo_uid": 1
+      },
+      "sourceRank": 3,
+      "step": 3,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename10:isVnMobilearity0:occurrence68:def:src/lib/components/ZaloOutreach.svelte#579:2:Function:isVnMobilescope65:scope:src/lib/components/ZaloOutreach.svelte#579:2-585:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "isVnMobile",
+      "process": "StartCampaign -\u003e NormalizePhoneDigits",
+      "processRank": 1,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 4
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 4
+      },
+      "resolutionGapCount": 4,
+      "resolutionGapKinds": {
+        "unresolved_access": 1,
+        "unresolved_call": 2,
+        "unresolved_type_reference": 1
+      },
+      "resolutionGapTopTargets": {
+        "['03', '05', '07', '08', '09'].includes": 1,
+        "normalized.length": 1,
+        "normalized.slice": 2
+      },
+      "sourceRank": 4,
+      "step": 4,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename20:normalizePhoneDigitsarity0:occurrence78:def:src/lib/components/ZaloOutreach.svelte#564:2:Function:normalizePhoneDigitsscope65:scope:src/lib/components/ZaloOutreach.svelte#564:2-577:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "normalizePhoneDigits",
+      "process": "StartCampaign -\u003e NormalizePhoneDigits",
+      "processRank": 1,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 10
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 10
+      },
+      "resolutionGapCount": 10,
+      "resolutionGapKinds": {
+        "unresolved_call": 7,
+        "unresolved_type_reference": 3
+      },
+      "resolutionGapTopTargets": {
+        "digits.slice": 2,
+        "digits.startsWith": 2,
+        "phone": 1,
+        "phone.search": 2,
+        "phonePart.replace": 2
+      },
+      "sourceRank": 5,
+      "step": 5,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname18:send_zalo_outreacharity1:4occurrence64:def:src-tauri/src/commands.rs#2892:0:Function:send_zalo_outreachscope54:scope:src-tauri/src/commands.rs#2892:0-2973:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "send_zalo_outreach",
+      "process": "Send_zalo_outreach -\u003e Sanitize_valid_zalo_uid",
+      "processRank": 2,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 28
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 28
+      },
+      "resolutionGapCount": 28,
+      "resolutionGapKinds": {
+        "unresolved_access": 4,
+        "unresolved_call": 20,
+        "unresolved_type_reference": 4
+      },
+      "resolutionGapTopTargets": {
+        "DbState": 2,
+        "Ok": 2,
+        "app_handle.emit": 3,
+        "app_handle_clone.emit": 2,
+        "db_state.conn": 2
+      },
+      "sourceRank": 1,
+      "step": 1,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname33:filter_outreachable_zalo_lead_idsarity1:2occurrence79:def:src-tauri/src/commands.rs#3019:0:Function:filter_outreachable_zalo_lead_idsscope54:scope:src-tauri/src/commands.rs#3019:0-3058:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "filter_outreachable_zalo_lead_ids",
+      "process": "Send_zalo_outreach -\u003e Sanitize_valid_zalo_uid",
+      "processRank": 2,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 20
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 20
+      },
+      "resolutionGapCount": 20,
+      "resolutionGapKinds": {
+        "unresolved_call": 18,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "Connection": 1,
+        "Ok": 3,
+        "invalid_ids.push": 2,
+        "new": 4,
+        "row.get": 2
+      },
+      "sourceRank": 2,
+      "step": 2,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname25:is_valid_zalo_lead_targetarity1:2occurrence71:def:src-tauri/src/commands.rs#3012:0:Function:is_valid_zalo_lead_targetscope54:scope:src-tauri/src/commands.rs#3012:0-3017:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "is_valid_zalo_lead_target",
+      "process": "Send_zalo_outreach -\u003e Sanitize_valid_zalo_uid",
+      "processRank": 2,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 5
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 5
+      },
+      "resolutionGapCount": 5,
+      "resolutionGapKinds": {
+        "unresolved_call": 3,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "Option\u003c\u0026str\u003e": 2,
+        "phone.map": 1,
+        "phone.map(is_vn_mobile).unwrap_or": 1,
+        "sanitize_valid_zalo_uid(zalo_uid).is_some": 1
+      },
+      "sourceRank": 3,
+      "step": 3,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname23:sanitize_valid_zalo_uidarity1:1occurrence69:def:src-tauri/src/commands.rs#1227:0:Function:sanitize_valid_zalo_uidscope54:scope:src-tauri/src/commands.rs#1227:0-1242:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "sanitize_valid_zalo_uid",
+      "process": "Send_zalo_outreach -\u003e Sanitize_valid_zalo_uid",
+      "processRank": 2,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 8
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 8
+      },
+      "resolutionGapCount": 8,
+      "resolutionGapKinds": {
+        "unresolved_call": 7,
+        "unresolved_type_reference": 1
+      },
+      "resolutionGapTopTargets": {
+        "Option\u003c\u0026str\u003e": 1,
+        "uid.map": 1,
+        "uid.map(str::trim)\n        .filter(|value| {\n            let lowercase = value.to_ascii_lowercase();\n            if value.is_empty()\n                || matches!(lowercase.as_str(), \"0\" | \"-0\" | \"-1\" | \"null\" | \"undefined\")\n            {\n                return false;\n            }\n            if value.chars().all(|c| c == '0') {\n                return false;\n            }\n            true\n        }).map": 1,
+        "uid.map(str::trim).filter": 1,
+        "value.chars": 1
+      },
+      "sourceRank": 4,
+      "step": 4,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname27:send_zalo_outreach_internalarity1:7occurrence73:def:src-tauri/src/commands.rs#3290:0:Function:send_zalo_outreach_internalscope54:scope:src-tauri/src/commands.rs#3290:0-4521:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "send_zalo_outreach_internal",
+      "process": "Send_zalo_outreach -\u003e Normalize_phone_digits",
+      "processRank": 3,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 393
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 393
+      },
+      "resolutionGapCount": 393,
+      "resolutionGapKinds": {
+        "unresolved_access": 19,
+        "unresolved_call": 350,
+        "unresolved_type_reference": 24
+      },
+      "resolutionGapTopTargets": {
+        "String": 22,
+        "app.emit": 54,
+        "conn_mutex.lock": 16,
+        "display_total.max": 16,
+        "msg.clone": 18
+      },
+      "sourceRank": 2,
+      "step": 2,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname12:is_vn_mobilearity1:1occurrence58:def:src-tauri/src/commands.rs#3002:0:Function:is_vn_mobilescope54:scope:src-tauri/src/commands.rs#3002:0-3010:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "is_vn_mobile",
+      "process": "Send_zalo_outreach -\u003e Normalize_phone_digits",
+      "processRank": 3,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 3
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 3
+      },
+      "resolutionGapCount": 3,
+      "resolutionGapKinds": {
+        "unresolved_call": 1,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "String": 1,
+        "normalized.len": 1,
+        "str": 1
+      },
+      "sourceRank": 3,
+      "step": 3,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname22:normalize_phone_digitsarity1:1occurrence68:def:src-tauri/src/commands.rs#2975:0:Function:normalize_phone_digitsscope54:scope:src-tauri/src/commands.rs#2975:0-3000:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "normalize_phone_digits",
+      "process": "Send_zalo_outreach -\u003e Normalize_phone_digits",
+      "processRank": 3,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 11
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 11
+      },
+      "resolutionGapCount": 11,
+      "resolutionGapKinds": {
+        "unresolved_call": 8,
+        "unresolved_type_reference": 3
+      },
+      "resolutionGapTopTargets": {
+        "String": 1,
+        "c.is_ascii_digit": 2,
+        "char": 1,
+        "digits.strip_prefix": 2,
+        "phone.find": 1
+      },
+      "sourceRank": 4,
+      "step": 4,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname19:start_zalo_outreacharity1:8occurrence65:def:src-tauri/src/commands.rs#3065:0:Function:start_zalo_outreachscope54:scope:src-tauri/src/commands.rs#3065:0-3187:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "start_zalo_outreach",
+      "process": "Start_zalo_outreach -\u003e Sanitize_valid_zalo_uid",
+      "processRank": 4,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 52
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 52
+      },
+      "resolutionGapCount": 52,
+      "resolutionGapKinds": {
+        "unresolved_access": 5,
+        "unresolved_call": 37,
+        "unresolved_type_reference": 10
+      },
+      "resolutionGapTopTargets": {
+        "DbState": 2,
+        "Ok": 3,
+        "Option\u003cu64\u003e": 2,
+        "app_handle.emit": 3,
+        "app_handle_clone.emit": 2
+      },
+      "sourceRank": 1,
+      "step": 1,
+      "type": "Function"
+    }
+  ],
+  "processes": [
+    {
+      "ID": "proc_46_startcampaign",
+      "Label": "StartCampaign -\u003e NormalizePhoneDigits",
+      "ProcessType": "cross_community",
+      "StepCount": 5
+    },
+    {
+      "ID": "proc_80_send_zalo_outreach",
+      "Label": "Send_zalo_outreach -\u003e Sanitize_valid_zalo_uid",
+      "ProcessType": "cross_community",
+      "StepCount": 4
+    },
+    {
+      "ID": "proc_78_send_zalo_outreach",
+      "Label": "Send_zalo_outreach -\u003e Normalize_phone_digits",
+      "ProcessType": "cross_community",
+      "StepCount": 4
+    },
+    {
+      "ID": "proc_83_start_zalo_outreach",
+      "Label": "Start_zalo_outreach -\u003e Sanitize_valid_zalo_uid",
+      "ProcessType": "cross_community",
+      "StepCount": 4
+    },
+    {
+      "ID": "proc_81_start_zalo_outreach",
+      "Label": "Start_zalo_outreach -\u003e Normalize_phone_digits",
+      "ProcessType": "cross_community",
+      "StepCount": 4
+    }
+  ],
+  "query": "normalize_phone_digits is_valid_zalo_lead_target send_zalo_outreach_internal",
+  "queryCapabilities": [
+    {
+      "description": "Find likely code areas from broad natural-language intent.",
+      "id": "concept_discovery",
+      "matchedTokens": [],
+      "name": "Concept discovery"
+    }
+  ],
+  "semanticStatus": {
+    "schemaVersion": "semantic_app_functional_v1",
+    "appLayer": {
+      "field": "appLayer",
+      "status": "complete",
+      "required": true,
+      "totalNodes": 93377,
+      "nodesWithField": 93377,
+      "missingNodes": 0,
+      "unknownNodes": 90958,
+      "nodesWithSource": 93377,
+      "missingSourceNodes": 0,
+      "staleIncompleteSchemaEvidence": false
+    },
+    "functionalArea": {
+      "field": "functionalArea",
+      "status": "complete",
+      "required": true,
+      "totalNodes": 93377,
+      "nodesWithField": 93377,
+      "missingNodes": 0,
+      "unknownNodes": 90958,
+      "nodesWithSource": 93377,
+      "missingSourceNodes": 0,
+      "staleIncompleteSchemaEvidence": false
+    }
+  }
+}

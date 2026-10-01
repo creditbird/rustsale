@@ -1,0 +1,50 @@
+bun test v1.4.0 (34cbb9a40)
+
+src/lib/services/__tests__/autostartService.spec.ts:
+(pass) autostartService > isAutostartEnabled returns true when plugin reports enabled [0.34ms]
+(pass) autostartService > isAutostartEnabled returns false when plugin reports disabled [0.09ms]
+[autostartService] Failed to check autostart status: warn: Plugin error or non-desktop environment
+      at isEnabled (/home/arch/Project/test/RustSale_v2/src/lib/services/__tests__/autostartService.spec.ts:10:36)
+      at isAutostartEnabled (/home/arch/Project/test/RustSale_v2/src/lib/services/autostartService.ts:9:18)
+      at <anonymous> (/home/arch/Project/test/RustSale_v2/src/lib/services/__tests__/autostartService.spec.ts:49:27)
+
+(pass) autostartService > isAutostartEnabled gracefully returns false on plugin error or non-desktop environment [0.23ms]
+(pass) autostartService > setAutostart(true) invokes enable() [0.32ms]
+(pass) autostartService > setAutostart(false) invokes disable() [0.12ms]
+[autostartService] Failed to set autostart status:  9 |   isEnabled: async () => {
+10 |     if (mockShouldThrow) throw new Error('Plugin error or non-desktop environment');
+11 |     return mockIsEnabledState;
+12 |   },
+13 |   enable: async () => {
+14 |     if (mockShouldThrow) throw new Error('Permission denied');
+                                        ^
+error: Permission denied
+      at enable (/home/arch/Project/test/RustSale_v2/src/lib/services/__tests__/autostartService.spec.ts:14:36)
+      at setAutostart (/home/arch/Project/test/RustSale_v2/src/lib/services/autostartService.ts:22:13)
+      at <anonymous> (/home/arch/Project/test/RustSale_v2/src/lib/services/__tests__/autostartService.spec.ts:70:18)
+
+[autostartService] Failed to set autostart status: 14 |     if (mockShouldThrow) throw new Error('Permission denied');
+15 |     enableCallCount += 1;
+16 |     mockIsEnabledState = true;
+17 |   },
+18 |   disable: async () => {
+19 |     if (mockShouldThrow) throw new Error('Permission denied');
+                                        ^
+error: Permission denied
+      at disable (/home/arch/Project/test/RustSale_v2/src/lib/services/__tests__/autostartService.spec.ts:19:36)
+      at setAutostart (/home/arch/Project/test/RustSale_v2/src/lib/services/autostartService.ts:24:13)
+      at <anonymous> (/home/arch/Project/test/RustSale_v2/src/lib/services/__tests__/autostartService.spec.ts:71:18)
+
+(pass) autostartService > setAutostart throws when plugin fails [0.39ms]
+
+src/lib/components/settings/__tests__/NotificationSettings.spec.ts:
+(pass) NotificationSettings component (E2 Component Mock Verification) > E2-vi: renders fully localized Vietnamese UI elements and badges [284.11ms]
+(pass) NotificationSettings component (E2 Component Mock Verification) > E2-en: renders fully localized English UI elements and badges [44.07ms]
+(pass) NotificationSettings component (E2 Component Mock Verification) > E2-dnd: renders DND active alert with localized disable button when DND is on [36.13ms]
+(pass) NotificationSettings component (E2 Component Mock Verification) > E2-toggle: toggling all 6 settings switches updates state and invokes backend commands [30.28ms]
+(pass) NotificationSettings component (E2 Component Mock Verification) > E2-rollback: reverts autostart switch and shows error toast when backend call fails [42.77ms]
+
+ 11 pass
+ 0 fail
+ 46 expect() calls
+Ran 11 tests across 2 files. [9.49s]

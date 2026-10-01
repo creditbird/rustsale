@@ -1,0 +1,943 @@
+{
+  "definitions": [
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname33:filter_outreachable_zalo_lead_idsarity1:2occurrence79:def:src-tauri/src/commands.rs#2882:0:Function:filter_outreachable_zalo_lead_idsscope54:scope:src-tauri/src/commands.rs#2882:0-2924:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "filter_outreachable_zalo_lead_ids",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 1,
+      "resolutionGapActionability": {
+        "review": 25
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 25
+      },
+      "resolutionGapCount": 25,
+      "resolutionGapKinds": {
+        "unresolved_call": 23,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "Connection": 1,
+        "Ok": 3,
+        "invalid_ids.push": 2,
+        "new": 4,
+        "row.get": 2
+      },
+      "score": 148,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename22:resolveSelectedLeadIdsarity0:occurrence80:def:src/lib/components/ZaloOutreach.svelte#551:2:Function:resolveSelectedLeadIdsscope65:scope:src/lib/components/ZaloOutreach.svelte#551:2-559:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "resolveSelectedLeadIds",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 2,
+      "resolutionGapActionability": {
+        "review": 10
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 10
+      },
+      "resolutionGapCount": 10,
+      "resolutionGapKinds": {
+        "unresolved_access": 3,
+        "unresolved_call": 5,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "Promise": 1,
+        "l.id": 1,
+        "lead.phone": 1,
+        "lead.phone.trim": 1,
+        "leads.find": 2
+      },
+      "score": 106,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename18:currentLeadFiltersarity0:occurrence76:def:src/lib/components/ZaloOutreach.svelte#191:2:Function:currentLeadFiltersscope65:scope:src/lib/components/ZaloOutreach.svelte#191:2-202:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "currentLeadFilters",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 3,
+      "resolutionGapActionability": {
+        "review": 1
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 1
+      },
+      "resolutionGapCount": 1,
+      "resolutionGapKinds": {
+        "unresolved_call": 1
+      },
+      "resolutionGapTopTargets": {
+        "leadSearchQuery.trim": 1
+      },
+      "score": 96,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname34:resolve_outreach_lead_ids_internalarity1:3occurrence79:def:src-tauri/src/commands.rs#219:0:Function:resolve_outreach_lead_ids_internalscope52:scope:src-tauri/src/commands.rs#219:0-240:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "resolve_outreach_lead_ids_internal",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 4,
+      "resolutionGapActionability": {
+        "review": 23
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 23
+      },
+      "resolutionGapCount": 23,
+      "resolutionGapKinds": {
+        "unresolved_access": 2,
+        "unresolved_call": 20,
+        "unresolved_type_reference": 1
+      },
+      "resolutionGapTopTargets": {
+        "Connection": 1,
+        "Err": 1,
+        "Some": 2,
+        "_": 2,
+        "error.to_string": 3
+      },
+      "score": 93,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname27:send_zalo_outreach_internalarity1:7occurrence73:def:src-tauri/src/commands.rs#3175:0:Function:send_zalo_outreach_internalscope54:scope:src-tauri/src/commands.rs#3175:0-4380:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "send_zalo_outreach_internal",
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "rank": 5,
+      "resolutionGapActionability": {
+        "review": 374
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 374
+      },
+      "resolutionGapCount": 374,
+      "resolutionGapKinds": {
+        "unresolved_access": 19,
+        "unresolved_call": 331,
+        "unresolved_type_reference": 24
+      },
+      "resolutionGapTopTargets": {
+        "String": 22,
+        "app.emit": 54,
+        "conn_mutex.lock": 16,
+        "display_total.max": 16,
+        "msg.clone": 18
+      },
+      "score": 93,
+      "type": "Function"
+    }
+  ],
+  "fileLayer": {
+    "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+    "filesReturned": 5,
+    "sampleLimit": 5
+  },
+  "files": [
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname11:delete_leadarity1:2occurrence56:def:src-tauri/src/commands.rs#921:0:Function:delete_leadscope52:scope:src-tauri/src/commands.rs#921:0-942:1:Functionowner0:",
+          "name": "delete_lead",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname11:update_leadarity2:12occurrence56:def:src-tauri/src/commands.rs#823:0:Function:update_leadscope52:scope:src-tauri/src/commands.rs#823:0-844:1:Functionowner0:",
+          "name": "update_lead",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname16:extract_zalo_uidarity1:2occurrence62:def:src-tauri/src/commands.rs#2612:0:Function:extract_zalo_uidscope54:scope:src-tauri/src/commands.rs#2612:0-2659:1:Functionowner0:",
+          "name": "extract_zalo_uid",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname16:get_lead_detailsarity1:2occurrence61:def:src-tauri/src/commands.rs#356:0:Function:get_lead_detailsscope52:scope:src-tauri/src/commands.rs#356:0-362:1:Functionowner0:",
+          "name": "get_lead_details",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file25:src-tauri/src/commands.rsname16:require_zalo_uidarity1:1occurrence62:def:src-tauri/src/commands.rs#1211:0:Function:require_zalo_uidscope54:scope:src-tauri/src/commands.rs#1211:0-1216:1:Functionowner0:",
+          "name": "require_zalo_uid",
+          "type": "Function"
+        }
+      ],
+      "path": "src-tauri/src/commands.rs",
+      "rank": 1,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 6,
+        "linkedFlows": 15,
+        "linkedTests": 0,
+        "local": 380,
+        "outbound": 17,
+        "risk": "high",
+        "unresolved": 3966
+      },
+      "score": 7792,
+      "summary": {
+        "path": "src-tauri/src/commands.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 1263,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 6,
+        "outboundRefCount": 17,
+        "localRelationshipCount": 380,
+        "unresolved": 3966,
+        "linkedFlowCount": 15,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    },
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname22:default_outreach_queryarity1:0occurrence73:def:src-tauri/src/commands_test.rs#2616:4:Function:default_outreach_queryscope59:scope:src-tauri/src/commands_test.rs#2616:4-2627:5:Functionowner0:",
+          "name": "default_outreach_query",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname28:test_email_outreach_commandsarity1:0occurrence79:def:src-tauri/src/commands_test.rs#2388:4:Function:test_email_outreach_commandsscope59:scope:src-tauri/src/commands_test.rs#2388:4-2492:5:Functionowner0:",
+          "name": "test_email_outreach_commands",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname28:test_send_zalo_campaign_mockarity1:0occurrence79:def:src-tauri/src/commands_test.rs#1736:4:Function:test_send_zalo_campaign_mockscope59:scope:src-tauri/src/commands_test.rs#1736:4-1936:5:Functionowner0:",
+          "name": "test_send_zalo_campaign_mock",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname28:test_send_zalo_outreach_mockarity1:0occurrence79:def:src-tauri/src/commands_test.rs#1225:4:Function:test_send_zalo_outreach_mockscope59:scope:src-tauri/src/commands_test.rs#1225:4-1420:5:Functionowner0:",
+          "name": "test_send_zalo_outreach_mock",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file30:src-tauri/src/commands_test.rsname33:test_zalo_qr_and_session_commandsarity1:0occurrence83:def:src-tauri/src/commands_test.rs#298:4:Function:test_zalo_qr_and_session_commandsscope57:scope:src-tauri/src/commands_test.rs#298:4-372:5:Functionowner0:",
+          "name": "test_zalo_qr_and_session_commands",
+          "type": "Function"
+        }
+      ],
+      "path": "src-tauri/src/commands_test.rs",
+      "rank": 2,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 0,
+        "linkedFlows": 0,
+        "linkedTests": 0,
+        "local": 75,
+        "outbound": 22,
+        "risk": "high",
+        "unresolved": 2191
+      },
+      "score": 6856,
+      "summary": {
+        "path": "src-tauri/src/commands_test.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 800,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 0,
+        "outboundRefCount": 22,
+        "localRelationshipCount": 75,
+        "unresolved": 2191,
+        "linkedFlowCount": 0,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    },
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname19:insert_zalo_accountarity1:2occurrence85:def:src-tauri/src/conversation/repository_test.rs#1170:0:Function:insert_zalo_accountscope74:scope:src-tauri/src/conversation/repository_test.rs#1170:0-1180:1:Functionowner0:",
+          "name": "insert_zalo_account",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname47:relink_lead_moves_all_identities_to_target_leadarity1:0occurrence113:def:src-tauri/src/conversation/repository_test.rs#3347:0:Function:relink_lead_moves_all_identities_to_target_leadscope74:scope:src-tauri/src/conversation/repository_test.rs#3347:0-3395:1:Functionowner0:",
+          "name": "relink_lead_moves_all_identities_to_target_lead",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname50:canonical_zalo_uid_batch_rolls_back_on_invalid_uidarity1:0occurrence115:def:src-tauri/src/conversation/repository_test.rs#251:0:Function:canonical_zalo_uid_batch_rolls_back_on_invalid_uidscope72:scope:src-tauri/src/conversation/repository_test.rs#251:0-282:1:Functionowner0:",
+          "name": "canonical_zalo_uid_batch_rolls_back_on_invalid_uid",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname54:unlink_lead_resets_lead_id_and_returns_conversation_idarity1:0occurrence120:def:src-tauri/src/conversation/repository_test.rs#3265:0:Function:unlink_lead_resets_lead_id_and_returns_conversation_idscope74:scope:src-tauri/src/conversation/repository_test.rs#3265:0-3300:1:Functionowner0:",
+          "name": "unlink_lead_resets_lead_id_and_returns_conversation_id",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file45:src-tauri/src/conversation/repository_test.rsname55:reaction_implicit_read_respects_anchor_send_time_cutoffarity1:0occurrence121:def:src-tauri/src/conversation/repository_test.rs#2971:0:Function:reaction_implicit_read_respects_anchor_send_time_cutoffscope74:scope:src-tauri/src/conversation/repository_test.rs#2971:0-3032:1:Functionowner0:",
+          "name": "reaction_implicit_read_respects_anchor_send_time_cutoff",
+          "type": "Function"
+        }
+      ],
+      "path": "src-tauri/src/conversation/repository_test.rs",
+      "rank": 3,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 0,
+        "linkedFlows": 0,
+        "linkedTests": 0,
+        "local": 113,
+        "outbound": 113,
+        "risk": "high",
+        "unresolved": 3337
+      },
+      "score": 3608,
+      "summary": {
+        "path": "src-tauri/src/conversation/repository_test.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 786,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 0,
+        "outboundRefCount": 113,
+        "localRelationshipCount": 113,
+        "unresolved": 3337,
+        "linkedFlowCount": 0,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    },
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file40:src-tauri/src/conversation/repository.rsname18:validated_zalo_uidarity1:1occurrence79:def:src-tauri/src/conversation/repository.rs#5950:0:Function:validated_zalo_uidscope69:scope:src-tauri/src/conversation/repository.rs#5950:0-5959:1:Functionowner0:",
+          "name": "validated_zalo_uid",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file40:src-tauri/src/conversation/repository.rsname24:canonicalize_zalo_uid_txarity1:4occurrence85:def:src-tauri/src/conversation/repository.rs#5961:0:Function:canonicalize_zalo_uid_txscope69:scope:src-tauri/src/conversation/repository.rs#5961:0-6201:1:Functionowner0:",
+          "name": "canonicalize_zalo_uid_tx",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file40:src-tauri/src/conversation/repository.rsname29:exact_lead_id_for_zalo_uid_txarity1:2occurrence90:def:src-tauri/src/conversation/repository.rs#5921:0:Function:exact_lead_id_for_zalo_uid_txscope69:scope:src-tauri/src/conversation/repository.rs#5921:0-5941:1:Functionowner0:",
+          "name": "exact_lead_id_for_zalo_uid_tx",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file40:src-tauri/src/conversation/repository.rsname29:link_zalo_sessions_to_accountarity1:3occurrence90:def:src-tauri/src/conversation/repository.rs#6251:0:Function:link_zalo_sessions_to_accountscope69:scope:src-tauri/src/conversation/repository.rs#6251:0-6267:1:Functionowner0:",
+          "name": "link_zalo_sessions_to_account",
+          "type": "Function"
+        },
+        {
+          "id": "Method:file40:src-tauri/src/conversation/repository.rsname34:ConversationRepository.relink_leadarity1:3occurrence70:def:src-tauri/src/conversation/repository.rs#2186:4:Method:relink_leadscope69:scope:src-tauri/src/conversation/repository.rs#2186:4-2212:5:Functionowner80:def:src-tauri/src/conversation/repository.rs#327:0:Struct:ConversationRepository",
+          "name": "relink_lead",
+          "type": "Method"
+        }
+      ],
+      "path": "src-tauri/src/conversation/repository.rs",
+      "rank": 4,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 127,
+        "linkedFlows": 10,
+        "linkedTests": 0,
+        "local": 460,
+        "outbound": 43,
+        "risk": "high",
+        "unresolved": 2794
+      },
+      "score": 2744,
+      "summary": {
+        "path": "src-tauri/src/conversation/repository.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 979,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 127,
+        "outboundRefCount": 43,
+        "localRelationshipCount": 460,
+        "unresolved": 2794,
+        "linkedFlowCount": 10,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    },
+    {
+      "matchedSymbols": [
+        {
+          "id": "Function:file24:src-tauri/src/db_test.rsname25:test_zalo_session_helpersarity1:0occurrence69:def:src-tauri/src/db_test.rs#400:4:Function:test_zalo_session_helpersscope51:scope:src-tauri/src/db_test.rs#400:4-466:5:Functionowner0:",
+          "name": "test_zalo_session_helpers",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file24:src-tauri/src/db_test.rsname27:test_outreach_template_crudarity1:0occurrence71:def:src-tauri/src/db_test.rs#363:4:Function:test_outreach_template_crudscope51:scope:src-tauri/src/db_test.rs#363:4-397:5:Functionowner0:",
+          "name": "test_outreach_template_crud",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file24:src-tauri/src/db_test.rsname28:test_lead_journey_state_crudarity1:0occurrence73:def:src-tauri/src/db_test.rs#1442:4:Function:test_lead_journey_state_crudscope53:scope:src-tauri/src/db_test.rs#1442:4-1493:5:Functionowner0:",
+          "name": "test_lead_journey_state_crud",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file24:src-tauri/src/db_test.rsname29:test_outreach_history_loggingarity1:0occurrence73:def:src-tauri/src/db_test.rs#652:4:Function:test_outreach_history_loggingscope51:scope:src-tauri/src/db_test.rs#652:4-699:5:Functionowner0:",
+          "name": "test_outreach_history_logging",
+          "type": "Function"
+        },
+        {
+          "id": "Function:file24:src-tauri/src/db_test.rsname32:test_email_outreach_tables_existarity1:0occurrence76:def:src-tauri/src/db_test.rs#702:4:Function:test_email_outreach_tables_existscope51:scope:src-tauri/src/db_test.rs#702:4-717:5:Functionowner0:",
+          "name": "test_email_outreach_tables_exist",
+          "type": "Function"
+        }
+      ],
+      "path": "src-tauri/src/db_test.rs",
+      "rank": 5,
+      "relationshipHints": {
+        "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts.",
+        "fileGroup": "",
+        "fileRole": "unknown",
+        "inbound": 0,
+        "linkedFlows": 0,
+        "linkedTests": 0,
+        "local": 0,
+        "outbound": 0,
+        "risk": "high",
+        "unresolved": 815
+      },
+      "score": 2436,
+      "summary": {
+        "path": "src-tauri/src/db_test.rs",
+        "language": "rust",
+        "kind": "source",
+        "fileRole": "unknown",
+        "appLayer": "unknown",
+        "functionalArea": "unknown",
+        "parseStatus": "parsed",
+        "symbolCount": 228,
+        "exportedSymbolCount": 0,
+        "inboundRefCount": 0,
+        "outboundRefCount": 0,
+        "localRelationshipCount": 0,
+        "unresolved": 815,
+        "linkedFlowCount": 0,
+        "linkedTestCount": 0,
+        "risk": "high",
+        "stale": false,
+        "changedSinceAnalyze": false
+      }
+    }
+  ],
+  "process_symbols": [
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename13:startCampaignarity0:occurrence71:def:src/lib/components/ZaloOutreach.svelte#569:2:Function:startCampaignscope65:scope:src/lib/components/ZaloOutreach.svelte#569:2-622:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "startCampaign",
+      "process": "StartCampaign -\u003e CurrentLeadFilters",
+      "processRank": 1,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 29
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 29
+      },
+      "resolutionGapCount": 29,
+      "resolutionGapKinds": {
+        "unresolved_access": 16,
+        "unresolved_call": 10,
+        "unresolved_type_reference": 3
+      },
+      "resolutionGapTopTargets": {
+        "Number": 3,
+        "campaignUnlistens.push": 3,
+        "event.payload": 6,
+        "event.payload.message": 4,
+        "listen": 6
+      },
+      "sourceRank": 1,
+      "step": 1,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename14:refreshCrmDataarity0:occurrence72:def:src/lib/components/ZaloOutreach.svelte#322:2:Function:refreshCrmDatascope65:scope:src/lib/components/ZaloOutreach.svelte#322:2-328:3:Functionowner0:",
+      "matchReasons": [
+        "id",
+        "filePath"
+      ],
+      "name": "refreshCrmData",
+      "process": "StartCampaign -\u003e CurrentLeadFilters",
+      "processRank": 1,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 1
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 1
+      },
+      "resolutionGapCount": 1,
+      "resolutionGapKinds": {
+        "unresolved_type_reference": 1
+      },
+      "resolutionGapTopTargets": {
+        "Promise": 1
+      },
+      "sourceRank": 2,
+      "step": 2,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename11:reloadLeadsarity0:occurrence69:def:src/lib/components/ZaloOutreach.svelte#225:2:Function:reloadLeadsscope65:scope:src/lib/components/ZaloOutreach.svelte#225:2-280:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "reloadLeads",
+      "process": "StartCampaign -\u003e CurrentLeadFilters",
+      "processRank": 1,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 22
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 22
+      },
+      "resolutionGapCount": 22,
+      "resolutionGapKinds": {
+        "unresolved_access": 9,
+        "unresolved_call": 6,
+        "unresolved_type_reference": 7
+      },
+      "resolutionGapTopTargets": {
+        "JSON.stringify": 2,
+        "Promise": 1,
+        "options.cursor": 2,
+        "options.resetSelection": 2,
+        "pageCursors.slice": 2
+      },
+      "sourceRank": 3,
+      "step": 3,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename18:currentLeadFiltersarity0:occurrence76:def:src/lib/components/ZaloOutreach.svelte#191:2:Function:currentLeadFiltersscope65:scope:src/lib/components/ZaloOutreach.svelte#191:2-202:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "currentLeadFilters",
+      "process": "StartCampaign -\u003e CurrentLeadFilters",
+      "processRank": 1,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 1
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 1
+      },
+      "resolutionGapCount": 1,
+      "resolutionGapKinds": {
+        "unresolved_call": 1
+      },
+      "resolutionGapTopTargets": {
+        "leadSearchQuery.trim": 1
+      },
+      "sourceRank": 4,
+      "step": 4,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename16:leadPageCacheKeyarity0:occurrence74:def:src/lib/components/ZaloOutreach.svelte#204:2:Function:leadPageCacheKeyscope65:scope:src/lib/components/ZaloOutreach.svelte#204:2-206:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "leadPageCacheKey",
+      "process": "StartCampaign -\u003e LeadPageCacheKey",
+      "processRank": 2,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 1
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 1
+      },
+      "resolutionGapCount": 1,
+      "resolutionGapKinds": {
+        "unresolved_call": 1
+      },
+      "resolutionGapTopTargets": {
+        "JSON.stringify": 1
+      },
+      "sourceRank": 4,
+      "step": 4,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src/lib/components/ZaloOutreach.svelte",
+      "functionalArea": "unknown",
+      "id": "Function:file38:src/lib/components/ZaloOutreach.sveltename18:resetLeadSelectionarity0:occurrence76:def:src/lib/components/ZaloOutreach.svelte#208:2:Function:resetLeadSelectionscope65:scope:src/lib/components/ZaloOutreach.svelte#208:2-212:3:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id",
+        "filePath"
+      ],
+      "name": "resetLeadSelection",
+      "process": "StartCampaign -\u003e ResetLeadSelection",
+      "processRank": 3,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "sourceRank": 4,
+      "step": 4,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname19:start_zalo_outreacharity1:8occurrence65:def:src-tauri/src/commands.rs#2931:0:Function:start_zalo_outreachscope54:scope:src-tauri/src/commands.rs#2931:0-3035:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "start_zalo_outreach",
+      "process": "Start_zalo_outreach -\u003e Default",
+      "processRank": 4,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 50
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 50
+      },
+      "resolutionGapCount": 50,
+      "resolutionGapKinds": {
+        "unresolved_access": 5,
+        "unresolved_call": 35,
+        "unresolved_type_reference": 10
+      },
+      "resolutionGapTopTargets": {
+        "DbState": 2,
+        "Ok": 3,
+        "Option\u003cu64\u003e": 2,
+        "app_handle.emit": 3,
+        "db_state.conn": 2
+      },
+      "sourceRank": 1,
+      "step": 1,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname27:send_zalo_outreach_internalarity1:7occurrence73:def:src-tauri/src/commands.rs#3175:0:Function:send_zalo_outreach_internalscope54:scope:src-tauri/src/commands.rs#3175:0-4380:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "send_zalo_outreach_internal",
+      "process": "Start_zalo_outreach -\u003e Default",
+      "processRank": 4,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 374
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 374
+      },
+      "resolutionGapCount": 374,
+      "resolutionGapKinds": {
+        "unresolved_access": 19,
+        "unresolved_call": 331,
+        "unresolved_type_reference": 24
+      },
+      "resolutionGapTopTargets": {
+        "String": 22,
+        "app.emit": 54,
+        "conn_mutex.lock": 16,
+        "display_total.max": 16,
+        "msg.clone": 18
+      },
+      "sourceRank": 2,
+      "step": 2,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname16:zalo_api_optionsarity1:0occurrence62:def:src-tauri/src/commands.rs#1175:0:Function:zalo_api_optionsscope54:scope:src-tauri/src/commands.rs#1175:0-1180:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "zalo_api_options",
+      "process": "Start_zalo_outreach -\u003e Default",
+      "processRank": 4,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 1
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 1
+      },
+      "resolutionGapCount": 1,
+      "resolutionGapKinds": {
+        "unresolved_call": 1
+      },
+      "resolutionGapTopTargets": {
+        "zca_rs": 1
+      },
+      "sourceRank": 3,
+      "step": 3,
+      "type": "Function"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Method:file25:src-tauri/src/commands.rsname29:OutreachProgressScope.defaultarity1:0occurrence51:def:src-tauri/src/commands.rs#3128:4:Method:defaultscope54:scope:src-tauri/src/commands.rs#3128:4-3135:5:Functionowner65:def:src-tauri/src/commands.rs#3120:0:Struct:OutreachProgressScope",
+      "matchReasons": [
+        "id"
+      ],
+      "name": "default",
+      "process": "Start_zalo_outreach -\u003e Default",
+      "processRank": 4,
+      "resolutionGapActionability": {
+        "review": 1
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 1
+      },
+      "resolutionGapCount": 1,
+      "resolutionGapKinds": {
+        "unresolved_call": 1
+      },
+      "resolutionGapTopTargets": {
+        "Self": 1
+      },
+      "sourceRank": 4,
+      "step": 4,
+      "type": "Method"
+    },
+    {
+      "appLayer": "unknown",
+      "filePath": "src-tauri/src/commands.rs",
+      "functionalArea": "unknown",
+      "id": "Function:file25:src-tauri/src/commands.rsname20:render_zalo_templatearity1:2occurrence66:def:src-tauri/src/commands.rs#3074:0:Function:render_zalo_templatescope54:scope:src-tauri/src/commands.rs#3074:0-3078:1:Functionowner0:",
+      "matchReasons": [
+        "name",
+        "id"
+      ],
+      "name": "render_zalo_template",
+      "process": "Start_zalo_outreach -\u003e Render_zalo_template",
+      "processRank": 5,
+      "queryLanes": [
+        "owner_discovery"
+      ],
+      "resolutionGapActionability": {
+        "review": 4
+      },
+      "resolutionGapClassifications": {
+        "unclassified": 4
+      },
+      "resolutionGapCount": 4,
+      "resolutionGapKinds": {
+        "unresolved_call": 2,
+        "unresolved_type_reference": 2
+      },
+      "resolutionGapTopTargets": {
+        "str": 2,
+        "template\n        .replace(\"[name]\", lead_name).replace": 1,
+        "template.replace": 1
+      },
+      "sourceRank": 3,
+      "step": 3,
+      "type": "Function"
+    }
+  ],
+  "processes": [
+    {
+      "ID": "proc_81_startcampaign",
+      "Label": "StartCampaign -\u003e CurrentLeadFilters",
+      "ProcessType": "cross_community",
+      "StepCount": 4
+    },
+    {
+      "ID": "proc_80_startcampaign",
+      "Label": "StartCampaign -\u003e LeadPageCacheKey",
+      "ProcessType": "cross_community",
+      "StepCount": 4
+    },
+    {
+      "ID": "proc_82_startcampaign",
+      "Label": "StartCampaign -\u003e ResetLeadSelection",
+      "ProcessType": "cross_community",
+      "StepCount": 4
+    },
+    {
+      "ID": "proc_78_start_zalo_outreach",
+      "Label": "Start_zalo_outreach -\u003e Default",
+      "ProcessType": "cross_community",
+      "StepCount": 4
+    },
+    {
+      "ID": "proc_203_start_zalo_outreach",
+      "Label": "Start_zalo_outreach -\u003e Render_zalo_template",
+      "ProcessType": "cross_community",
+      "StepCount": 3
+    }
+  ],
+  "query": "filter_outreachable_zalo_lead_ids start_zalo_outreach send_zalo_outreach",
+  "queryCapabilities": [
+    {
+      "description": "Find likely code areas from broad natural-language intent.",
+      "id": "concept_discovery",
+      "matchedTokens": [],
+      "name": "Concept discovery"
+    }
+  ],
+  "semanticStatus": {
+    "schemaVersion": "semantic_app_functional_v1",
+    "appLayer": {
+      "field": "appLayer",
+      "status": "complete",
+      "required": true,
+      "totalNodes": 92586,
+      "nodesWithField": 92586,
+      "missingNodes": 0,
+      "unknownNodes": 90385,
+      "nodesWithSource": 92586,
+      "missingSourceNodes": 0,
+      "staleIncompleteSchemaEvidence": false
+    },
+    "functionalArea": {
+      "field": "functionalArea",
+      "status": "complete",
+      "required": true,
+      "totalNodes": 92586,
+      "nodesWithField": 92586,
+      "missingNodes": 0,
+      "unknownNodes": 90385,
+      "nodesWithSource": 92586,
+      "missingSourceNodes": 0,
+      "staleIncompleteSchemaEvidence": false
+    }
+  }
+}

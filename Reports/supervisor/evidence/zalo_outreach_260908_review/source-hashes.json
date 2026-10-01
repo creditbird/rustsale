@@ -1,0 +1,7 @@
+{
+  "src-tauri/src/commands.rs": "3ac5f472d89b4a5877947020af1e686df716e57cf060a4b862909a62257ffa4d",
+  "src-tauri/src/commands_test.rs": "b6b9417ee4b571d375457d897d4b3a58d4e7c543bb069de0fe6957cb3e0e7f4d",
+  "src-tauri/vendor/zca-rs/src/models/user.rs": "bab6bd6e2b621a0e18b8c0a86dec04effefc98bb19c802def55bef3486c7cf16",
+  "src-tauri/vendor/zca-rs/src/apis/friend.rs": "3108203cfdf75dda24715b299ca7ca0cd1df533630e47faa2f9b318978ff8c9f",
+  "src/lib/components/ZaloOutreach.svelte": "ba1f3c8c1ad82ddcba34074c287c7fb195964c7f396cf7d7bdfc668c4b3cfa3a"
+}

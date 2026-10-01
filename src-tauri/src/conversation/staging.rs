@@ -257,31 +257,70 @@ impl ConversationAttachmentStager {
         target_path: &Path,
         file_size: u64,
     ) -> ConversationResult<StagedAttachmentResponse> {
-        let inferred_mime = infer::get_from_path(target_path)
+        let ext = Path::new(file_name)
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let ext_mime = match ext.as_str() {
+            "png" => Some("image/png"),
+            "jpg" | "jpeg" => Some("image/jpeg"),
+            "webp" => Some("image/webp"),
+            "gif" => Some("image/gif"),
+            "svg" => Some("image/svg+xml"),
+            "mp4" => Some("video/mp4"),
+            "mov" => Some("video/quicktime"),
+            "webm" => Some("video/webm"),
+            "3gp" => Some("video/3gpp"),
+            "mp3" => Some("audio/mpeg"),
+            "m4a" => Some("audio/m4a"),
+            "aac" => Some("audio/aac"),
+            "ogg" => Some("audio/ogg"),
+            "wav" => Some("audio/wav"),
+            "pdf" => Some("application/pdf"),
+            "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            "doc" => Some("application/msword"),
+            "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
+            "xls" => Some("application/vnd.ms-excel"),
+            "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+            "ppt" => Some("application/vnd.ms-powerpoint"),
+            "txt" => Some("text/plain"),
+            "csv" => Some("text/csv"),
+            "rtf" => Some("application/rtf"),
+            "json" => Some("application/json"),
+            "xml" => Some("application/xml"),
+            "zip" => Some("application/zip"),
+            "rar" => Some("application/vnd.rar"),
+            "7z" => Some("application/x-7z-compressed"),
+            "tar" => Some("application/x-tar"),
+            "gz" => Some("application/gzip"),
+            _ => None,
+        };
+
+        let raw_inferred = infer::get_from_path(target_path)
             .ok()
             .flatten()
-            .map(|kind| kind.mime_type().to_string())
-            .unwrap_or_else(|| {
-                let ext = Path::new(file_name)
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                match ext.as_str() {
-                    "png" => "image/png".to_string(),
-                    "jpg" | "jpeg" => "image/jpeg".to_string(),
-                    "webp" => "image/webp".to_string(),
-                    "gif" => "image/gif".to_string(),
-                    "mp4" => "video/mp4".to_string(),
-                    "mp3" => "audio/mpeg".to_string(),
-                    "pdf" => "application/pdf".to_string(),
-                    "txt" => "text/plain".to_string(),
-                    _ => "application/octet-stream".to_string(),
-                }
-            });
+            .map(|kind| kind.mime_type().to_string());
 
-        // Executable signature check
-        if inferred_mime == "application/x-executable"
+        let inferred_mime = match (raw_inferred, ext_mime) {
+            // If infer gives generic container (zip or octet-stream) but extension gives specific office/doc mime, prefer extension
+            (Some(inf), Some(by_ext)) if inf == "application/zip" || inf == "application/octet-stream" => {
+                by_ext.to_string()
+            }
+            (Some(inf), _) => inf,
+            (None, Some(by_ext)) => by_ext.to_string(),
+            (None, None) => "application/octet-stream".to_string(),
+        };
+
+        // Executable signature and extension check
+        let is_executable_ext = matches!(
+            ext.as_str(),
+            "exe" | "dll" | "so" | "dylib" | "bat" | "cmd" | "com" | "scr" | "msi" | "vbs"
+        );
+
+        if is_executable_ext
+            || inferred_mime == "application/x-executable"
             || inferred_mime == "application/x-dosexec"
             || inferred_mime == "application/x-sharedlib"
         {

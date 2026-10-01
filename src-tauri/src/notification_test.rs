@@ -350,3 +350,85 @@ async fn test_bounded_notification_queue_and_concurrency() {
     assert!(max_concurrency.load(Ordering::SeqCst) <= 4, "Concurrency must never exceed 4");
     assert_eq!(active_workers.load(Ordering::SeqCst), 0, "All worker permits must be released");
 }
+
+#[test]
+fn test_notification_settings_sqlite_roundtrip_and_restart() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE app_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+
+    // 1. Initial load from empty table yields defaults
+    let initial = load_notification_settings(&conn);
+    assert!(initial.enabled);
+    assert!(initial.sound_enabled);
+    assert!(!initial.privacy_mode);
+    assert!(!initial.mute_groups);
+
+    // 2. Save modified settings (user turns off notifications and sounds, enables privacy and mute_groups)
+    let modified = NotificationSettings {
+        enabled: false,
+        sound_enabled: false,
+        privacy_mode: true,
+        mute_groups: true,
+    };
+    save_notification_settings(&conn, &modified).unwrap();
+
+    // 3. Reload from SQLite and assert exact persistence
+    let loaded = load_notification_settings(&conn);
+    assert_eq!(loaded, modified);
+    assert_eq!(loaded.enabled, false);
+    assert_eq!(loaded.sound_enabled, false);
+    assert_eq!(loaded.privacy_mode, true);
+    assert_eq!(loaded.mute_groups, true);
+
+    // 4. Simulate application restart: instantiate default manager, then restore from SQLite
+    let fresh_manager = NotificationManager::default();
+    assert!(fresh_manager.get_settings().enabled); // starts as true by default
+    fresh_manager.update_settings(loaded);
+
+    // Asserts values restored properly after simulated restart
+    assert_eq!(fresh_manager.get_settings(), modified);
+    assert!(!fresh_manager.get_settings().enabled);
+}
+
+#[tokio::test]
+async fn test_update_notification_settings_command_persists_to_db() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE app_metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)",
+        [],
+    )
+    .unwrap();
+
+    let db_state = crate::commands::DbState {
+        conn: std::sync::Mutex::new(conn),
+    };
+
+    let app = tauri::test::mock_builder()
+        .manage(std::sync::Arc::new(NotificationManager::default()))
+        .manage(db_state)
+        .build(tauri::generate_context!())
+        .expect("failed to build mock app");
+
+    let manager_state = app.state::<std::sync::Arc<NotificationManager>>();
+
+    let modified = NotificationSettings {
+        enabled: false,
+        sound_enabled: false,
+        privacy_mode: true,
+        mute_groups: true,
+    };
+
+    let res = update_notification_settings(app.handle().clone(), modified.clone(), manager_state);
+    assert!(res.is_ok());
+
+    // Verify DB received the update
+    let db_state_ref = app.state::<crate::commands::DbState>();
+    let db_conn = db_state_ref.conn.lock().unwrap();
+    let loaded = load_notification_settings(&db_conn);
+    assert_eq!(loaded, modified);
+    assert_eq!(loaded.enabled, false);
+}

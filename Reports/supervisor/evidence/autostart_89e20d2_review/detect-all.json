@@ -1,0 +1,17 @@
+{
+  "affected_files": [],
+  "affected_processes": [],
+  "changed_files": [],
+  "changed_symbols": [],
+  "fileLayer": {
+    "affectedFiles": 0,
+    "changedFiles": 0,
+    "derivedEdgesNote": "File relationship groups are projections derived from symbol and source-site graph facts; canonical graph relationships remain symbol/source-site facts."
+  },
+  "summary": {
+    "affected_count": 0,
+    "changed_count": 0,
+    "message": "No changes detected.",
+    "risk_level": "none"
+  }
+}

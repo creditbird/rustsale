@@ -256,3 +256,72 @@ async fn staging_errors_do_not_expose_source_paths() {
         .message
         .contains(&dir.path().to_string_lossy().to_string()));
 }
+
+#[tokio::test]
+async fn staging_detects_office_and_archive_document_mimes() {
+    let (stager, dir) = setup_test_stager();
+    let source_dir = dir.path().join("source_docs");
+    fs::create_dir_all(&source_dir).unwrap();
+
+    let docx_path = source_dir.join("test_document.docx");
+    fs::write(&docx_path, b"PK\x03\x04mock_docx_bytes").unwrap();
+
+    let xlsx_path = source_dir.join("financial_report.xlsx");
+    fs::write(&xlsx_path, b"PK\x03\x04mock_xlsx_bytes").unwrap();
+
+    let pptx_path = source_dir.join("presentation.pptx");
+    fs::write(&pptx_path, b"PK\x03\x04mock_pptx_bytes").unwrap();
+
+    let csv_path = source_dir.join("contacts.csv");
+    fs::write(&csv_path, b"name,phone\nAlice,0901234567\n").unwrap();
+
+    let res = stager
+        .stage_paths(
+            1,
+            vec![
+                docx_path.to_string_lossy().to_string(),
+                xlsx_path.to_string_lossy().to_string(),
+                pptx_path.to_string_lossy().to_string(),
+                csv_path.to_string_lossy().to_string(),
+            ],
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(res.len(), 4);
+    assert_eq!(res[0].media_type, "file");
+    assert_eq!(
+        res[0].mime_type,
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    );
+    assert_eq!(res[1].media_type, "file");
+    assert_eq!(
+        res[1].mime_type,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    );
+    assert_eq!(res[2].media_type, "file");
+    assert_eq!(
+        res[2].mime_type,
+        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    );
+    assert_eq!(res[3].media_type, "file");
+    assert_eq!(res[3].mime_type, "text/csv");
+}
+
+#[tokio::test]
+async fn staging_blocks_executable_file_extensions() {
+    let (stager, dir) = setup_test_stager();
+    let source_dir = dir.path().join("source_danger");
+    fs::create_dir_all(&source_dir).unwrap();
+
+    let exe_path = source_dir.join("malicious.exe");
+    fs::write(&exe_path, b"MZ\x90\x00executable").unwrap();
+
+    let err = stager
+        .stage_paths(1, vec![exe_path.to_string_lossy().to_string()])
+        .await
+        .unwrap_err();
+
+    assert_eq!(err.code, super::error::ConversationErrorCode::UnsupportedMedia);
+    assert!(err.message.contains("Executable files are not supported"));
+}

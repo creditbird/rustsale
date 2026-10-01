@@ -21,8 +21,13 @@ const richCapabilities: ConversationCapabilities = {
   maxFileSizeBytes: 50 * 1024 * 1024,
   supportedImageTypes: ['image/png', 'image/jpeg'],
   supportedVideoTypes: ['video/mp4'],
-  supportedAudioTypes: ['audio/mpeg'],
-  supportedDocTypes: ['application/pdf', 'text/plain'],
+  supportedAudioTypes: ['audio/mpeg', 'audio/ogg', 'audio/wav'],
+  supportedDocTypes: [
+    'application/pdf',
+    'text/plain',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/octet-stream'
+  ],
   supportsStickers: true,
   supportsQuoteReply: true,
   supportsRecall: true,
@@ -86,17 +91,26 @@ const mockStagePaths = mock(
     _conversationId: number,
     paths: string[]
   ): Promise<StagedConversationAttachment[]> =>
-    paths.map((path, index) => ({
-      stagedAttachmentId: index === 0 ? 'stage-a' : 'stage-b',
-      mediaType: index === 0 ? 'image' : 'file',
-      mimeType: index === 0 ? 'image/png' : 'application/pdf',
-      fileName: path.split('/').pop() ?? 'file',
-      fileSizeBytes: (index + 1) * 1024,
-      width: index === 0 ? 100 : null,
-      height: index === 0 ? 100 : null,
-      durationSeconds: null,
-      expiresAt: '2026-08-03T10:00:00.000Z'
-    }))
+    paths.map((path, index) => {
+      const isDocx = path.endsWith('.docx');
+      const mimeType = isDocx
+        ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
+        : index === 0
+          ? 'image/png'
+          : 'application/pdf';
+      const mediaType = isDocx ? 'file' : index === 0 ? 'image' : 'file';
+      return {
+        stagedAttachmentId: index === 0 ? 'stage-a' : index === 1 ? 'stage-b' : `stage-${index}`,
+        mediaType,
+        mimeType,
+        fileName: path.split('/').pop() ?? 'file',
+        fileSizeBytes: (index + 1) * 1024,
+        width: mediaType === 'image' ? 100 : null,
+        height: mediaType === 'image' ? 100 : null,
+        durationSeconds: null,
+        expiresAt: '2026-08-03T10:00:00.000Z'
+      };
+    })
 );
 const mockStageClipboard = mock(
   async (_request: unknown): Promise<StagedConversationAttachment> => ({
@@ -295,6 +309,24 @@ describe('MessageComposer', () => {
       { clientPartId: expect.any(String), type: 'text', text: 'Có file' },
       { clientPartId: expect.any(String), type: 'attachment', stagedAttachmentId: 'stage-a' },
       { clientPartId: expect.any(String), type: 'attachment', stagedAttachmentId: 'stage-b' }
+    ]);
+  });
+
+  test('stages and sends docx document attachments without validation error', async () => {
+    mockOpenFilePicker.mockImplementationOnce(async () => ['/tmp/proposal.docx']);
+    render(MessageComposer, { item: baseItem, runtime: baseRuntime });
+
+    await fireEvent.click(screen.getByTestId('attach-file-btn'));
+    await waitFor(() => expect(screen.getAllByTestId('attachment-item')).toHaveLength(1));
+
+    const itemEl = screen.getByTestId('attachment-item');
+    expect(itemEl.textContent).toContain('proposal.docx');
+    expect(screen.queryByText(/is not supported/i)).toBeNull();
+
+    await fireEvent.click(screen.getByRole('button', { name: 'Send' }));
+    expect(mockSendConversationBatch).toHaveBeenCalledTimes(1);
+    expect(mockSendConversationBatch.mock.calls[0][0].parts).toEqual([
+      { clientPartId: expect.any(String), type: 'attachment', stagedAttachmentId: 'stage-a' }
     ]);
   });
 

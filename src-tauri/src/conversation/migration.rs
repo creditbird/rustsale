@@ -245,7 +245,37 @@ pub fn migrate(conn: &Connection) -> Result<()> {
     reset_zalo_reaction_history_once(conn)?;
     cleanup_corrupted_whatsapp_attachments(conn)?;
     ensure_conversation_deltas_schema(conn)?;
+    upgrade_channel_account_capabilities(conn)?;
 
+    Ok(())
+}
+
+fn upgrade_channel_account_capabilities(conn: &Connection) -> Result<()> {
+    let zalo_json = serde_json::to_string(
+        &crate::conversation::types::ConversationCapabilities::zalo_phase_one(),
+    )
+    .unwrap_or_default();
+    let wa_json = serde_json::to_string(
+        &crate::conversation::types::ConversationCapabilities::whatsapp(),
+    )
+    .unwrap_or_default();
+    let fb_json = serde_json::to_string(
+        &crate::conversation::types::ConversationCapabilities::messenger(),
+    )
+    .unwrap_or_default();
+
+    conn.execute(
+        "UPDATE channel_accounts SET capabilities_json = ?1 WHERE channel = 'zalo' AND (capabilities_json IS NULL OR capabilities_json = '' OR capabilities_json = '{}' OR capabilities_json NOT LIKE '%wordprocessingml%')",
+        params![zalo_json],
+    )?;
+    conn.execute(
+        "UPDATE channel_accounts SET capabilities_json = ?1 WHERE channel = 'whatsapp' AND (capabilities_json IS NULL OR capabilities_json = '' OR capabilities_json = '{}' OR capabilities_json NOT LIKE '%wordprocessingml%')",
+        params![wa_json],
+    )?;
+    conn.execute(
+        "UPDATE channel_accounts SET capabilities_json = ?1 WHERE channel = 'messenger' AND (capabilities_json IS NULL OR capabilities_json = '' OR capabilities_json = '{}' OR capabilities_json NOT LIKE '%wordprocessingml%')",
+        params![fb_json],
+    )?;
     Ok(())
 }
 

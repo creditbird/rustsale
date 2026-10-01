@@ -1,0 +1,50 @@
+$ bun run i18n:compile && svelte-kit sync && svelte-check --tsconfig ./tsconfig.json
+$ paraglide-js compile --project ./project.inlang --outdir ./src/lib/paraglide --emit-ts-declarations
+ℹ [paraglide-js] Compiling inlang project ...
+✔ [paraglide-js] Successfully compiled inlang project.
+Loading svelte-check in workspace: /home/arch/Project/test/RustSale_v2
+Getting Svelte diagnostics...
+
+/home/arch/Project/test/RustSale_v2/src/lib/components/LeadDetails.svelte:55:34
+Warn: This reference only captures the initial value of `initialLead`. Did you mean to reference it inside a closure instead?
+https://svelte.dev/e/state_referenced_locally (svelte)
+
+  let lead = $state<Lead | null>(initialLead);
+  let activities = $state<Activity[]>([]);
+
+/home/arch/Project/test/RustSale_v2/src/lib/components/Dashboard.svelte:63:49
+Warn: This reference only captures the initial value of `targetRevenue`. Did you mean to reference it inside a derived instead?
+https://svelte.dev/e/state_referenced_locally (svelte)
+  let targetRevenue = $state(getInitialTarget());
+  let stretchRevenue = $state(getInitialStretch(targetRevenue));
+  let showTargetModal = $state(false);
+
+/home/arch/Project/test/RustSale_v2/src/lib/components/Dashboard.svelte:65:32
+Warn: This reference only captures the initial value of `targetRevenue`. Did you mean to reference it inside a closure instead?
+https://svelte.dev/e/state_referenced_locally (svelte)
+  let showTargetModal = $state(false);
+  let editTargetInput = $state(targetRevenue);
+  let editStretchInput = $state(stretchRevenue);
+
+/home/arch/Project/test/RustSale_v2/src/lib/components/Dashboard.svelte:66:33
+Warn: This reference only captures the initial value of `stretchRevenue`. Did you mean to reference it inside a closure instead?
+https://svelte.dev/e/state_referenced_locally (svelte)
+  let editTargetInput = $state(targetRevenue);
+  let editStretchInput = $state(stretchRevenue);
+
+/home/arch/Project/test/RustSale_v2/src/lib/components/LicenseModal.svelte:578:19
+Warn: A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control (svelte)
+                <div>
+                  <label class="text-xs text-muted-foreground block mb-1">Email</label>
+                  <input
+
+/home/arch/Project/test/RustSale_v2/src/lib/components/LicenseModal.svelte:587:19
+Warn: A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control (svelte)
+                <div>
+                  <label class="text-xs text-muted-foreground block mb-1">Password</label>
+                  <input
+
+====================================
+svelte-check found 0 errors and 6 warnings in 3 files

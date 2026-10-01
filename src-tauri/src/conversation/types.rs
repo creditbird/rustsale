@@ -944,6 +944,34 @@ impl ConversationCapabilities {
         serde_json::from_str(value).unwrap_or_else(|_| Self::text_only())
     }
 
+    pub fn default_document_types() -> Vec<String> {
+        vec![
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
+            "application/msword".into(),
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into(),
+            "application/vnd.ms-excel".into(),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation".into(),
+            "application/vnd.ms-powerpoint".into(),
+            "application/pdf".into(),
+            "text/plain".into(),
+            "text/csv".into(),
+            "application/rtf".into(),
+            "text/rtf".into(),
+            "application/json".into(),
+            "application/xml".into(),
+            "text/xml".into(),
+            "application/zip".into(),
+            "application/x-zip-compressed".into(),
+            "application/vnd.rar".into(),
+            "application/x-rar".into(),
+            "application/x-rar-compressed".into(),
+            "application/x-7z-compressed".into(),
+            "application/x-tar".into(),
+            "application/gzip".into(),
+            "application/octet-stream".into(),
+        ]
+    }
+
     pub fn zalo_phase_one() -> Self {
         Self {
             max_text_length: 2000,
@@ -957,11 +985,7 @@ impl ConversationCapabilities {
             ],
             supported_video_types: vec!["video/mp4".into()],
             supported_audio_types: vec!["audio/aac".into(), "audio/m4a".into(), "audio/mp3".into()],
-            supported_doc_types: vec![
-                "application/pdf".into(),
-                "application/zip".into(),
-                "text/plain".into(),
-            ],
+            supported_doc_types: Self::default_document_types(),
             supports_stickers: true,
             supports_quote_reply: true,
             supports_recall: true,
@@ -1018,15 +1042,7 @@ impl ConversationCapabilities {
                 "audio/m4a".into(),
                 "audio/opus".into(),
             ],
-            supported_doc_types: vec![
-                "application/pdf".into(),
-                "application/zip".into(),
-                "text/plain".into(),
-                "application/msword".into(),
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document".into(),
-                "application/vnd.ms-excel".into(),
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet".into(),
-            ],
+            supported_doc_types: Self::default_document_types(),
             supports_stickers: true,
             supports_quote_reply: true,
             supports_recall: true,
@@ -1057,6 +1073,67 @@ impl ConversationCapabilities {
                 enabled: true,
                 max_templates: 500,
             },
+        }
+    }
+
+    pub fn messenger() -> Self {
+        Self {
+            max_text_length: 2000,
+            max_attachments_per_batch: 10,
+            max_file_size_bytes: 26_214_400, // 25 MB Meta Graph Send API limit
+            supported_image_types: vec![
+                "image/jpeg".into(),
+                "image/png".into(),
+                "image/webp".into(),
+                "image/gif".into(),
+            ],
+            supported_video_types: vec!["video/mp4".into(), "video/quicktime".into()],
+            supported_audio_types: vec![
+                "audio/aac".into(),
+                "audio/m4a".into(),
+                "audio/mp3".into(),
+                "audio/ogg".into(),
+            ],
+            supported_doc_types: Self::default_document_types(),
+            supports_stickers: false,
+            supports_quote_reply: true,
+            supports_recall: false,
+            recall_window_seconds: None,
+            supports_reactions: true,
+            reactions: ConversationReactionCapabilities {
+                read: true,
+                write: true,
+                supported: vec![
+                    ConversationReactionCode::Heart,
+                    ConversationReactionCode::Like,
+                    ConversationReactionCode::Haha,
+                    ConversationReactionCode::Wow,
+                    ConversationReactionCode::Cry,
+                    ConversationReactionCode::Angry,
+                ],
+            },
+            forward: ConversationForwardCapabilities {
+                enabled: false,
+                max_targets_per_forward: 0,
+            },
+            mentions: ConversationMentionCapabilities {
+                enabled: false,
+                max_mentions_per_message: 0,
+                supports_all_mention: false,
+            },
+            quick_templates: ConversationQuickTemplateCapabilities {
+                enabled: true,
+                max_templates: 500,
+            },
+        }
+    }
+
+    pub fn default_for_channel(channel: Channel) -> Self {
+        match channel {
+            Channel::Zalo => Self::zalo_phase_one(),
+            Channel::WhatsApp => Self::whatsapp(),
+            Channel::Messenger => Self::messenger(),
+            Channel::Email => Self::text_only(),
         }
     }
 }
@@ -1587,5 +1664,48 @@ mod tests {
                 media_type, raw_mime, expected, actual
             );
         }
+    }
+
+    #[test]
+    fn test_channel_capabilities_support_office_and_custom_documents() {
+        let docx_mime = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+        let xlsx_mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        let pptx_mime = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+        let csv_mime = "text/csv";
+        let pdf_mime = "application/pdf";
+        let octet_mime = "application/octet-stream";
+
+        let zalo = ConversationCapabilities::zalo_phase_one();
+        assert!(zalo.supported_doc_types.contains(&docx_mime.to_string()));
+        assert!(zalo.supported_doc_types.contains(&xlsx_mime.to_string()));
+        assert!(zalo.supported_doc_types.contains(&pptx_mime.to_string()));
+        assert!(zalo.supported_doc_types.contains(&csv_mime.to_string()));
+        assert!(zalo.supported_doc_types.contains(&pdf_mime.to_string()));
+        assert!(zalo.supported_doc_types.contains(&octet_mime.to_string()));
+        assert_eq!(zalo.max_attachments_per_batch, 10);
+
+        let wa = ConversationCapabilities::whatsapp();
+        assert!(wa.supported_doc_types.contains(&docx_mime.to_string()));
+        assert!(wa.supported_doc_types.contains(&xlsx_mime.to_string()));
+        assert!(wa.supported_doc_types.contains(&pptx_mime.to_string()));
+        assert!(wa.supported_doc_types.contains(&csv_mime.to_string()));
+        assert!(wa.supported_doc_types.contains(&pdf_mime.to_string()));
+        assert!(wa.supported_doc_types.contains(&octet_mime.to_string()));
+        assert_eq!(wa.max_attachments_per_batch, 30);
+
+        let fb = ConversationCapabilities::messenger();
+        assert!(fb.supported_doc_types.contains(&docx_mime.to_string()));
+        assert!(fb.supported_doc_types.contains(&xlsx_mime.to_string()));
+        assert!(fb.supported_doc_types.contains(&pptx_mime.to_string()));
+        assert!(fb.supported_doc_types.contains(&csv_mime.to_string()));
+        assert!(fb.supported_doc_types.contains(&pdf_mime.to_string()));
+        assert!(fb.supported_doc_types.contains(&octet_mime.to_string()));
+        assert_eq!(fb.max_attachments_per_batch, 10);
+        assert_eq!(fb.max_file_size_bytes, 26_214_400);
+
+        let def_zalo = ConversationCapabilities::default_for_channel(Channel::Zalo);
+        assert_eq!(def_zalo.max_attachments_per_batch, 10);
+        let def_fb = ConversationCapabilities::default_for_channel(Channel::Messenger);
+        assert_eq!(def_fb.max_attachments_per_batch, 10);
     }
 }

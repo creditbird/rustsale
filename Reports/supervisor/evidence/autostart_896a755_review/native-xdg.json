@@ -1,0 +1,9 @@
+{
+  "command": "cargo test --test native_autostart_linux_test -- --nocapture",
+  "XDG_CONFIG_HOME": "/home/arch/Project/test/RustSale_v2/.tmp/autostart-xdg-review-bghxeld5",
+  "exit_code": 101,
+  "real_home_entry_left_after_test": true,
+  "test_expected_path_exists": false,
+  "leftover_contents": "[Desktop Entry]\nType=Application\nVersion=1.0\nName=rustsale-crm-test-autostart-integration\nComment=rustsale-crm-test-autostart-integrationstartup script\nExec=/usr/bin/rustsale-crm --autostart\nStartupNotify=false\nTerminal=false",
+  "real_home_entry_exists_after_review_cleanup": false
+}

@@ -1,0 +1,21 @@
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 1.88s
+     Running unittests src/lib.rs (src-tauri/target/debug/deps/rustsale_crm_lib-c14637ba5f7f6223)
+
+running 14 tests
+test commands_test::tests::test_zalo_session_status_serialization_and_verification_internal ... ok
+test commands_test::tests::test_zalo_qr_persistence_rollback_restores_existing_session_or_removes_new_one ... ok
+test commands_test::tests::test_zalo_outreach_events_and_progress_emission ... ok
+test commands_test::tests::test_zalo_qr_session_rejects_callback_without_device_imei ... ok
+test commands_test::tests::test_zalo_qr_and_session_commands ... ok
+test commands_test::tests::test_zalo_outreach_skips_leads_without_phone ... ok
+test commands_test::tests::test_zalo_worker_invalid_phone_write_error_propagation ... ok
+test commands_test::tests::test_zalo_outreach_eligibility_sentinels_and_whitespace ... ok
+test commands_test::tests::test_zalo_outreach_partitioning_and_runtime_mock_execution ... ok
+test db_test::tests::test_zalo_sessions_deduplication_returns_latest_session ... ok
+test db_test::tests::test_zalo_sessions_and_templates_operations ... ok
+test db_test::tests::test_zalo_session_helpers ... ok
+test conversation::repository_test::test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomically ... ok
+test conversation::repository_test::test_zalo_quote_fallback_hydrates_when_original_message_not_in_local_db ... ok
+
+test result: ok. 14 passed; 0 failed; 0 ignored; 0 measured; 861 filtered out; finished in 0.79s
+

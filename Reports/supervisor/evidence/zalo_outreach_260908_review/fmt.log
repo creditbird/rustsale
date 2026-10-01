@@ -1,0 +1,2951 @@
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/commands.rs:40:
+         .find(|m| m.direction == "inbound")
+         .map(|m| m.text_content.as_str());
+ 
+[31m-    let text_to_classify = last_inbound
+(B[m[31m-        .or(custom_prompt.as_deref())
+(B[m[31m-        .unwrap_or("");
+(B[m[32m+    let text_to_classify = last_inbound.or(custom_prompt.as_deref()).unwrap_or("");
+(B[m 
+     let intent = if !text_to_classify.trim().is_empty() {
+         IntentClassifier::classify(text_to_classify, Some(&gateway)).await
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/commands.rs:183:
+         .find(|m| m.direction == "inbound")
+         .map(|m| m.text_content.as_str());
+ 
+[31m-    let text_to_classify = last_inbound
+(B[m[31m-        .or(custom_prompt.as_deref())
+(B[m[31m-        .unwrap_or("");
+(B[m[32m+    let text_to_classify = last_inbound.or(custom_prompt.as_deref()).unwrap_or("");
+(B[m 
+     let intent = if !text_to_classify.trim().is_empty() {
+         IntentClassifier::classify(text_to_classify, Some(gateway)).await
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/evidence.rs:46:
+ impl LeadEvidenceContext {
+     pub fn to_context_summary(&self) -> String {
+         let mut summary = Vec::new();
+[31m-        summary.push(format!("- Khách hàng: {} ({})", self.lead_name, self.lead_company));
+(B[m[31m-        summary.push(format!("- Điện thoại: {} | Email: {}", self.lead_phone, self.lead_email));
+(B[m[31m-        summary.push(format!("- Trạng thái Lead: {} | Giá trị: {:.0} {}", self.lead_status, self.lead_value, self.lead_currency));
+(B[m[32m+        summary.push(format!(
+(B[m[32m+            "- Khách hàng: {} ({})",
+(B[m[32m+            self.lead_name, self.lead_company
+(B[m[32m+        ));
+(B[m[32m+        summary.push(format!(
+(B[m[32m+            "- Điện thoại: {} | Email: {}",
+(B[m[32m+            self.lead_phone, self.lead_email
+(B[m[32m+        ));
+(B[m[32m+        summary.push(format!(
+(B[m[32m+            "- Trạng thái Lead: {} | Giá trị: {:.0} {}",
+(B[m[32m+            self.lead_status, self.lead_value, self.lead_currency
+(B[m[32m+        ));
+(B[m 
+         if let Some(ref stage) = self.deal_stage {
+             let title = self.deal_title.as_deref().unwrap_or("Hợp đồng / Đơn hàng");
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/evidence.rs:55:
+             let val = self.deal_value.unwrap_or(self.lead_value);
+[31m-            summary.push(format!("- Deal hiện tại: {} (Giai đoạn: {}, Giá trị: {:.0} {})", title, stage, val, self.lead_currency));
+(B[m[32m+            summary.push(format!(
+(B[m[32m+                "- Deal hiện tại: {} (Giai đoạn: {}, Giá trị: {:.0} {})",
+(B[m[32m+                title, stage, val, self.lead_currency
+(B[m[32m+            ));
+(B[m         }
+ 
+         if let Some(ref journey) = self.journey_stage {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/evidence.rs:65:
+         }
+ 
+         if !self.categories.is_empty() {
+[31m-            summary.push(format!("- Danh mục quan tâm: {}", self.categories.join(", ")));
+(B[m[32m+            summary.push(format!(
+(B[m[32m+                "- Danh mục quan tâm: {}",
+(B[m[32m+                self.categories.join(", ")
+(B[m[32m+            ));
+(B[m         }
+ 
+         if !self.known_products.is_empty() {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/evidence.rs:72:
+[31m-            let prods: Vec<String> = self.known_products
+(B[m[32m+            let prods: Vec<String> = self
+(B[m[32m+                .known_products
+(B[m                 .iter()
+                 .map(|p| format!("{} ({:.0} {})", p.name, p.price, p.currency))
+                 .collect();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/evidence.rs:76:
+[31m-            summary.push(format!("- Sản phẩm / Báo giá niêm yết: {}", prods.join("; ")));
+(B[m[32m+            summary.push(format!(
+(B[m[32m+                "- Sản phẩm / Báo giá niêm yết: {}",
+(B[m[32m+                prods.join("; ")
+(B[m[32m+            ));
+(B[m         }
+ 
+         if let Some(ref about) = self.lead_about {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/evidence.rs:92:
+                 } else {
+                     "Hệ thống"
+                 };
+[31m-                summary.push(format!("  [{}] {}: {}", msg.direction, sender, msg.text_content));
+(B[m[32m+                summary.push(format!(
+(B[m[32m+                    "  [{}] {}: {}",
+(B[m[32m+                    msg.direction, sender, msg.text_content
+(B[m[32m+                ));
+(B[m             }
+         }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/evidence.rs:202:
+ 
+         // 5. Fetch Verified Channels
+         let mut verified_channels = Vec::new();
+[31m-        if let Ok(mut chan_stmt) = conn.prepare(
+(B[m[31m-            "SELECT DISTINCT channel FROM channel_identities WHERE lead_id = ?1",
+(B[m[31m-        ) {
+(B[m[32m+        if let Ok(mut chan_stmt) =
+(B[m[32m+            conn.prepare("SELECT DISTINCT channel FROM channel_identities WHERE lead_id = ?1")
+(B[m[32m+        {
+(B[m             if let Ok(rows) = chan_stmt.query_map([lead_id], |row| row.get::<_, String>(0)) {
+                 for r in rows.flatten() {
+                     verified_channels.push(r);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/gateway.rs:62:
+                     provider: LlmProvider::OpenAi,
+                     api_key: Some(key),
+                     base_url: std::env::var("OPENAI_BASE_URL").ok(),
+[31m-                    model_name: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+(B[m[32m+                    model_name: std::env::var("OPENAI_MODEL")
+(B[m[32m+                        .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+(B[m                     temperature: 0.7,
+                     max_tokens: 1024,
+                     timeout_seconds: 15,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/gateway.rs:76:
+                     provider: LlmProvider::Gemini,
+                     api_key: Some(key),
+                     base_url: std::env::var("GEMINI_BASE_URL").ok(),
+[31m-                    model_name: std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-1.5-flash".to_string()),
+(B[m[32m+                    model_name: std::env::var("GEMINI_MODEL")
+(B[m[32m+                        .unwrap_or_else(|_| "gemini-1.5-flash".to_string()),
+(B[m                     temperature: 0.7,
+                     max_tokens: 1024,
+                     timeout_seconds: 15,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/gateway.rs:90:
+                     provider: LlmProvider::Claude,
+                     api_key: Some(key),
+                     base_url: std::env::var("ANTHROPIC_BASE_URL").ok(),
+[31m-                    model_name: std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-3-5-haiku-20241022".to_string()),
+(B[m[32m+                    model_name: std::env::var("ANTHROPIC_MODEL")
+(B[m[32m+                        .unwrap_or_else(|_| "claude-3-5-haiku-20241022".to_string()),
+(B[m                     temperature: 0.7,
+                     max_tokens: 1024,
+                     timeout_seconds: 15,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/gateway.rs:104:
+                     provider: LlmProvider::Ollama,
+                     api_key: None,
+                     base_url: Some(host),
+[31m-                    model_name: std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".to_string()),
+(B[m[32m+                    model_name: std::env::var("OLLAMA_MODEL")
+(B[m[32m+                        .unwrap_or_else(|_| "llama3.2".to_string()),
+(B[m                     temperature: 0.7,
+                     max_tokens: 1024,
+                     timeout_seconds: 30,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/gateway.rs:186:
+     ) -> Result<LlmResponse, String> {
+         match self.config.provider {
+             LlmProvider::Mock => Ok(self.generate_mock_response(messages, system_prompt)),
+[31m-            LlmProvider::OpenAi => {
+(B[m[31m-                match self.call_openai(messages, system_prompt).await {
+(B[m[31m-                    Ok(resp) => Ok(resp),
+(B[m[31m-                    Err(e) => {
+(B[m[31m-                        eprintln!("[LlmGateway] OpenAI call failed: {}, falling back to offline mode", e);
+(B[m[31m-                        Ok(self.generate_mock_response(messages, system_prompt))
+(B[m[31m-                    }
+(B[m[32m+            LlmProvider::OpenAi => match self.call_openai(messages, system_prompt).await {
+(B[m[32m+                Ok(resp) => Ok(resp),
+(B[m[32m+                Err(e) => {
+(B[m[32m+                    eprintln!(
+(B[m[32m+                        "[LlmGateway] OpenAI call failed: {}, falling back to offline mode",
+(B[m[32m+                        e
+(B[m[32m+                    );
+(B[m[32m+                    Ok(self.generate_mock_response(messages, system_prompt))
+(B[m                 }
+[31m-            }
+(B[m[31m-            LlmProvider::Gemini => {
+(B[m[31m-                match self.call_gemini(messages, system_prompt).await {
+(B[m[31m-                    Ok(resp) => Ok(resp),
+(B[m[31m-                    Err(e) => {
+(B[m[31m-                        eprintln!("[LlmGateway] Gemini call failed: {}, falling back to offline mode", e);
+(B[m[31m-                        Ok(self.generate_mock_response(messages, system_prompt))
+(B[m[31m-                    }
+(B[m[32m+            },
+(B[m[32m+            LlmProvider::Gemini => match self.call_gemini(messages, system_prompt).await {
+(B[m[32m+                Ok(resp) => Ok(resp),
+(B[m[32m+                Err(e) => {
+(B[m[32m+                    eprintln!(
+(B[m[32m+                        "[LlmGateway] Gemini call failed: {}, falling back to offline mode",
+(B[m[32m+                        e
+(B[m[32m+                    );
+(B[m[32m+                    Ok(self.generate_mock_response(messages, system_prompt))
+(B[m                 }
+[31m-            }
+(B[m[31m-            LlmProvider::Claude => {
+(B[m[31m-                match self.call_claude(messages, system_prompt).await {
+(B[m[31m-                    Ok(resp) => Ok(resp),
+(B[m[31m-                    Err(e) => {
+(B[m[31m-                        eprintln!("[LlmGateway] Claude call failed: {}, falling back to offline mode", e);
+(B[m[31m-                        Ok(self.generate_mock_response(messages, system_prompt))
+(B[m[31m-                    }
+(B[m[32m+            },
+(B[m[32m+            LlmProvider::Claude => match self.call_claude(messages, system_prompt).await {
+(B[m[32m+                Ok(resp) => Ok(resp),
+(B[m[32m+                Err(e) => {
+(B[m[32m+                    eprintln!(
+(B[m[32m+                        "[LlmGateway] Claude call failed: {}, falling back to offline mode",
+(B[m[32m+                        e
+(B[m[32m+                    );
+(B[m[32m+                    Ok(self.generate_mock_response(messages, system_prompt))
+(B[m                 }
+[31m-            }
+(B[m[31m-            LlmProvider::Ollama => {
+(B[m[31m-                match self.call_ollama(messages, system_prompt).await {
+(B[m[31m-                    Ok(resp) => Ok(resp),
+(B[m[31m-                    Err(e) => {
+(B[m[31m-                        eprintln!("[LlmGateway] Ollama call failed: {}, falling back to offline mode", e);
+(B[m[31m-                        Ok(self.generate_mock_response(messages, system_prompt))
+(B[m[31m-                    }
+(B[m[32m+            },
+(B[m[32m+            LlmProvider::Ollama => match self.call_ollama(messages, system_prompt).await {
+(B[m[32m+                Ok(resp) => Ok(resp),
+(B[m[32m+                Err(e) => {
+(B[m[32m+                    eprintln!(
+(B[m[32m+                        "[LlmGateway] Ollama call failed: {}, falling back to offline mode",
+(B[m[32m+                        e
+(B[m[32m+                    );
+(B[m[32m+                    Ok(self.generate_mock_response(messages, system_prompt))
+(B[m                 }
+[31m-            }
+(B[m[32m+            },
+(B[m         }
+     }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/gateway.rs:290:
+             .to_string();
+ 
+         let prompt_tokens = json["usage"]["prompt_tokens"].as_u64().map(|v| v as u32);
+[31m-        let completion_tokens = json["usage"]["completion_tokens"].as_u64().map(|v| v as u32);
+(B[m[32m+        let completion_tokens = json["usage"]["completion_tokens"]
+(B[m[32m+            .as_u64()
+(B[m[32m+            .map(|v| v as u32);
+(B[m 
+         Ok(LlmResponse {
+             content,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/gateway.rs:400:
+ 
+         let mut payload_messages = Vec::new();
+         for msg in messages {
+[31m-            let role = if msg.role == "assistant" { "assistant" } else { "user" };
+(B[m[32m+            let role = if msg.role == "assistant" {
+(B[m[32m+                "assistant"
+(B[m[32m+            } else {
+(B[m[32m+                "user"
+(B[m[32m+            };
+(B[m             payload_messages.push(serde_json::json!({
+                 "role": role,
+                 "content": msg.content
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/generator.rs:101:
+ 
+         let prompt = Self::build_prompt(context, intent, custom_prompt);
+         let messages = [LlmMessage::user(prompt)];
+[31m-        let system_prompt = "You are an expert Vietnamese sales copilot in RustSale CRM. Output valid JSON only.";
+(B[m[32m+        let system_prompt =
+(B[m[32m+            "You are an expert Vietnamese sales copilot in RustSale CRM. Output valid JSON only.";
+(B[m 
+[31m-        let llm_resp = gateway.chat_completion(&messages, Some(system_prompt)).await;
+(B[m[32m+        let llm_resp = gateway
+(B[m[32m+            .chat_completion(&messages, Some(system_prompt))
+(B[m[32m+            .await;
+(B[m 
+         let mut variants = Vec::new();
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/generator.rs:168:
+         };
+ 
+         let product_info = if let Some(prod) = context.known_products.first() {
+[31m-            format!("gói \"{}\" với mức giá {:.0} {}", prod.name, prod.price, prod.currency)
+(B[m[32m+            format!(
+(B[m[32m+                "gói \"{}\" với mức giá {:.0} {}",
+(B[m[32m+                prod.name, prod.price, prod.currency
+(B[m[32m+            )
+(B[m         } else if context.lead_value > 0.0 {
+[31m-            format!("sản phẩm phù hợp với ngân sách {:.0} {}", context.lead_value, context.lead_currency)
+(B[m[32m+            format!(
+(B[m[32m+                "sản phẩm phù hợp với ngân sách {:.0} {}",
+(B[m[32m+                context.lead_value, context.lead_currency
+(B[m[32m+            )
+(B[m         } else {
+             "các giải pháp phần mềm & dịch vụ chuyên nghiệp bên em".to_string()
+         };
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/generator.rs:319:
+         raw_variants
+             .into_iter()
+             .map(|(v_type, title, content, action, conf)| {
+[31m-                let decision = policy_gate.evaluate_proposed_reply(
+(B[m[31m-                    &content,
+(B[m[31m-                    &intent.intent,
+(B[m[31m-                    conf,
+(B[m[31m-                    context,
+(B[m[31m-                );
+(B[m[32m+                let decision =
+(B[m[32m+                    policy_gate.evaluate_proposed_reply(&content, &intent.intent, conf, context);
+(B[m 
+                 SmartReplyVariant {
+                     variant_type: v_type.to_string(),
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/intent.rs:36:
+ 
+     pub fn from_str(s: &str) -> Option<Self> {
+         match s.trim().to_lowercase().as_str() {
+[31m-            "asking_price" | "askingprice" | "price" | "hỏi giá" | "báo giá" => Some(Self::AskingPrice),
+(B[m[31m-            "product_inquiry" | "productinquiry" | "product" | "tư vấn sản phẩm" => Some(Self::ProductInquiry),
+(B[m[31m-            "schedule_meeting" | "schedule" | "hẹn gặp" | "xem hàng" => Some(Self::ScheduleMeeting),
+(B[m[32m+            "asking_price" | "askingprice" | "price" | "hỏi giá" | "báo giá" => {
+(B[m[32m+                Some(Self::AskingPrice)
+(B[m[32m+            }
+(B[m[32m+            "product_inquiry" | "productinquiry" | "product" | "tư vấn sản phẩm" => {
+(B[m[32m+                Some(Self::ProductInquiry)
+(B[m[32m+            }
+(B[m[32m+            "schedule_meeting" | "schedule" | "hẹn gặp" | "xem hàng" => {
+(B[m[32m+                Some(Self::ScheduleMeeting)
+(B[m[32m+            }
+(B[m             "complaint" | "khiếu nại" | "phản ánh" => Some(Self::Complaint),
+             "unsubscribe" | "hủy nhận tin" | "từ chối" => Some(Self::Unsubscribe),
+             "general_inquiry" | "general" | "chào hỏi" => Some(Self::GeneralInquiry),
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/intent.rs:311:
+ 
+         let gateway = gateway.unwrap();
+         let system_prompt = "You are an AI CRM Intent Classifier for Vietnamese customer messages.\nCategorize into exactly one of: asking_price, product_inquiry, schedule_meeting, complaint, unsubscribe, general_inquiry.\nReturn ONLY valid JSON: {\"intent\": \"...\", \"confidence\": 0.95, \"reasoning\": \"...\"}";
+[31m-        let messages = [crate::ai::gateway::LlmMessage::user(format!("Classify message: \"{}\"", text))];
+(B[m[32m+        let messages = [crate::ai::gateway::LlmMessage::user(format!(
+(B[m[32m+            "Classify message: \"{}\"",
+(B[m[32m+            text
+(B[m[32m+        ))];
+(B[m 
+[31m-        match gateway.chat_completion(&messages, Some(system_prompt)).await {
+(B[m[32m+        match gateway
+(B[m[32m+            .chat_completion(&messages, Some(system_prompt))
+(B[m[32m+            .await
+(B[m[32m+        {
+(B[m             Ok(resp) => {
+                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp.content) {
+                     if let Some(intent_str) = json["intent"].as_str() {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/intent.rs:320:
+                         if let Some(parsed_intent) = CustomerIntent::from_str(intent_str) {
+                             let conf = json["confidence"].as_f64().unwrap_or(0.85);
+[31m-                            let reason = json["reasoning"].as_str().unwrap_or("LLM classification").to_string();
+(B[m[32m+                            let reason = json["reasoning"]
+(B[m[32m+                                .as_str()
+(B[m[32m+                                .unwrap_or("LLM classification")
+(B[m[32m+                                .to_string();
+(B[m                             return IntentResult {
+                                 intent: parsed_intent,
+                                 confidence: conf,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/intent.rs:353:
+ 
+ fn detect_lang(text: &str) -> String {
+     let lower = text.to_lowercase();
+[31m-    let vi_chars = ['à', 'á', 'ả', 'ã', 'ạ', 'ă', 'ằ', 'ắ', 'ẳ', 'ẵ', 'ặ', 'â', 'ầ', 'ấ', 'ẩ', 'ẫ', 'ậ',
+(B[m[31m-                    'đ', 'è', 'é', 'ẻ', 'ẽ', 'ẹ', 'ê', 'ề', 'ế', 'ể', 'ễ', 'ệ',
+(B[m[31m-                    'ì', 'í', 'ỉ', 'ĩ', 'ị', 'ò', 'ó', 'ỏ', 'õ', 'ọ', 'ô', 'ồ', 'ố', 'ổ', 'ỗ', 'ộ',
+(B[m[31m-                    'ơ', 'ờ', 'ớ', 'ở', 'ỡ', 'ợ', 'ù', 'ú', 'ủ', 'ũ', 'ụ', 'ư', 'ừ', 'ứ', 'ử', 'ữ', 'ự',
+(B[m[31m-                    'ỳ', 'ý', 'ỷ', 'ỹ', 'ỵ'];
+(B[m[32m+    let vi_chars = [
+(B[m[32m+        'à', 'á', 'ả', 'ã', 'ạ', 'ă', 'ằ', 'ắ', 'ẳ', 'ẵ', 'ặ', 'â', 'ầ', 'ấ', 'ẩ', 'ẫ', 'ậ', 'đ',
+(B[m[32m+        'è', 'é', 'ẻ', 'ẽ', 'ẹ', 'ê', 'ề', 'ế', 'ể', 'ễ', 'ệ', 'ì', 'í', 'ỉ', 'ĩ', 'ị', 'ò', 'ó',
+(B[m[32m+        'ỏ', 'õ', 'ọ', 'ô', 'ồ', 'ố', 'ổ', 'ỗ', 'ộ', 'ơ', 'ờ', 'ớ', 'ở', 'ỡ', 'ợ', 'ù', 'ú', 'ủ',
+(B[m[32m+        'ũ', 'ụ', 'ư', 'ừ', 'ứ', 'ử', 'ữ', 'ự', 'ỳ', 'ý', 'ỷ', 'ỹ', 'ỵ',
+(B[m[32m+    ];
+(B[m     if lower.chars().any(|c| vi_chars.contains(&c)) {
+         "vi".to_string()
+     } else {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/intent.rs:371:
+         let replacement = match c {
+             'à' | 'á' | 'ả' | 'ã' | 'ạ' | 'ă' | 'ằ' | 'ắ' | 'ẳ' | 'ẵ' | 'ặ' | 'â' | 'ầ' | 'ấ'
+             | 'ẩ' | 'ẫ' | 'ậ' => 'a',
+[31m-            'è' | 'é' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ề' | 'ế' | 'ể' | 'ễ' | 'ệ' => 'e',
+(B[m[32m+            'è' | 'é' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ề' | 'ế' | 'ể' | 'ễ' | 'ệ' => {
+(B[m[32m+                'e'
+(B[m[32m+            }
+(B[m             'ì' | 'í' | 'ỉ' | 'ĩ' | 'ị' => 'i',
+             'ò' | 'ó' | 'ỏ' | 'õ' | 'ọ' | 'ô' | 'ồ' | 'ố' | 'ổ' | 'ỗ' | 'ộ' | 'ơ' | 'ờ' | 'ớ'
+             | 'ở' | 'ỡ' | 'ợ' => 'o',
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/intent.rs:378:
+[31m-            'ù' | 'ú' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ừ' | 'ứ' | 'ử' | 'ữ' | 'ự' => 'u',
+(B[m[32m+            'ù' | 'ú' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ừ' | 'ứ' | 'ử' | 'ữ' | 'ự' => {
+(B[m[32m+                'u'
+(B[m[32m+            }
+(B[m             'ỳ' | 'ý' | 'ỷ' | 'ỹ' | 'ỵ' => 'y',
+             'đ' => 'd',
+             _ => c,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/policy.rs:128:
+             if is_pushy {
+                 reject_reasons.push("Khách hàng yêu cầu hủy nhận tin, không được gửi thông điệp bán hàng/khuyến mãi".to_string());
+             } else if !is_apologetic {
+[31m-                review_reasons.push("Cần nhân viên xác nhận việc hủy đăng ký nhận tin của khách hàng".to_string());
+(B[m[32m+                review_reasons.push(
+(B[m[32m+                    "Cần nhân viên xác nhận việc hủy đăng ký nhận tin của khách hàng".to_string(),
+(B[m[32m+                );
+(B[m             }
+         }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/policy.rs:149:
+ 
+         // 4. Complaint Intent Check -> Require Human Review
+         if *intent == CustomerIntent::Complaint && self.config.require_review_for_complaints {
+[31m-            review_reasons.push("Khách hàng đang khiếu nại/phản ánh sự cố, bắt buộc chuyên viên duyệt phản hồi".to_string());
+(B[m[32m+            review_reasons.push(
+(B[m[32m+                "Khách hàng đang khiếu nại/phản ánh sự cố, bắt buộc chuyên viên duyệt phản hồi"
+(B[m[32m+                    .to_string(),
+(B[m[32m+            );
+(B[m         }
+ 
+         // 5. High Value Deal Threshold
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/policy.rs:174:
+             if mentions_price && evidence.known_products.is_empty() && evidence.lead_value == 0.0 {
+                 review_reasons.push("Báo giá cho khách hàng nhưng chưa có dữ liệu giá niêm yết trong CRM để đối chiếu".to_string());
+             } else if self.config.require_review_for_price_quotes {
+[31m-                review_reasons.push("Cam kết về giá hoặc báo giá chính thức cần nhân viên kinh doanh xác nhận".to_string());
+(B[m[32m+                review_reasons.push(
+(B[m[32m+                    "Cam kết về giá hoặc báo giá chính thức cần nhân viên kinh doanh xác nhận"
+(B[m[32m+                        .to_string(),
+(B[m[32m+                );
+(B[m             }
+         }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/tests.rs:1:
+[32m+use crate::ai::commands::{
+(B[m[32m+    generate_smart_reply_suggestions_internal, get_lead_evidence_context_internal,
+(B[m[32m+    get_pending_ai_proposals_internal, review_ai_proposal_internal,
+(B[m[32m+};
+(B[m use crate::ai::evidence::{EvidenceExtractor, LeadEvidenceContext, ProductEvidence};
+ use crate::ai::gateway::{LlmConfig, LlmGateway, LlmProvider};
+ use crate::ai::generator::SmartReplyGenerator;
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/tests.rs:4:
+ use crate::ai::intent::{CustomerIntent, IntentClassifier};
+ use crate::ai::policy::{PolicyDecision, PolicyGate};
+[31m-use crate::ai::commands::{
+(B[m[31m-    generate_smart_reply_suggestions_internal, get_lead_evidence_context_internal,
+(B[m[31m-    get_pending_ai_proposals_internal, review_ai_proposal_internal,
+(B[m[31m-};
+(B[m use rusqlite::Connection;
+ 
+ fn setup_test_db() -> Connection {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/tests.rs:72:
+     let r13 = IntentClassifier::classify_heuristics("Bên bạn có mẫu đầm dạ hội màu đen không?");
+     assert_eq!(r13.intent, CustomerIntent::ProductInquiry);
+ 
+[31m-    let r14 = IntentClassifier::classify_heuristics("Tư vấn giúp mình thông tin sản phẩm và tính năng đồng bộ Zalo");
+(B[m[32m+    let r14 = IntentClassifier::classify_heuristics(
+(B[m[32m+        "Tư vấn giúp mình thông tin sản phẩm và tính năng đồng bộ Zalo",
+(B[m[32m+    );
+(B[m     assert_eq!(r14.intent, CustomerIntent::ProductInquiry);
+ 
+     // 6. GeneralInquiry
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/tests.rs:93:
+         "INSERT INTO deals (lead_id, title, value, stage, created_at, currency)
+          VALUES (?1, 'Gói Phần Mềm Enterprise', 25000000.0, 'PROPOSAL', '2026-09-02', 'VND')",
+         rusqlite::params![lead_id],
+[31m-    ).unwrap();
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     // Add Category
+     let cat_id = crate::db::create_category(&conn, "Doanh Nghiệp B2B").unwrap();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/tests.rs:111:
+         Some("asking_price"),
+         Some(0.95),
+         Some("Đã gửi demo"),
+[31m-    ).unwrap();
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     // Extract Context
+     let context = EvidenceExtractor::extract_lead_context(&conn, lead_id, None)
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/tests.rs:333:
+     )
+     .expect("create_ai_action_proposal failed");
+ 
+[31m-    let proposals = get_pending_ai_proposals_internal(&conn)
+(B[m[31m-        .expect("get_pending_ai_proposals_internal failed");
+(B[m[32m+    let proposals =
+(B[m[32m+        get_pending_ai_proposals_internal(&conn).expect("get_pending_ai_proposals_internal failed");
+(B[m     assert_eq!(proposals.len(), 1);
+     assert_eq!(proposals[0].id, Some(prop_id));
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/ai/tests.rs:346:
+         .expect("get_ai_action_proposal failed")
+         .expect("proposal not found");
+     assert_eq!(updated_prop.status, "APPROVED");
+[31m-    assert_eq!(updated_prop.reviewed_by.as_deref(), Some("Trưởng Phòng Sale"));
+(B[m[32m+    assert_eq!(
+(B[m[32m+        updated_prop.reviewed_by.as_deref(),
+(B[m[32m+        Some("Trưởng Phòng Sale")
+(B[m[32m+    );
+(B[m }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/commands.rs:125:
+ // Internal Handlers (Testable without Tauri Runtime)
+ // ============================================================================
+ 
+[31m-pub fn start_unified_campaign_internal(
+(B[m[31m-    conn: &Connection,
+(B[m[31m-    campaign_id: i64,
+(B[m[31m-) -> Result<(), String> {
+(B[m[32m+pub fn start_unified_campaign_internal(conn: &Connection, campaign_id: i64) -> Result<(), String> {
+(B[m     let campaign = crate::db::get_campaign(conn, campaign_id)
+         .map_err(|e| format!("DB error: {}", e))?
+         .ok_or_else(|| format!("Campaign {} not found", campaign_id))?;
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/commands.rs:146:
+     .map_err(|e| format!("Failed to activate campaign: {}", e))
+ }
+ 
+[31m-pub fn pause_unified_campaign_internal(
+(B[m[31m-    conn: &Connection,
+(B[m[31m-    campaign_id: i64,
+(B[m[31m-) -> Result<(), String> {
+(B[m[32m+pub fn pause_unified_campaign_internal(conn: &Connection, campaign_id: i64) -> Result<(), String> {
+(B[m     let campaign = crate::db::get_campaign(conn, campaign_id)
+         .map_err(|e| format!("DB error: {}", e))?
+         .ok_or_else(|| format!("Campaign {} not found", campaign_id))?;
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/commands.rs:213:
+     for &lead_id in lead_ids {
+         // Fetch phone from lead
+         let phone: Option<String> = conn
+[31m-            .query_row(
+(B[m[31m-                "SELECT phone FROM leads WHERE id = ?1",
+(B[m[31m-                [lead_id],
+(B[m[31m-                |row| row.get(0),
+(B[m[31m-            )
+(B[m[32m+            .query_row("SELECT phone FROM leads WHERE id = ?1", [lead_id], |row| {
+(B[m[32m+                row.get(0)
+(B[m[32m+            })
+(B[m             .ok();
+ 
+         // Create initial step execution
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/commands.rs:260:
+         .map_err(|e| format!("DB error: {}", e))?
+         .ok_or_else(|| format!("Campaign {} not found", campaign_id))?;
+ 
+[31m-    let steps = crate::db::get_campaign_steps(conn, campaign_id)
+(B[m[31m-        .map_err(|e| format!("DB error: {}", e))?;
+(B[m[32m+    let steps =
+(B[m[32m+        crate::db::get_campaign_steps(conn, campaign_id).map_err(|e| format!("DB error: {}", e))?;
+(B[m 
+     let total_enrolled: i64 = conn
+         .query_row(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/commands.rs:430:
+     })
+ }
+ 
+[31m-pub fn get_all_unified_campaigns_internal(
+(B[m[31m-    conn: &Connection,
+(B[m[31m-) -> Result<Vec<Campaign>, String> {
+(B[m[32m+pub fn get_all_unified_campaigns_internal(conn: &Connection) -> Result<Vec<Campaign>, String> {
+(B[m     crate::db::get_all_campaigns(conn).map_err(|e| format!("Failed to get campaigns: {}", e))
+ }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/commands.rs:460:
+             .map_err(|e| format!("Failed to update campaign: {}", e))?;
+ 
+             // Replace steps
+[31m-            tx.execute(
+(B[m[31m-                "DELETE FROM campaign_steps WHERE campaign_id = ?1",
+(B[m[31m-                [id],
+(B[m[31m-            )
+(B[m[31m-            .map_err(|e| format!("Failed to clear old campaign steps: {}", e))?;
+(B[m[32m+            tx.execute("DELETE FROM campaign_steps WHERE campaign_id = ?1", [id])
+(B[m[32m+                .map_err(|e| format!("Failed to clear old campaign steps: {}", e))?;
+(B[m 
+             id
+         }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/commands.rs:501:
+     Ok(campaign_id)
+ }
+ 
+[31m-pub fn delete_unified_campaign_internal(
+(B[m[31m-    conn: &Connection,
+(B[m[31m-    campaign_id: i64,
+(B[m[31m-) -> Result<(), String> {
+(B[m[32m+pub fn delete_unified_campaign_internal(conn: &Connection, campaign_id: i64) -> Result<(), String> {
+(B[m     crate::db::delete_campaign(conn, campaign_id)
+         .map_err(|e| format!("Failed to delete campaign: {}", e))
+ }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:132:
+             match channel {
+                 "ZALO" => {
+                     if account == "IMEI_INACTIVE" {
+[31m-                        return Err(format!("Zalo provider rejected: session '{}' is inactive or disconnected", account));
+(B[m[32m+                        return Err(format!(
+(B[m[32m+                            "Zalo provider rejected: session '{}' is inactive or disconnected",
+(B[m[32m+                            account
+(B[m[32m+                        ));
+(B[m                     }
+                     Ok(ProviderDeliveryResponse {
+                         provider_message_id: format!("zalo_msg_{}_{}", account, hash_prefix),
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:141:
+                 }
+                 "WHATSAPP" => {
+                     if account == "wpa_inactive" {
+[31m-                        return Err(format!("WhatsApp provider rejected: account '{}' is inactive", account));
+(B[m[32m+                        return Err(format!(
+(B[m[32m+                            "WhatsApp provider rejected: account '{}' is inactive",
+(B[m[32m+                            account
+(B[m[32m+                        ));
+(B[m                     }
+                     Ok(ProviderDeliveryResponse {
+                         provider_message_id: format!("wamid.HBg_{}_{}", account, hash_prefix),
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:150:
+                 }
+                 "EMAIL" => {
+                     if account == "smtp_inactive" {
+[31m-                        return Err(format!("Email provider rejected: SMTP server '{}' is disabled", account));
+(B[m[32m+                        return Err(format!(
+(B[m[32m+                            "Email provider rejected: SMTP server '{}' is disabled",
+(B[m[32m+                            account
+(B[m[32m+                        ));
+(B[m                     }
+                     Ok(ProviderDeliveryResponse {
+                         provider_message_id: format!("<{}.{}@rustsale.vn>", hash_prefix, account),
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:159:
+                 }
+                 "FACEBOOK" => {
+                     if account == "fb_inactive" {
+[31m-                        return Err(format!("Facebook provider rejected: Page token for '{}' is inactive", account));
+(B[m[32m+                        return Err(format!(
+(B[m[32m+                            "Facebook provider rejected: Page token for '{}' is inactive",
+(B[m[32m+                            account
+(B[m[32m+                        ));
+(B[m                     }
+                     Ok(ProviderDeliveryResponse {
+                         provider_message_id: format!("mid.$gA_{}_{}", account, hash_prefix),
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:172:
+ 
+         match tokio::time::timeout(timeout_dur, fut).await {
+             Ok(res) => res,
+[31m-            Err(_) => Err(format!("Provider delivery timed out after {:?}", timeout_dur)),
+(B[m[32m+            Err(_) => Err(format!(
+(B[m[32m+                "Provider delivery timed out after {:?}",
+(B[m[32m+                timeout_dur
+(B[m[32m+            )),
+(B[m         }
+     }
+ }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:196:
+     ) -> Result<ProviderDeliveryResponse, String> {
+         // In live runtime, delegates to external APIs (Zalo, WhatsApp Cloud API, SMTP, etc.)
+         let simulated = SimulatedChannelDeliveryProvider::default();
+[31m-        simulated.deliver(channel, account, recipient, message, idempotency_key, timeout_dur).await
+(B[m[32m+        simulated
+(B[m[32m+            .deliver(
+(B[m[32m+                channel,
+(B[m[32m+                account,
+(B[m[32m+                recipient,
+(B[m[32m+                message,
+(B[m[32m+                idempotency_key,
+(B[m[32m+                timeout_dur,
+(B[m[32m+            )
+(B[m[32m+            .await
+(B[m     }
+ }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:259:
+     }
+ 
+     /// Renders template by resolving spintax and lead variables from database.
+[31m-    pub fn render_for_lead(
+(B[m[31m-        conn: &Connection,
+(B[m[31m-        template: &str,
+(B[m[31m-        lead_id: i32,
+(B[m[31m-    ) -> (String, String) {
+(B[m[32m+    pub fn render_for_lead(conn: &Connection, template: &str, lead_id: i32) -> (String, String) {
+(B[m         // Query lead details
+         let lead_info: Option<(String, String, String, String, Option<String>)> = conn
+             .query_row(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:405:
+                     error: None,
+                     is_dry_run: false,
+                     message_id: Some(existing_id),
+[31m-                    provider_message_id: prov_id.or_else(|| Some(format!("recovered_idempotent_{}", existing_id))),
+(B[m[32m+                    provider_message_id: prov_id
+(B[m[32m+                        .or_else(|| Some(format!("recovered_idempotent_{}", existing_id))),
+(B[m                     delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
+                 });
+             } else if status == "SUBMITTED" {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:418:
+                     error: None,
+                     is_dry_run: false,
+                     message_id: Some(existing_id),
+[31m-                    provider_message_id: prov_id.or_else(|| Some(format!("recovered_submitted_{}", existing_id))),
+(B[m[32m+                    provider_message_id: prov_id
+(B[m[32m+                        .or_else(|| Some(format!("recovered_submitted_{}", existing_id))),
+(B[m                     delivery_status: DeliveryStatus::Submitted.as_str().to_string(),
+                 });
+             }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:451:
+             Ok(id) => id,
+             Err(e) => {
+                 // If unique constraint failed because another worker submitted concurrently
+[31m-                if e.contains("UNIQUE constraint failed") || e.contains("idx_outreach_history_idempotency") {
+(B[m[32m+                if e.contains("UNIQUE constraint failed")
+(B[m[32m+                    || e.contains("idx_outreach_history_idempotency")
+(B[m[32m+                {
+(B[m                     let winner: Option<(i64, Option<String>, String, Option<String>)> = conn
+                         .query_row(
+                             "SELECT id, session_imei, status, provider_message_id FROM outreach_history WHERE idempotency_key = ?1",
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:469:
+                                 error: None,
+                                 is_dry_run: false,
+                                 message_id: Some(wid),
+[31m-                                provider_message_id: wprov.or_else(|| Some(format!("recovered_idempotent_{}", wid))),
+(B[m[32m+                                provider_message_id: wprov
+(B[m[32m+                                    .or_else(|| Some(format!("recovered_idempotent_{}", wid))),
+(B[m                                 delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
+                             });
+                         } else if wstatus == "SUBMITTED" {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:481:
+                                 error: None,
+                                 is_dry_run: false,
+                                 message_id: Some(wid),
+[31m-                                provider_message_id: wprov.or_else(|| Some(format!("recovered_submitted_{}", wid))),
+(B[m[32m+                                provider_message_id: wprov
+(B[m[32m+                                    .or_else(|| Some(format!("recovered_submitted_{}", wid))),
+(B[m                                 delivery_status: DeliveryStatus::Submitted.as_str().to_string(),
+                             });
+                         }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:507:
+         .await
+         {
+             Ok(res) => res,
+[31m-            Err(_) => Err(format!("Provider delivery timed out after {:?}", timeout_dur)),
+(B[m[32m+            Err(_) => Err(format!(
+(B[m[32m+                "Provider delivery timed out after {:?}",
+(B[m[32m+                timeout_dur
+(B[m[32m+            )),
+(B[m         };
+ 
+         match delivery_result {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:566:
+             "ZALO" => {
+                 let phone_digits: String = clean.chars().filter(|c| c.is_ascii_digit()).collect();
+                 if clean.is_empty() || phone_digits.len() < 8 {
+[31m-                    return Err(format!("Cannot dispatch Zalo outreach: invalid phone number '{}'", clean));
+(B[m[32m+                    return Err(format!(
+(B[m[32m+                        "Cannot dispatch Zalo outreach: invalid phone number '{}'",
+(B[m[32m+                        clean
+(B[m[32m+                    ));
+(B[m                 }
+ 
+                 let account = account_id.unwrap_or("default_zalo").to_string();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:586:
+                         let any_session: bool = conn
+                             .query_row("SELECT 1 FROM zalo_sessions LIMIT 1", [], |_| Ok(true))
+                             .unwrap_or(false);
+[31m-                        if !any_session && req_acc != "default_zalo" && req_acc != "IMEI_MAIN" && req_acc != "IMEI_CONC" {
+(B[m[32m+                        if !any_session
+(B[m[32m+                            && req_acc != "default_zalo"
+(B[m[32m+                            && req_acc != "IMEI_MAIN"
+(B[m[32m+                            && req_acc != "IMEI_CONC"
+(B[m[32m+                        {
+(B[m                             return Err(format!("Zalo account '{}' not found or active", req_acc));
+                         }
+                     }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:596:
+             "WHATSAPP" => {
+                 let digits: String = clean.chars().filter(|c| c.is_ascii_digit()).collect();
+                 if clean.is_empty() || digits.len() < 8 {
+[31m-                    return Err(format!("Cannot dispatch WhatsApp outreach: invalid phone number '{}'", clean));
+(B[m[32m+                    return Err(format!(
+(B[m[32m+                        "Cannot dispatch WhatsApp outreach: invalid phone number '{}'",
+(B[m[32m+                        clean
+(B[m[32m+                    ));
+(B[m                 }
+ 
+                 let account = account_id.unwrap_or("default_whatsapp").to_string();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:617:
+             }
+             "EMAIL" => {
+                 if clean.is_empty() || !clean.contains('@') || !clean.contains('.') {
+[31m-                    return Err(format!("Cannot dispatch Email outreach: invalid email address '{}'", clean));
+(B[m[32m+                    return Err(format!(
+(B[m[32m+                        "Cannot dispatch Email outreach: invalid email address '{}'",
+(B[m[32m+                        clean
+(B[m[32m+                    ));
+(B[m                 }
+ 
+                 let account = account_id.unwrap_or("default_smtp").to_string();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:638:
+             }
+             "FACEBOOK" => {
+                 if clean.is_empty() {
+[31m-                    return Err("Cannot dispatch Facebook outreach: target recipient/thread ID is empty".to_string());
+(B[m[32m+                    return Err(
+(B[m[32m+                        "Cannot dispatch Facebook outreach: target recipient/thread ID is empty"
+(B[m[32m+                            .to_string(),
+(B[m[32m+                    );
+(B[m                 }
+ 
+                 let account = account_id.unwrap_or("default_fb_page").to_string();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:652:
+                         .unwrap_or(false);
+ 
+                     if !exists && req_acc != "default_fb_page" {
+[31m-                        return Err(format!("Facebook channel account '{}' not found or inactive", req_acc));
+(B[m[32m+                        return Err(format!(
+(B[m[32m+                            "Facebook channel account '{}' not found or inactive",
+(B[m[32m+                            req_acc
+(B[m[32m+                        ));
+(B[m                     }
+                 }
+                 Ok((account, clean.to_string()))
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:688:
+         now: &str,
+         provider_msg_id: &str,
+     ) -> Result<(), String> {
+[31m-        conn.execute("SAVEPOINT delivery_confirm_tx", []).map_err(|e| e.to_string())?;
+(B[m[32m+        conn.execute("SAVEPOINT delivery_confirm_tx", [])
+(B[m[32m+            .map_err(|e| e.to_string())?;
+(B[m 
+         let res: Result<(), String> = (|| {
+[31m-            let updated = conn.execute(
+(B[m[31m-                "UPDATE outreach_history
+(B[m[32m+            let updated = conn
+(B[m[32m+                .execute(
+(B[m[32m+                    "UPDATE outreach_history
+(B[m                  SET status = 'DELIVERED', provider_message_id = ?1, error_message = NULL
+                  WHERE id = ?2 AND status IN ('SUBMITTED', 'SUBMITTED_STALE', 'DELIVERED')",
+[31m-                rusqlite::params![provider_msg_id, outreach_id],
+(B[m[31m-            )
+(B[m[31m-            .map_err(|e| e.to_string())?;
+(B[m[32m+                    rusqlite::params![provider_msg_id, outreach_id],
+(B[m[32m+                )
+(B[m[32m+                .map_err(|e| e.to_string())?;
+(B[m 
+             if updated == 0 {
+                 return Err(format!("Cannot transition outreach {} to DELIVERED: current status does not permit delivery confirmation", outreach_id));
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:736:
+         outreach_id: i64,
+         error_message: &str,
+     ) -> Result<(), String> {
+[31m-        let updated = conn.execute(
+(B[m[31m-            "UPDATE outreach_history
+(B[m[32m+        let updated = conn
+(B[m[32m+            .execute(
+(B[m[32m+                "UPDATE outreach_history
+(B[m              SET status = 'FAILED', error_message = ?1
+              WHERE id = ?2 AND status != 'DELIVERED'",
+[31m-            rusqlite::params![error_message, outreach_id],
+(B[m[31m-        )
+(B[m[31m-        .map_err(|e| format!("Failed to update outreach history to FAILED: {}", e))?;
+(B[m[32m+                rusqlite::params![error_message, outreach_id],
+(B[m[32m+            )
+(B[m[32m+            .map_err(|e| format!("Failed to update outreach history to FAILED: {}", e))?;
+(B[m 
+         if updated == 0 {
+             // Already delivered terminal record; cannot be demoted backwards
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:764:
+     }
+ 
+     /// Freshness verification to prevent webhook replay attacks.
+[31m-    pub fn verify_webhook_timestamp(timestamp_epoch: i64, max_skew_secs: i64) -> Result<(), String> {
+(B[m[32m+    pub fn verify_webhook_timestamp(
+(B[m[32m+        timestamp_epoch: i64,
+(B[m[32m+        max_skew_secs: i64,
+(B[m[32m+    ) -> Result<(), String> {
+(B[m         let now = chrono::Utc::now().timestamp();
+         if (now - timestamp_epoch).abs() > max_skew_secs {
+             return Err(format!(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:831:
+                     }
+                 }
+                 None => {
+[31m-                    return Err("Unauthorized webhook: missing required authentication secret".to_string());
+(B[m[32m+                    return Err(
+(B[m[32m+                        "Unauthorized webhook: missing required authentication secret".to_string(),
+(B[m[32m+                    );
+(B[m                 }
+             }
+         } else if let Some(provided) = provided_secret {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:838:
+             if provided.trim().is_empty() {
+[31m-                return Err("Webhook delivery confirmation failed: empty authentication token provided".to_string());
+(B[m[32m+                return Err(
+(B[m[32m+                    "Webhook delivery confirmation failed: empty authentication token provided"
+(B[m[32m+                        .to_string(),
+(B[m[32m+                );
+(B[m             }
+         }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:878:
+         };
+ 
+         let (outreach_id, lead_id, channel, status) = record;
+[31m-            if status == "DELIVERED" || status == "SENT" || status == "SUCCESS" {
+(B[m[31m-                tracing::info!(
+(B[m[32m+        if status == "DELIVERED" || status == "SENT" || status == "SUCCESS" {
+(B[m[32m+            tracing::info!(
+(B[m                     "Idempotent duplicate webhook delivery confirmed for provider_message_id={}, outreach_id={}",
+                     provider_msg_id, outreach_id
+                 );
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:886:
+[31m-                return Ok(true); // Terminal idempotent state
+(B[m[31m-            }
+(B[m[32m+            return Ok(true); // Terminal idempotent state
+(B[m[32m+        }
+(B[m 
+[31m-            if let Some(expected) = expected_channel {
+(B[m[31m-                if !channel.eq_ignore_ascii_case("OMNICHANNEL") && !channel.eq_ignore_ascii_case(expected) {
+(B[m[31m-                    return Err(format!("Channel mismatch: expected {}, found {}", expected, channel));
+(B[m[31m-                }
+(B[m[32m+        if let Some(expected) = expected_channel {
+(B[m[32m+            if !channel.eq_ignore_ascii_case("OMNICHANNEL")
+(B[m[32m+                && !channel.eq_ignore_ascii_case(expected)
+(B[m[32m+            {
+(B[m[32m+                return Err(format!(
+(B[m[32m+                    "Channel mismatch: expected {}, found {}",
+(B[m[32m+                    expected, channel
+(B[m[32m+                ));
+(B[m             }
+[32m+        }
+(B[m 
+[31m-            // Only allow transition from SUBMITTED or SUBMITTED_STALE
+(B[m[31m-            if status != "SUBMITTED" && status != "SUBMITTED_STALE" {
+(B[m[31m-                return Err(format!("Invalid state transition from {} to DELIVERED for outreach {}", status, outreach_id));
+(B[m[31m-            }
+(B[m[32m+        // Only allow transition from SUBMITTED or SUBMITTED_STALE
+(B[m[32m+        if status != "SUBMITTED" && status != "SUBMITTED_STALE" {
+(B[m[32m+            return Err(format!(
+(B[m[32m+                "Invalid state transition from {} to DELIVERED for outreach {}",
+(B[m[32m+                status, outreach_id
+(B[m[32m+            ));
+(B[m[32m+        }
+(B[m 
+[31m-            let channel_name = if !channel.is_empty() && !channel.eq_ignore_ascii_case("OMNICHANNEL") {
+(B[m[31m-                channel.as_str()
+(B[m[31m-            } else {
+(B[m[31m-                expected_channel.unwrap_or("OMNICHANNEL")
+(B[m[31m-            };
+(B[m[32m+        let channel_name = if !channel.is_empty() && !channel.eq_ignore_ascii_case("OMNICHANNEL") {
+(B[m[32m+            channel.as_str()
+(B[m[32m+        } else {
+(B[m[32m+            expected_channel.unwrap_or("OMNICHANNEL")
+(B[m[32m+        };
+(B[m 
+         Self::confirm_outreach_delivery(
+             conn,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:952:
+         for id in stuck_ids {
+             // Atomic conditional update ensures that if another worker or late webhook already transitioned this
+             // record, affected rows is 0 and count only increments for actual state transitions.
+[31m-            let affected = conn.execute(
+(B[m[31m-                "UPDATE outreach_history
+(B[m[32m+            let affected = conn
+(B[m[32m+                .execute(
+(B[m[32m+                    "UPDATE outreach_history
+(B[m                  SET status = 'SUBMITTED_STALE',
+                      error_message = ?1
+                  WHERE id = ?2 AND status = 'SUBMITTED'",
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/dispatcher.rs:960:
+[31m-                rusqlite::params![note, id],
+(B[m[31m-            )
+(B[m[31m-            .map_err(|e| format!("Failed to reconcile submission {}: {}", id, e))?;
+(B[m[32m+                    rusqlite::params![note, id],
+(B[m[32m+                )
+(B[m[32m+                .map_err(|e| format!("Failed to reconcile submission {}: {}", id, e))?;
+(B[m 
+             if affected > 0 {
+                 reconciled_count += affected;
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/evaluator.rs:155:
+ 
+         // 3. Check leads.status as additional fallback
+         let lead_status: Option<String> = conn
+[31m-            .query_row(
+(B[m[31m-                "SELECT status FROM leads WHERE id = ?1",
+(B[m[31m-                [lead_id],
+(B[m[31m-                |row| row.get(0),
+(B[m[31m-            )
+(B[m[32m+            .query_row("SELECT status FROM leads WHERE id = ?1", [lead_id], |row| {
+(B[m[32m+                row.get(0)
+(B[m[32m+            })
+(B[m             .ok();
+ 
+         let current_stage = deal_stage
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/mod.rs:11:
+ pub use dispatcher::{DispatchMode, DispatchPayload, DispatchResult, OmnichannelDispatcher};
+ pub use evaluator::{ConditionResult, StepConditionEvaluator};
+ pub use scheduler::{CampaignScheduler, SchedulerProcessSummary};
+[31m-pub use throttling::{AccountRotator, AccountStats, AntiBanThrottler, RotationStrategy, ThrottlingConfig};
+(B[m[32m+pub use throttling::{
+(B[m[32m+    AccountRotator, AccountStats, AntiBanThrottler, RotationStrategy, ThrottlingConfig,
+(B[m[32m+};
+(B[m 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/scheduler.rs:1:
+[31m-use crate::campaign::evaluator::{ConditionResult, StepConditionEvaluator};
+(B[m use crate::campaign::dispatcher::{DispatchMode, DispatchPayload, OmnichannelDispatcher};
+[32m+use crate::campaign::evaluator::{ConditionResult, StepConditionEvaluator};
+(B[m use crate::campaign::throttling::{AccountRotator, AntiBanThrottler};
+ use crate::events::{AppEvent, SharedEventBus};
+ use rusqlite::Connection;
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/scheduler.rs:107:
+                         "FAILED",
+                         Some("Campaign step definition not found"),
+                         Some(&now_iso),
+[31m-                    ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
+(B[m[32m+                    )
+(B[m[32m+                    .map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
+(B[m                     summary.failed_count += 1;
+                     continue;
+                 }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/scheduler.rs:114:
+             };
+ 
+             // 4. Evaluate step condition
+[31m-            let condition_result = StepConditionEvaluator::evaluate(
+(B[m[31m-                conn,
+(B[m[31m-                &step,
+(B[m[31m-                execution.lead_id,
+(B[m[31m-                Some(exec_id),
+(B[m[31m-            )?;
+(B[m[32m+            let condition_result =
+(B[m[32m+                StepConditionEvaluator::evaluate(conn, &step, execution.lead_id, Some(exec_id))?;
+(B[m 
+             match condition_result {
+                 ConditionResult::Skip { reason } => {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/scheduler.rs:129:
+                         "SKIPPED",
+                         Some(&reason),
+                         Some(&now_iso),
+[31m-                    ).map_err(|e| format!("DB error updating execution to SKIPPED: {}", e))?;
+(B[m[32m+                    )
+(B[m[32m+                    .map_err(|e| format!("DB error updating execution to SKIPPED: {}", e))?;
+(B[m                     summary.skipped_count += 1;
+                     continue;
+                 }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/scheduler.rs:155:
+                                 "PENDING",
+                                 Some("Throttled; waiting for rate limit"),
+                                 None,
+[31m-                            ).map_err(|e| format!("DB error resetting throttled execution: {}", e))?;
+(B[m[32m+                            )
+(B[m[32m+                            .map_err(|e| {
+(B[m[32m+                                format!("DB error resetting throttled execution: {}", e)
+(B[m[32m+                            })?;
+(B[m                             summary.throttled_count += 1;
+                             continue;
+                         }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/scheduler.rs:182:
+                                     "SENT",
+                                     None,
+                                     Some(&now_iso),
+[31m-                                ).map_err(|e| format!("DB error updating execution to SENT: {}", e))?;
+(B[m[32m+                                )
+(B[m[32m+                                .map_err(|e| {
+(B[m[32m+                                    format!("DB error updating execution to SENT: {}", e)
+(B[m[32m+                                })?;
+(B[m 
+                                 if let Some(ref acc) = account {
+                                     self.throttler.record_sent(acc);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/scheduler.rs:233:
+                                         execution.target_phone.as_deref(),
+                                         account.as_deref(),
+                                         &next_scheduled_iso,
+[31m-                                    ).map_err(|e| format!("DB error scheduling next step execution: {}", e))?;
+(B[m[32m+                                    )
+(B[m[32m+                                    .map_err(|e| {
+(B[m[32m+                                        format!("DB error scheduling next step execution: {}", e)
+(B[m[32m+                                    })?;
+(B[m                                     summary.next_steps_scheduled += 1;
+                                 }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/scheduler.rs:259:
+                                     "FAILED",
+                                     Some(&err_msg),
+                                     Some(&now_iso),
+[31m-                                ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
+(B[m[32m+                                )
+(B[m[32m+                                .map_err(|e| {
+(B[m[32m+                                    format!("DB error updating execution to FAILED: {}", e)
+(B[m[32m+                                })?;
+(B[m                                 summary.failed_count += 1;
+                             }
+                         }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/scheduler.rs:299:
+                                     "FAILED",
+                                     Some(&terminal_err),
+                                     Some(&now_iso),
+[31m-                                ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
+(B[m[32m+                                )
+(B[m[32m+                                .map_err(|e| {
+(B[m[32m+                                    format!("DB error updating execution to FAILED: {}", e)
+(B[m[32m+                                })?;
+(B[m                                 summary.failed_count += 1;
+                             }
+                         }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:229:
+ #[test]
+ fn test_sequence_save_and_enrollment() {
+     let mut conn = setup_test_db();
+[31m-    let lead1 = insert_test_lead(&conn, "Nguyễn Văn A", "Công ty ABC", "0901234567", "a@abc.com");
+(B[m[31m-    let lead2 = insert_test_lead(&conn, "Trần Thị B", "Công ty XYZ", "0907654321", "b@xyz.com");
+(B[m[32m+    let lead1 = insert_test_lead(
+(B[m[32m+        &conn,
+(B[m[32m+        "Nguyễn Văn A",
+(B[m[32m+        "Công ty ABC",
+(B[m[32m+        "0901234567",
+(B[m[32m+        "a@abc.com",
+(B[m[32m+    );
+(B[m[32m+    let lead2 = insert_test_lead(
+(B[m[32m+        &conn,
+(B[m[32m+        "Trần Thị B",
+(B[m[32m+        "Công ty XYZ",
+(B[m[32m+        "0907654321",
+(B[m[32m+        "b@xyz.com",
+(B[m[32m+    );
+(B[m 
+     let campaign = Campaign {
+         id: None,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:288:
+     assert_eq!(executions[1].lead_id, lead2);
+ 
+     // Lead journey state should be ENROLLED
+[31m-    let journey1 = crate::db::get_lead_journey_state(&conn, lead1).unwrap().unwrap();
+(B[m[32m+    let journey1 = crate::db::get_lead_journey_state(&conn, lead1)
+(B[m[32m+        .unwrap()
+(B[m[32m+        .unwrap();
+(B[m     assert_eq!(journey1.active_campaign_id, Some(campaign_id));
+     assert_eq!(journey1.current_stage, "ENROLLED");
+ }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:479:
+         "tam@taman.vn",
+     );
+ 
+[31m-    let template = "{Kính gửi|Chào anh|Chào bạn} {{name}} từ {{company}}! Số {{phone}} của anh đã được duyệt.";
+(B[m[32m+    let template =
+(B[m[32m+        "{Kính gửi|Chào anh|Chào bạn} {{name}} từ {{company}}! Số {{phone}} của anh đã được duyệt.";
+(B[m     conn.execute(
+         "INSERT INTO zalo_sessions (imei, session_name) VALUES ('IMEI_TEST', 'Test Session')",
+         [],
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:564:
+     ];
+ 
+     let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps).unwrap();
+[31m-    let enrolled =
+(B[m[31m-        enroll_leads_into_campaign_internal(&conn, campaign_id, &[lead_id]).unwrap();
+(B[m[32m+    let enrolled = enroll_leads_into_campaign_internal(&conn, campaign_id, &[lead_id]).unwrap();
+(B[m     assert_eq!(enrolled, 1);
+ 
+     let scheduler = CampaignScheduler::with_defaults();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:572:
+     scheduler.rotator.register_account("ZALO", "IMEI_MAIN");
+[31m-    scheduler.rotator.register_account("WHATSAPP", "+84933445566");
+(B[m[32m+    scheduler
+(B[m[32m+        .rotator
+(B[m[32m+        .register_account("WHATSAPP", "+84933445566");
+(B[m     conn.execute(
+         "INSERT INTO zalo_sessions (imei, session_name) VALUES ('IMEI_MAIN', 'Test Session')",
+         [],
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:693:
+ #[test]
+ fn test_campaign_scheduler_atomic_claim_concurrency_race() {
+     let mut conn = setup_test_db();
+[31m-    let lead_id = insert_test_lead(&conn, "Concurrency Lead", "Concurrent Co", "0988776655", "c@co.com");
+(B[m[32m+    let lead_id = insert_test_lead(
+(B[m[32m+        &conn,
+(B[m[32m+        "Concurrency Lead",
+(B[m[32m+        "Concurrent Co",
+(B[m[32m+        "0988776655",
+(B[m[32m+        "c@co.com",
+(B[m[32m+    );
+(B[m 
+     let campaign = Campaign {
+         id: None,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:807:
+         ai_prompt_override: None,
+     };
+ 
+[31m-    let res_phone = OmnichannelDispatcher::dispatch(&conn, &payload_empty_phone, DispatchMode::Live);
+(B[m[32m+    let res_phone =
+(B[m[32m+        OmnichannelDispatcher::dispatch(&conn, &payload_empty_phone, DispatchMode::Live);
+(B[m     assert!(res_phone.is_err());
+     assert!(res_phone.unwrap_err().contains("invalid phone number"));
+ }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:815:
+ #[test]
+ fn test_provider_delivery_lifecycle_and_multichannel_confirmation() {
+     let conn = setup_test_db();
+[31m-    let lead_id = insert_test_lead(&conn, "Nguyễn Văn Alpha", "Alpha Corp", "0912345678", "alpha@corp.vn");
+(B[m[32m+    let lead_id = insert_test_lead(
+(B[m[32m+        &conn,
+(B[m[32m+        "Nguyễn Văn Alpha",
+(B[m[32m+        "Alpha Corp",
+(B[m[32m+        "0912345678",
+(B[m[32m+        "alpha@corp.vn",
+(B[m[32m+    );
+(B[m 
+     // 1. Setup accounts for all 4 channels
+     conn.execute(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:833:
+         "INSERT INTO smtp_servers (id, host, port, username, from_email, is_active)
+          VALUES (201, 'smtp.alphacorp.vn', 587, 'info', 'info@alphacorp.vn', 1)",
+         [],
+[31m-    ).unwrap();
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     conn.execute(
+         "INSERT INTO channel_accounts (id, channel, account_name, provider_account_key, status, created_at, updated_at)
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:852:
+         template_content: "Zalo outreach to {{name}}".to_string(),
+         ai_prompt_override: None,
+     };
+[31m-    let res_zalo = OmnichannelDispatcher::dispatch(&conn, &payload_zalo, DispatchMode::Live).unwrap();
+(B[m[32m+    let res_zalo =
+(B[m[32m+        OmnichannelDispatcher::dispatch(&conn, &payload_zalo, DispatchMode::Live).unwrap();
+(B[m     assert!(res_zalo.success);
+     assert_eq!(res_zalo.delivery_status, "SUBMITTED");
+[31m-    assert!(res_zalo.provider_message_id.as_ref().unwrap().starts_with("zalo_msg_"));
+(B[m[32m+    assert!(res_zalo
+(B[m[32m+        .provider_message_id
+(B[m[32m+        .as_ref()
+(B[m[32m+        .unwrap()
+(B[m[32m+        .starts_with("zalo_msg_"));
+(B[m 
+     // 3. Test WhatsApp live dispatch
+     let payload_wa = DispatchPayload {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:871:
+     let res_wa = OmnichannelDispatcher::dispatch(&conn, &payload_wa, DispatchMode::Live).unwrap();
+     assert!(res_wa.success);
+     assert_eq!(res_wa.delivery_status, "SUBMITTED");
+[31m-    assert!(res_wa.provider_message_id.as_ref().unwrap().starts_with("wamid."));
+(B[m[32m+    assert!(res_wa
+(B[m[32m+        .provider_message_id
+(B[m[32m+        .as_ref()
+(B[m[32m+        .unwrap()
+(B[m[32m+        .starts_with("wamid."));
+(B[m 
+     // 4. Test Email live dispatch
+     let payload_email = DispatchPayload {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:884:
+         template_content: "Email outreach to {{name}}".to_string(),
+         ai_prompt_override: None,
+     };
+[31m-    let res_email = OmnichannelDispatcher::dispatch(&conn, &payload_email, DispatchMode::Live).unwrap();
+(B[m[32m+    let res_email =
+(B[m[32m+        OmnichannelDispatcher::dispatch(&conn, &payload_email, DispatchMode::Live).unwrap();
+(B[m     assert!(res_email.success);
+     assert_eq!(res_email.delivery_status, "SUBMITTED");
+[31m-    assert!(res_email.provider_message_id.as_ref().unwrap().starts_with("<"));
+(B[m[32m+    assert!(res_email
+(B[m[32m+        .provider_message_id
+(B[m[32m+        .as_ref()
+(B[m[32m+        .unwrap()
+(B[m[32m+        .starts_with("<"));
+(B[m 
+     // 5. Test Facebook live dispatch
+     let payload_fb = DispatchPayload {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:903:
+     let res_fb = OmnichannelDispatcher::dispatch(&conn, &payload_fb, DispatchMode::Live).unwrap();
+     assert!(res_fb.success);
+     assert_eq!(res_fb.delivery_status, "SUBMITTED");
+[31m-    assert!(res_fb.provider_message_id.as_ref().unwrap().starts_with("mid.$gA_"));
+(B[m[32m+    assert!(res_fb
+(B[m[32m+        .provider_message_id
+(B[m[32m+        .as_ref()
+(B[m[32m+        .unwrap()
+(B[m[32m+        .starts_with("mid.$gA_"));
+(B[m 
+     // Before confirmation: all 4 are in SUBMITTED state in outreach_history
+     let submitted_count: i64 = conn
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:917:
+ 
+     // External delivery confirmation arrives via webhook / callback for each
+     let now = "2026-09-05T08:00:00Z";
+[31m-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_zalo.provider_message_id.as_ref().unwrap(), Some("ZALO"), now).unwrap());
+(B[m[31m-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_wa.provider_message_id.as_ref().unwrap(), Some("WHATSAPP"), now).unwrap());
+(B[m[31m-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_email.provider_message_id.as_ref().unwrap(), Some("EMAIL"), now).unwrap());
+(B[m[31m-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res_fb.provider_message_id.as_ref().unwrap(), Some("FACEBOOK"), now).unwrap());
+(B[m[32m+    assert!(OmnichannelDispatcher::confirm_provider_delivery(
+(B[m[32m+        &conn,
+(B[m[32m+        res_zalo.provider_message_id.as_ref().unwrap(),
+(B[m[32m+        Some("ZALO"),
+(B[m[32m+        now
+(B[m[32m+    )
+(B[m[32m+    .unwrap());
+(B[m[32m+    assert!(OmnichannelDispatcher::confirm_provider_delivery(
+(B[m[32m+        &conn,
+(B[m[32m+        res_wa.provider_message_id.as_ref().unwrap(),
+(B[m[32m+        Some("WHATSAPP"),
+(B[m[32m+        now
+(B[m[32m+    )
+(B[m[32m+    .unwrap());
+(B[m[32m+    assert!(OmnichannelDispatcher::confirm_provider_delivery(
+(B[m[32m+        &conn,
+(B[m[32m+        res_email.provider_message_id.as_ref().unwrap(),
+(B[m[32m+        Some("EMAIL"),
+(B[m[32m+        now
+(B[m[32m+    )
+(B[m[32m+    .unwrap());
+(B[m[32m+    assert!(OmnichannelDispatcher::confirm_provider_delivery(
+(B[m[32m+        &conn,
+(B[m[32m+        res_fb.provider_message_id.as_ref().unwrap(),
+(B[m[32m+        Some("FACEBOOK"),
+(B[m[32m+        now
+(B[m[32m+    )
+(B[m[32m+    .unwrap());
+(B[m 
+     // Verify all 4 transitioned to DELIVERED status
+     let delivered_count: i64 = conn
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:976:
+     assert_eq!(res2.message_id.unwrap(), initial_msg_id);
+ 
+     // External provider confirms delivery
+[31m-    assert!(OmnichannelDispatcher::confirm_provider_delivery(&conn, res1.provider_message_id.as_ref().unwrap(), Some("ZALO"), "2026-09-05T08:00:00Z").unwrap());
+(B[m[32m+    assert!(OmnichannelDispatcher::confirm_provider_delivery(
+(B[m[32m+        &conn,
+(B[m[32m+        res1.provider_message_id.as_ref().unwrap(),
+(B[m[32m+        Some("ZALO"),
+(B[m[32m+        "2026-09-05T08:00:00Z"
+(B[m[32m+    )
+(B[m[32m+    .unwrap());
+(B[m 
+     // Third dispatch after DELIVERED recovers DELIVERED record
+     let res3 = OmnichannelDispatcher::dispatch(&conn, &payload, DispatchMode::Live).unwrap();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1038:
+     scheduler.rotator.register_account("ZALO", "IMEI_INACTIVE");
+ 
+     // Process due execution: provider delivery should fail closed because session is inactive
+[31m-    let summary = scheduler.process_due_executions(&conn, DispatchMode::Live, 10).unwrap();
+(B[m[32m+    let summary = scheduler
+(B[m[32m+        .process_due_executions(&conn, DispatchMode::Live, 10)
+(B[m[32m+        .unwrap();
+(B[m     assert_eq!(summary.failed_count, 1);
+     assert_eq!(summary.sent_count, 0);
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1151:
+ #[tokio::test]
+ async fn test_provider_async_timeout_cancellation() {
+     let conn = setup_test_db();
+[31m-    let lead_id = insert_test_lead(&conn, "Timeout Lead", "Timeout Co", "0933445566", "timeout@co.vn");
+(B[m[32m+    let lead_id = insert_test_lead(
+(B[m[32m+        &conn,
+(B[m[32m+        "Timeout Lead",
+(B[m[32m+        "Timeout Co",
+(B[m[32m+        "0933445566",
+(B[m[32m+        "timeout@co.vn",
+(B[m[32m+    );
+(B[m     conn.execute(
+         "INSERT INTO zalo_sessions (imei, session_name, is_active) VALUES ('IMEI_TIMEOUT', 'Timeout Sess', 1)",
+         [],
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1175:
+         DispatchMode::Live,
+         &hanging_provider,
+         std::time::Duration::from_millis(50),
+[31m-    ).await;
+(B[m[32m+    )
+(B[m[32m+    .await;
+(B[m 
+     assert!(res.is_err(), "Expected timeout error but got success");
+     let err = res.unwrap_err();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1226:
+         &payload,
+         DispatchMode::Live,
+         &provider,
+[31m-    ).expect("First dispatch should succeed");
+(B[m[32m+    )
+(B[m[32m+    .expect("First dispatch should succeed");
+(B[m 
+     assert!(res1.success);
+     assert_eq!(res1.delivery_status, "SUBMITTED");
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1239:
+         &payload,
+         DispatchMode::Live,
+         &provider,
+[31m-    ).expect("Second dispatch should return existing idempotent result");
+(B[m[32m+    )
+(B[m[32m+    .expect("Second dispatch should return existing idempotent result");
+(B[m 
+     assert!(res2.success);
+     assert_eq!(res2.message_id, Some(msg_id1));
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1251:
+         res1.provider_message_id.as_ref().unwrap(),
+         Some("ZALO"),
+         "2026-09-05T08:00:00Z",
+[31m-    ).unwrap());
+(B[m[32m+    )
+(B[m[32m+    .unwrap());
+(B[m 
+     // Third dispatch recovers DELIVERED
+     let res3 = OmnichannelDispatcher::dispatch_with_provider(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1259:
+         &payload,
+         DispatchMode::Live,
+         &provider,
+[31m-    ).expect("Third dispatch should recover delivered record");
+(B[m[32m+    )
+(B[m[32m+    .expect("Third dispatch should recover delivered record");
+(B[m     assert!(res3.success);
+     assert_eq!(res3.delivery_status, "DELIVERED");
+     assert_eq!(res3.message_id, Some(msg_id1));
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1275:
+     assert_eq!(count, 1, "Only one outreach history entry must exist");
+ 
+     // Verify unique index on idempotency_key rejects raw duplicate insert
+[31m-    let idempotency_key = format!("campaign:{}:step:{}:lead:{}", payload.campaign_id, payload.step_id, payload.lead_id);
+(B[m[32m+    let idempotency_key = format!(
+(B[m[32m+        "campaign:{}:step:{}:lead:{}",
+(B[m[32m+        payload.campaign_id, payload.step_id, payload.lead_id
+(B[m[32m+    );
+(B[m     let duplicate_insert = conn.execute(
+         "INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei, idempotency_key)
+          VALUES (?1, ?2, 'SUBMITTED', '2026-09-05T00:00:00Z', 'IMEI_RACE', ?3)",
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1285:
+     assert!(duplicate_insert.is_err());
+     let err_str = duplicate_insert.unwrap_err().to_string();
+     assert!(
+[31m-        err_str.contains("UNIQUE constraint failed") || err_str.contains("idx_outreach_history_idempotency"),
+(B[m[32m+        err_str.contains("UNIQUE constraint failed")
+(B[m[32m+            || err_str.contains("idx_outreach_history_idempotency"),
+(B[m         "Expected UNIQUE constraint violation, got: {}",
+         err_str
+     );
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1306:
+         _idempotency_key: &str,
+         _timeout: std::time::Duration,
+     ) -> Result<ProviderDeliveryResponse, String> {
+[31m-        let prev = self.call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+(B[m[32m+        let prev = self
+(B[m[32m+            .call_count
+(B[m[32m+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+(B[m         Ok(ProviderDeliveryResponse {
+             provider_message_id: format!("prov_counted_{}", prev),
+             status: DeliveryStatus::Submitted,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1344:
+         &payload,
+         DispatchMode::Live,
+         &provider,
+[31m-    ).unwrap();
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m     assert!(res1.success);
+     assert_eq!(res1.delivery_status, "SUBMITTED");
+[31m-    assert_eq!(provider.call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+(B[m[32m+    assert_eq!(
+(B[m[32m+        provider
+(B[m[32m+            .call_count
+(B[m[32m+            .load(std::sync::atomic::Ordering::SeqCst),
+(B[m[32m+        1
+(B[m[32m+    );
+(B[m 
+     // 2. Client retry occurs (e.g. after a client-side timeout / network drop):
+     // The dispatcher must reconcile using the database idempotency key,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1357:
+         &payload,
+         DispatchMode::Live,
+         &provider,
+[31m-    ).unwrap();
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m     assert!(res2.success);
+     assert_eq!(res2.delivery_status, "SUBMITTED");
+     assert_eq!(res2.message_id, res1.message_id);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1364:
+     // CRITICAL: Call count must remain 1 - no duplicate provider transmission
+     assert_eq!(
+[31m-        provider.call_count.load(std::sync::atomic::Ordering::SeqCst),
+(B[m[32m+        provider
+(B[m[32m+            .call_count
+(B[m[32m+            .load(std::sync::atomic::Ordering::SeqCst),
+(B[m         1,
+         "Provider must not be called again on retry of already submitted message"
+     );
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1390:
+ 
+     // Reconcile submissions stuck beyond 300s
+     let reconciled_count = OmnichannelDispatcher::reconcile_stuck_submissions(&conn, 300).unwrap();
+[31m-    assert_eq!(reconciled_count, 1, "Only the 1-hour-old submission should be reconciled");
+(B[m[32m+    assert_eq!(
+(B[m[32m+        reconciled_count, 1,
+(B[m[32m+        "Only the 1-hour-old submission should be reconciled"
+(B[m[32m+    );
+(B[m 
+     // Verify stuck submission transitioned to SUBMITTED_STALE (holding automated retries to prevent duplicate send)
+     let (status1, err1): (String, Option<String>) = conn
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1419:
+         "prov_stuck_123",
+         Some("ZALO"),
+         "2026-09-05T08:05:00Z",
+[31m-    ).unwrap());
+(B[m[32m+    )
+(B[m[32m+    .unwrap());
+(B[m 
+     let (status_deliv, _): (String, Option<String>) = conn
+         .query_row(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1435:
+         "UPDATE outreach_history SET status = 'FAILED' WHERE provider_message_id = 'prov_stuck_123' AND status != 'DELIVERED'",
+         [],
+     ).unwrap();
+[31m-    assert_eq!(demote_attempt, 0, "Terminal DELIVERED records cannot be demoted backwards");
+(B[m[32m+    assert_eq!(
+(B[m[32m+        demote_attempt, 0,
+(B[m[32m+        "Terminal DELIVERED records cannot be demoted backwards"
+(B[m[32m+    );
+(B[m }
+ 
+ #[test]
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1458:
+         INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei)
+         VALUES (1, 10, 'SENT', '2026-01-02T00:00:00Z', 'IMEI_OLD_1');
+         INSERT INTO outreach_history (lead_id, template_id, status, sent_at, session_imei)
+[31m-        VALUES (2, 20, 'DELIVERED', '2026-01-03T00:00:00Z', 'IMEI_OLD_2');"
+(B[m[31m-    ).unwrap();
+(B[m[32m+        VALUES (2, 20, 'DELIVERED', '2026-01-03T00:00:00Z', 'IMEI_OLD_2');",
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     // 2. Execute migration upgrade script as performed in db::init_db
+[31m-    conn.execute("ALTER TABLE outreach_history ADD COLUMN idempotency_key TEXT", []).unwrap();
+(B[m[31m-    conn.execute("ALTER TABLE outreach_history ADD COLUMN provider_message_id TEXT", []).unwrap();
+(B[m     conn.execute(
+[32m+        "ALTER TABLE outreach_history ADD COLUMN idempotency_key TEXT",
+(B[m[32m+        [],
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m[32m+    conn.execute(
+(B[m[32m+        "ALTER TABLE outreach_history ADD COLUMN provider_message_id TEXT",
+(B[m[32m+        [],
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m[32m+    conn.execute(
+(B[m         "UPDATE outreach_history SET idempotency_key = 'legacy:history:' || id WHERE idempotency_key IS NULL",
+         [],
+     ).unwrap();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1474:
+     ).unwrap();
+ 
+     // 3. Verify all legacy rows have distinct, populated idempotency keys
+[31m-    let mut stmt = conn.prepare("SELECT id, idempotency_key FROM outreach_history ORDER BY id ASC").unwrap();
+(B[m[32m+    let mut stmt = conn
+(B[m[32m+        .prepare("SELECT id, idempotency_key FROM outreach_history ORDER BY id ASC")
+(B[m[32m+        .unwrap();
+(B[m     let rows: Vec<(i64, String)> = stmt
+         .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+         .unwrap()
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1499:
+          VALUES (3, 30, 'SUBMITTED', '2026-09-05T00:00:00Z', 'IMEI_NEW', 'campaign:1:step:1:lead:3')",
+         [],
+     );
+[31m-    assert!(res_dup.is_err(), "Duplicate insertion must violate idx_outreach_history_idempotency");
+(B[m[32m+    assert!(
+(B[m[32m+        res_dup.is_err(),
+(B[m[32m+        "Duplicate insertion must violate idx_outreach_history_idempotency"
+(B[m[32m+    );
+(B[m }
+ 
+ #[test]
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1525:
+             content TEXT NOT NULL,
+             created_at TEXT NOT NULL,
+             performed_by TEXT NOT NULL
+[31m-        );"
+(B[m[31m-    ).unwrap();
+(B[m[32m+        );",
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     let old_timestamp = "2026-01-01T00:00:00Z";
+     conn.execute(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1537:
+ 
+     // 1. Worker 1 executes reconciliation and claims the submission
+     let count1 = OmnichannelDispatcher::reconcile_stuck_submissions(&conn, 300).unwrap();
+[31m-    assert_eq!(count1, 1, "Worker 1 must claim and transition the 1 stuck submission to SUBMITTED_STALE");
+(B[m[32m+    assert_eq!(
+(B[m[32m+        count1, 1,
+(B[m[32m+        "Worker 1 must claim and transition the 1 stuck submission to SUBMITTED_STALE"
+(B[m[32m+    );
+(B[m 
+     // 2. Worker 2 executes concurrently: since Worker 1 updated status to SUBMITTED_STALE, Worker 2 finds 0 affected
+     let count2 = OmnichannelDispatcher::reconcile_stuck_submissions(&conn, 300).unwrap();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1544:
+[31m-    assert_eq!(count2, 0, "Worker 2 must see 0 affected rows (no race condition / double count)");
+(B[m[32m+    assert_eq!(
+(B[m[32m+        count2, 0,
+(B[m[32m+        "Worker 2 must see 0 affected rows (no race condition / double count)"
+(B[m[32m+    );
+(B[m 
+     // 3. Late webhook arrives: confirms delivery successfully (SUBMITTED_STALE -> DELIVERED)
+     assert!(OmnichannelDispatcher::confirm_provider_delivery(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1549:
+         "prov_race_100",
+         Some("ZALO"),
+         "2026-09-05T09:00:00Z",
+[31m-    ).unwrap());
+(B[m[32m+    )
+(B[m[32m+    .unwrap());
+(B[m 
+     let (final_status, _): (String, Option<String>) = conn
+         .query_row(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1566:
+         "prov_race_100",
+         Some("ZALO"),
+         "2026-09-05T09:01:00Z",
+[31m-    ).unwrap();
+(B[m[31m-    assert!(dup_confirm, "Subsequent webhook callback must return Ok(true) idempotently");
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m[32m+    assert!(
+(B[m[32m+        dup_confirm,
+(B[m[32m+        "Subsequent webhook callback must return Ok(true) idempotently"
+(B[m[32m+    );
+(B[m }
+ 
+ #[test]
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1603:
+     ).unwrap();
+ 
+     // Verify external IDs remain completely unmangled and distinct
+[31m-    let fb_msg: String = conn.query_row("SELECT provider_message_id FROM outreach_history WHERE id = 1", [], |r| r.get(0)).unwrap();
+(B[m[31m-    let wa_msg: String = conn.query_row("SELECT provider_message_id FROM outreach_history WHERE id = 2", [], |r| r.get(0)).unwrap();
+(B[m[31m-    assert_eq!(fb_msg, "ext_msg_100", "External IDs must never be mutated or rewritten");
+(B[m[31m-    assert_eq!(wa_msg, "ext_msg_100", "External IDs must never be mutated or rewritten");
+(B[m[32m+    let fb_msg: String = conn
+(B[m[32m+        .query_row(
+(B[m[32m+            "SELECT provider_message_id FROM outreach_history WHERE id = 1",
+(B[m[32m+            [],
+(B[m[32m+            |r| r.get(0),
+(B[m[32m+        )
+(B[m[32m+        .unwrap();
+(B[m[32m+    let wa_msg: String = conn
+(B[m[32m+        .query_row(
+(B[m[32m+            "SELECT provider_message_id FROM outreach_history WHERE id = 2",
+(B[m[32m+            [],
+(B[m[32m+            |r| r.get(0),
+(B[m[32m+        )
+(B[m[32m+        .unwrap();
+(B[m[32m+    assert_eq!(
+(B[m[32m+        fb_msg, "ext_msg_100",
+(B[m[32m+        "External IDs must never be mutated or rewritten"
+(B[m[32m+    );
+(B[m[32m+    assert_eq!(
+(B[m[32m+        wa_msg, "ext_msg_100",
+(B[m[32m+        "External IDs must never be mutated or rewritten"
+(B[m[32m+    );
+(B[m 
+     // Attempting duplicate within the SAME channel is rejected by database constraint
+     let dup_insert = conn.execute(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1614:
+          VALUES (5, 1, 'FACEBOOK', 'SUBMITTED', '2026-09-05T00:00:00Z', 'FB_PAGE_2', 'ext_msg_100')",
+         [],
+     );
+[31m-    assert!(dup_insert.is_err(), "Composite index must reject duplicate provider_message_id within the same channel");
+(B[m[32m+    assert!(
+(B[m[32m+        dup_insert.is_err(),
+(B[m[32m+        "Composite index must reject duplicate provider_message_id within the same channel"
+(B[m[32m+    );
+(B[m }
+ 
+ #[test]
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1664:
+         Some("super-secret-token"),
+         "2026-09-05T08:01:00Z",
+     );
+[31m-    assert!(empty_secret_res.is_err(), "Empty or mismatching secret must be rejected");
+(B[m[32m+    assert!(
+(B[m[32m+        empty_secret_res.is_err(),
+(B[m[32m+        "Empty or mismatching secret must be rejected"
+(B[m[32m+    );
+(B[m 
+     let missing_secret_res = OmnichannelDispatcher::confirm_provider_delivery_secure(
+         &conn,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1674:
+         Some("super-secret-token"),
+         "2026-09-05T08:01:00Z",
+     );
+[31m-    assert!(missing_secret_res.is_err(), "Missing secret must be rejected when expected_secret is set");
+(B[m[32m+    assert!(
+(B[m[32m+        missing_secret_res.is_err(),
+(B[m[32m+        "Missing secret must be rejected when expected_secret is set"
+(B[m[32m+    );
+(B[m 
+     // 3. Wrong secret rejected via constant-time check
+     let wrong_secret_res = OmnichannelDispatcher::confirm_provider_delivery_secure(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1696:
+         Some("super-secret-token"),
+         "2026-09-05T08:01:00Z",
+     );
+[31m-    assert!(mismatch_channel_res.is_err(), "Mismatched channel callback must be rejected");
+(B[m[32m+    assert!(
+(B[m[32m+        mismatch_channel_res.is_err(),
+(B[m[32m+        "Mismatched channel callback must be rejected"
+(B[m[32m+    );
+(B[m 
+     // 5. Valid matching credentials succeed
+     let valid_res = OmnichannelDispatcher::confirm_provider_delivery_secure(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1707:
+         Some("super-secret-token"),
+         "2026-09-05T08:01:00Z",
+     );
+[31m-    assert!(valid_res.unwrap(), "Matching channel and valid credentials must confirm delivery");
+(B[m[32m+    assert!(
+(B[m[32m+        valid_res.unwrap(),
+(B[m[32m+        "Matching channel and valid credentials must confirm delivery"
+(B[m[32m+    );
+(B[m 
+     // Verify status is DELIVERED
+[31m-    let status: String = conn.query_row("SELECT status FROM outreach_history WHERE id = 1", [], |r| r.get(0)).unwrap();
+(B[m[32m+    let status: String = conn
+(B[m[32m+        .query_row(
+(B[m[32m+            "SELECT status FROM outreach_history WHERE id = 1",
+(B[m[32m+            [],
+(B[m[32m+            |r| r.get(0),
+(B[m[32m+        )
+(B[m[32m+        .unwrap();
+(B[m     assert_eq!(status, "DELIVERED");
+ 
+     // 6. Duplicate webhook delivery remains idempotent
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1722:
+         Some("super-secret-token"),
+         "2026-09-05T08:02:00Z",
+     );
+[31m-    assert!(dup_res.unwrap(), "Duplicate webhook confirmation must return Ok(true) idempotently");
+(B[m[32m+    assert!(
+(B[m[32m+        dup_res.unwrap(),
+(B[m[32m+        "Duplicate webhook confirmation must return Ok(true) idempotently"
+(B[m[32m+    );
+(B[m }
+ 
+ #[tokio::test]
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1729:
+ async fn test_live_and_simulated_delivery_provider_separation() {
+     let sim_provider = SimulatedChannelDeliveryProvider::default();
+     let sim_res = sim_provider
+[31m-        .deliver("ZALO", "IMEI_DEV", "0901234567", "Hello", "test:key:1", std::time::Duration::from_secs(5))
+(B[m[32m+        .deliver(
+(B[m[32m+            "ZALO",
+(B[m[32m+            "IMEI_DEV",
+(B[m[32m+            "0901234567",
+(B[m[32m+            "Hello",
+(B[m[32m+            "test:key:1",
+(B[m[32m+            std::time::Duration::from_secs(5),
+(B[m[32m+        )
+(B[m         .await
+         .unwrap();
+[31m-    assert!(sim_res.provider_message_id.starts_with("zalo_msg_IMEI_DEV_"));
+(B[m[32m+    assert!(sim_res
+(B[m[32m+        .provider_message_id
+(B[m[32m+        .starts_with("zalo_msg_IMEI_DEV_"));
+(B[m     assert_eq!(sim_res.status, DeliveryStatus::Submitted);
+ 
+     let live_provider = LiveChannelDeliveryProvider::default();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/tests.rs:1739:
+     let live_res = live_provider
+[31m-        .deliver("ZALO", "IMEI_PROD", "0901234567", "Hello", "test:key:2", std::time::Duration::from_secs(5))
+(B[m[32m+        .deliver(
+(B[m[32m+            "ZALO",
+(B[m[32m+            "IMEI_PROD",
+(B[m[32m+            "0901234567",
+(B[m[32m+            "Hello",
+(B[m[32m+            "test:key:2",
+(B[m[32m+            std::time::Duration::from_secs(5),
+(B[m[32m+        )
+(B[m         .await
+         .unwrap();
+[31m-    assert!(live_res.provider_message_id.starts_with("zalo_msg_IMEI_PROD_"));
+(B[m[32m+    assert!(live_res
+(B[m[32m+        .provider_message_id
+(B[m[32m+        .starts_with("zalo_msg_IMEI_PROD_"));
+(B[m     assert_eq!(live_res.status, DeliveryStatus::Submitted);
+ }
+[31m-
+(B[m[31m-
+(B[m 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/campaign/throttling.rs:267:
+     }
+ 
+     /// Selects the next available account for the channel that passes throttler checks.
+[31m-    pub fn next_account(
+(B[m[31m-        &self,
+(B[m[31m-        channel: &str,
+(B[m[31m-        throttler: &AntiBanThrottler,
+(B[m[31m-    ) -> Option<String> {
+(B[m[32m+    pub fn next_account(&self, channel: &str, throttler: &AntiBanThrottler) -> Option<String> {
+(B[m         let ch = channel.trim().to_lowercase();
+         let accounts = self.get_accounts(&ch);
+         if accounts.is_empty() {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/commands.rs:2897:
+         );
+         match res {
+             Ok((phone_opt, uid_opt)) => {
+[31m-                let has_phone = phone_opt
+(B[m[31m-                    .map(|p| !p.trim().is_empty())
+(B[m[31m-                    .unwrap_or(false);
+(B[m[31m-                let has_uid = uid_opt
+(B[m[31m-                    .map(|u| !u.trim().is_empty())
+(B[m[31m-                    .unwrap_or(false);
+(B[m[32m+                let has_phone = phone_opt.map(|p| !p.trim().is_empty()).unwrap_or(false);
+(B[m[32m+                let has_uid = uid_opt.map(|u| !u.trim().is_empty()).unwrap_or(false);
+(B[m                 if has_phone || has_uid {
+                     valid_ids.push(id);
+                 } else {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/commands.rs:8315:
+         .map_err(|e| format!("Database lock error: {}", e))?;
+     crate::db::increment_template_usage(&conn, id).map_err(|e| format!("Database error: {}", e))
+ }
+[31m-
+(B[m 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/commands_test.rs:4998:
+         );
+     }
+ }
+[31m-
+(B[m 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/commands.rs:1272:
+             let data_url = format!("data:{};base64,{}", resolved_mime, b64_data);
+             persist_attachment_thumbnail(state.service.repository.db_path(), att_id, &data_url)?;
+ 
+[31m-            state.service.events.publish(
+(B[m[31m-                crate::conversation::events::ConversationInvalidatedEvent {
+(B[m[31m-                    conversation_id,
+(B[m[31m-                    lead_id: None,
+(B[m[31m-                    channel: attachment_channel,
+(B[m[31m-                    reason: crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
+(B[m[31m-                    message_id: None,
+(B[m[31m-                },
+(B[m[31m-            );
+(B[m[32m+            state
+(B[m[32m+                .service
+(B[m[32m+                .events
+(B[m[32m+                .publish(crate::conversation::events::ConversationInvalidatedEvent {
+(B[m[32m+                conversation_id,
+(B[m[32m+                lead_id: None,
+(B[m[32m+                channel: attachment_channel,
+(B[m[32m+                reason:
+(B[m[32m+                    crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
+(B[m[32m+                message_id: None,
+(B[m[32m+            });
+(B[m 
+             let (width, height) = parse_attachment_dimensions(&metadata_json);
+             return Ok(crate::conversation::types::ConversationAttachment {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/commands.rs:1657:
+                 conversation_id,
+                 lead_id: None,
+                 channel: Channel::WhatsApp,
+[31m-                reason: crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
+(B[m[32m+                reason:
+(B[m[32m+                    crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
+(B[m                 message_id: None,
+             });
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/facebook/normalizer_test.rs:13:
+             zalo_uid TEXT
+         )",
+         [],
+[31m-    ).unwrap();
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m     crate::conversation::migration::migrate(&conn).unwrap();
+     conn.execute(
+         "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/facebook/normalizer_test.rs:99:
+     assert_eq!(summary.new_messages_count, 2);
+     assert_eq!(summary.delta_events.len(), 2);
+     assert_eq!(summary.delta_events[0].sequence, 1);
+[31m-    assert_eq!(summary.delta_events[0].message.text_content, Some("Chào bạn!".to_string()));
+(B[m[32m+    assert_eq!(
+(B[m[32m+        summary.delta_events[0].message.text_content,
+(B[m[32m+        Some("Chào bạn!".to_string())
+(B[m[32m+    );
+(B[m     assert_eq!(summary.delta_events[1].sequence, 2);
+[31m-    assert_eq!(summary.delta_events[1].message.text_content, Some("Chào chị, shop có thể hỗ trợ gì ạ?".to_string()));
+(B[m[32m+    assert_eq!(
+(B[m[32m+        summary.delta_events[1].message.text_content,
+(B[m[32m+        Some("Chào chị, shop có thể hỗ trợ gì ạ?".to_string())
+(B[m[32m+    );
+(B[m     assert_eq!(summary.delta_events[1].message.attachments.len(), 1);
+[31m-    assert_eq!(summary.delta_events[1].message.attachments[0].file_name.as_deref(), Some("catalog.png"));
+(B[m[32m+    assert_eq!(
+(B[m[32m+        summary.delta_events[1].message.attachments[0]
+(B[m[32m+            .file_name
+(B[m[32m+            .as_deref(),
+(B[m[32m+        Some("catalog.png")
+(B[m[32m+    );
+(B[m 
+     // Verify channel_identities
+     let count: i64 = conn
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/facebook/normalizer_test.rs:442:
+         "CREATE TRIGGER fail_delta_trigger_fb BEFORE INSERT ON conversation_deltas
+          BEGIN
+              SELECT RAISE(ABORT, 'Fault injection: delta insert failure');
+[31m-         END;"
+(B[m[31m-    ).unwrap();
+(B[m[32m+         END;",
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     let payload = serde_json::json!({
+         "sender": { "id": "psid_customer_fault" },
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/facebook/normalizer_test.rs:455:
+         }
+     });
+ 
+[31m-    let res = FacebookMessengerNormalizer::ingest_webhook_event(
+(B[m[31m-        &mut conn,
+(B[m[31m-        1,
+(B[m[31m-        "page_123",
+(B[m[31m-        &payload,
+(B[m[31m-    );
+(B[m[32m+    let res = FacebookMessengerNormalizer::ingest_webhook_event(&mut conn, 1, "page_123", &payload);
+(B[m     assert!(res.is_err(), "Must fail-closed when delta fails");
+ 
+     // Verify messages table has no entry
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/facebook/supervisor_test.rs:564:
+ 
+     // Delta event must also be emitted with durable sequence
+     let delta = delta_rx.try_recv().expect("Expected delta event");
+[31m-    assert_eq!(delta.channel, crate::conversation::types::Channel::Messenger);
+(B[m[32m+    assert_eq!(
+(B[m[32m+        delta.channel,
+(B[m[32m+        crate::conversation::types::Channel::Messenger
+(B[m[32m+    );
+(B[m     assert_eq!(delta.message.text_content.as_deref(), Some("Quận 8 e ơi"));
+     assert!(delta.sequence > 0);
+ }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/outreach.rs:199:
+         |row| row.get(0),
+     )?;
+ 
+[31m-    let delta_event = crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+(B[m[31m-        &tx,
+(B[m[31m-        conversation_id,
+(B[m[31m-        Some(record.lead_id),
+(B[m[31m-        crate::conversation::types::Channel::Zalo,
+(B[m[31m-        message_id,
+(B[m[31m-    )?;
+(B[m[32m+    let delta_event =
+(B[m[32m+        crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+(B[m[32m+            &tx,
+(B[m[32m+            conversation_id,
+(B[m[32m+            Some(record.lead_id),
+(B[m[32m+            crate::conversation::types::Channel::Zalo,
+(B[m[32m+            message_id,
+(B[m[32m+        )?;
+(B[m 
+     // 7. Return AppliedOutreachMessage
+     Ok(AppliedOutreachMessage {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/projection.rs:380:
+                         if let Some(q) = quote_val {
+                             // 1. WhatsApp quote path (has participant_jid)
+                             if q.get("participant_jid").is_some() {
+[31m-                                let text = q.get("text").and_then(|t| t.as_str()).map(str::to_string);
+(B[m[32m+                                let text =
+(B[m[32m+                                    q.get("text").and_then(|t| t.as_str()).map(str::to_string);
+(B[m                                 let participant_jid = q
+                                     .get("participant_jid")
+                                     .and_then(|p| p.as_str())
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:1:
+ use crate::conversation::error::{ConversationError, ConversationErrorCode};
+[32m+use crate::conversation::events::ConversationMessageDeltaEvent;
+(B[m use crate::conversation::reactions::{canonical_reaction_code, mark_reaction_removed};
+ pub use crate::conversation::types::AccountConnectionStatus;
+ use crate::conversation::types::{
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:12:
+     NormalizedGroupParticipant, NormalizedGroupSnapshot, NormalizedReaction, NormalizedReceipt,
+     NormalizedUndo, ReceiptKind,
+ };
+[31m-use crate::conversation::events::ConversationMessageDeltaEvent;
+(B[m use crate::db::open_db_connection;
+ use chrono::Utc;
+ use rusqlite::{params, Connection, OptionalExtension, Result};
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:1585:
+         }
+ 
+         // 2. Unknown rows: Unlinked direct conversations grouped by identity_id (key: "identity:{identity_id}")
+[31m-        let unlinked_identities: Vec<(
+(B[m[31m-            i64,
+(B[m[31m-            Option<String>,
+(B[m[31m-            Option<String>,
+(B[m[31m-            String,
+(B[m[31m-            bool,
+(B[m[31m-        )> = {
+(B[m[32m+        let unlinked_identities: Vec<(i64, Option<String>, Option<String>, String, bool)> = {
+(B[m             let mut stmt = conn.prepare(
+                 "SELECT ci.id,
+                         ci.display_name,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:1814:
+             }
+ 
+             // Assemble Unknown Items
+[31m-            for (
+(B[m[31m-                identity_id,
+(B[m[31m-                display_name,
+(B[m[31m-                avatar_url,
+(B[m[31m-                external_id,
+(B[m[31m-                matches_account_name,
+(B[m[31m-            ) in unlinked_identities
+(B[m[32m+            for (identity_id, display_name, avatar_url, external_id, matches_account_name) in
+(B[m[32m+                unlinked_identities
+(B[m             {
+                 let stored_display_name = if matches_account_name {
+                     None
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:3156:
+     ) -> Result<Option<ConversationMessageDeltaEvent>> {
+         let mut conn = open_db_connection(&self.db_path)?;
+         let tx = conn.transaction()?;
+[31m-        let res = Self::record_message_delta_tx(&tx, conversation_id, lead_id, channel, message_id)?;
+(B[m[32m+        let res =
+(B[m[32m+            Self::record_message_delta_tx(&tx, conversation_id, lead_id, channel, message_id)?;
+(B[m         tx.commit()?;
+         Ok(res)
+     }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:3190:
+              ORDER BY sequence ASC
+              LIMIT ?2",
+         )?;
+[31m-        let rows = stmt.query_map(rusqlite::params![after_sequence as i64, cap as i64], |row| {
+(B[m[31m-            let seq: i64 = row.get(0)?;
+(B[m[31m-            let payload_json: String = row.get(1)?;
+(B[m[31m-            Ok((seq as u64, payload_json))
+(B[m[31m-        })?;
+(B[m[32m+        let rows = stmt.query_map(
+(B[m[32m+            rusqlite::params![after_sequence as i64, cap as i64],
+(B[m[32m+            |row| {
+(B[m[32m+                let seq: i64 = row.get(0)?;
+(B[m[32m+                let payload_json: String = row.get(1)?;
+(B[m[32m+                Ok((seq as u64, payload_json))
+(B[m[32m+            },
+(B[m[32m+        )?;
+(B[m 
+         let mut deltas = Vec::new();
+         for row in rows {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:3201:
+             let (seq, payload_json) = row?;
+             let mut event: ConversationMessageDeltaEvent = serde_json::from_str(&payload_json)
+[31m-                .map_err(|err| rusqlite::Error::FromSqlConversionFailure(
+(B[m[31m-                    1,
+(B[m[31m-                    rusqlite::types::Type::Text,
+(B[m[31m-                    Box::new(err),
+(B[m[31m-                ))?;
+(B[m[32m+                .map_err(|err| {
+(B[m[32m+                    rusqlite::Error::FromSqlConversionFailure(
+(B[m[32m+                        1,
+(B[m[32m+                        rusqlite::types::Type::Text,
+(B[m[32m+                        Box::new(err),
+(B[m[32m+                    )
+(B[m[32m+                })?;
+(B[m             event.sequence = seq;
+             deltas.push(event);
+         }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:3940:
+             messages.push(msg);
+         }
+ 
+[31m-        crate::conversation::projection::hydrate_messages(&tx, &mut messages)
+(B[m[31m-            .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+(B[m[32m+        crate::conversation::projection::hydrate_messages(&tx, &mut messages).map_err(|e| {
+(B[m[32m+            ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+(B[m[32m+        })?;
+(B[m 
+         let channel_name: String = tx
+             .query_row(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:3966:
+                 |r| r.get(0),
+             )
+             .optional()
+[31m-            .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+(B[m[32m+            .map_err(|e| {
+(B[m[32m+                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+(B[m[32m+            })?;
+(B[m 
+         let mut delta_events = Vec::new();
+         for msg in &messages {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository.rs:3973:
+[31m-            let delta = Self::record_message_delta_tx(
+(B[m[31m-                &tx,
+(B[m[31m-                msg.conversation_id,
+(B[m[31m-                lead_id,
+(B[m[31m-                channel,
+(B[m[31m-                msg.id,
+(B[m[31m-            ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+(B[m[32m+            let delta =
+(B[m[32m+                Self::record_message_delta_tx(&tx, msg.conversation_id, lead_id, channel, msg.id)
+(B[m[32m+                    .map_err(|e| {
+(B[m[32m+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+(B[m[32m+                })?;
+(B[m             if let Some(d) = delta {
+                 delta_events.push(d);
+             }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6781:
+     msg.text_content = Some("Hello atomic delta".to_string());
+     let applied = harness.repository.apply_normalized_message(&msg).unwrap();
+ 
+[31m-    let delta = applied.delta_event.expect("Delta should be generated inside transaction");
+(B[m[32m+    let delta = applied
+(B[m[32m+        .delta_event
+(B[m[32m+        .expect("Delta should be generated inside transaction");
+(B[m     assert_eq!(delta.sequence, 1);
+     assert_eq!(delta.conversation_id, applied.conversation_id);
+     assert_eq!(delta.message.id, applied.message_id);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6788:
+[31m-    assert_eq!(delta.message.text_content, Some("Hello atomic delta".to_string()));
+(B[m[32m+    assert_eq!(
+(B[m[32m+        delta.message.text_content,
+(B[m[32m+        Some("Hello atomic delta".to_string())
+(B[m[32m+    );
+(B[m 
+     // Verify it is immediately queryable via fetch_deltas_after_sequence
+[31m-    let replayed = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+(B[m[32m+    let replayed = harness
+(B[m[32m+        .repository
+(B[m[32m+        .fetch_deltas_after_sequence(0, 10)
+(B[m[32m+        .unwrap();
+(B[m     assert_eq!(replayed.len(), 1);
+     assert_eq!(replayed[0].sequence, 1);
+     assert_eq!(replayed[0].message.id, applied.message_id);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6805:
+     }
+ 
+     // Page 1: 0..100
+[31m-    let page1 = harness.repository.fetch_deltas_after_sequence(0, 100).unwrap();
+(B[m[32m+    let page1 = harness
+(B[m[32m+        .repository
+(B[m[32m+        .fetch_deltas_after_sequence(0, 100)
+(B[m[32m+        .unwrap();
+(B[m     assert_eq!(page1.len(), 100);
+     assert_eq!(page1.first().unwrap().sequence, 1);
+     assert_eq!(page1.last().unwrap().sequence, 100);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6812:
+ 
+     // Page 2: 100..200
+[31m-    let page2 = harness.repository.fetch_deltas_after_sequence(100, 100).unwrap();
+(B[m[32m+    let page2 = harness
+(B[m[32m+        .repository
+(B[m[32m+        .fetch_deltas_after_sequence(100, 100)
+(B[m[32m+        .unwrap();
+(B[m     assert_eq!(page2.len(), 100);
+     assert_eq!(page2.first().unwrap().sequence, 101);
+     assert_eq!(page2.last().unwrap().sequence, 200);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6818:
+ 
+     // Page 3: 200..250
+[31m-    let page3 = harness.repository.fetch_deltas_after_sequence(200, 100).unwrap();
+(B[m[32m+    let page3 = harness
+(B[m[32m+        .repository
+(B[m[32m+        .fetch_deltas_after_sequence(200, 100)
+(B[m[32m+        .unwrap();
+(B[m     assert_eq!(page3.len(), 50);
+     assert_eq!(page3.first().unwrap().sequence, 201);
+     assert_eq!(page3.last().unwrap().sequence, 250);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6844:
+         .unwrap();
+ 
+     // 2. Record the delta within the SAME transaction
+[31m-    let delta = ConversationRepository::record_message_delta_tx(
+(B[m[31m-        &tx,
+(B[m[31m-        conv_id,
+(B[m[31m-        None,
+(B[m[31m-        Channel::Zalo,
+(B[m[31m-        msg_id,
+(B[m[31m-    )
+(B[m[31m-    .unwrap();
+(B[m[32m+    let delta =
+(B[m[32m+        ConversationRepository::record_message_delta_tx(&tx, conv_id, None, Channel::Zalo, msg_id)
+(B[m[32m+            .unwrap();
+(B[m     assert!(delta.is_some(), "Delta must be created inside transaction");
+     let seq = delta.unwrap().sequence;
+     assert!(seq > 0, "Sequence must be generated");
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6864:
+             |r| r.get(0),
+         )
+         .unwrap();
+[31m-    assert_eq!(in_tx_deltas, 1, "Delta row must be visible within active tx");
+(B[m[32m+    assert_eq!(
+(B[m[32m+        in_tx_deltas, 1,
+(B[m[32m+        "Delta row must be visible within active tx"
+(B[m[32m+    );
+(B[m 
+     // 4. Inject fault: abort / drop the transaction without commit
+     drop(tx);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6889:
+         .unwrap();
+     assert_eq!(delta_count, 0, "Delta must be completely rolled back");
+ 
+[31m-    let deltas = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+(B[m[32m+    let deltas = harness
+(B[m[32m+        .repository
+(B[m[32m+        .fetch_deltas_after_sequence(0, 10)
+(B[m[32m+        .unwrap();
+(B[m     assert_eq!(deltas.len(), 0, "No delta should exist after rollback");
+ 
+     // 6. Test successful commit path for comparison
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6916:
+     .unwrap();
+     tx2.commit().unwrap();
+ 
+[31m-    let persisted_deltas = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+(B[m[32m+    let persisted_deltas = harness
+(B[m[32m+        .repository
+(B[m[32m+        .fetch_deltas_after_sequence(0, 10)
+(B[m[32m+        .unwrap();
+(B[m     assert_eq!(persisted_deltas.len(), 1);
+     assert_eq!(persisted_deltas[0].message.id, committed_msg_id);
+     assert_eq!(persisted_deltas[0].sequence, committed_delta.sequence);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6932:
+         "CREATE TRIGGER fail_delta_trigger_direct BEFORE INSERT ON conversation_deltas
+          BEGIN
+              SELECT RAISE(ABORT, 'Fault injection: direct-start delta failure');
+[31m-         END;"
+(B[m[31m-    ).unwrap();
+(B[m[32m+         END;",
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     let start_req = crate::conversation::types::StartDirectConversationRequest {
+         channel_account_id: 1,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6942:
+         initial_message: "Should roll back cleanly".to_string(),
+     };
+ 
+[31m-    let res = harness.repository.start_direct_conversation(&start_req, "2026-08-31T00:00:00.000Z");
+(B[m[32m+    let res = harness
+(B[m[32m+        .repository
+(B[m[32m+        .start_direct_conversation(&start_req, "2026-08-31T00:00:00.000Z");
+(B[m     assert!(res.is_err(), "Must fail-closed when delta recording fails");
+ 
+     // Verify messages table has no entry
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6976:
+         "CREATE TRIGGER fail_delta_trigger_batch BEFORE INSERT ON conversation_deltas
+          BEGIN
+              SELECT RAISE(ABORT, 'Fault injection: batch outbound delta failure');
+[31m-         END;"
+(B[m[31m-    ).unwrap();
+(B[m[32m+         END;",
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     let request = crate::conversation::types::SendConversationBatchRequest {
+         conversation_id: conv_id,
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6984:
+         client_batch_id: "fault_batch_id_001".into(),
+         reply_to_message_id: None,
+[31m-        parts: vec![
+(B[m[31m-            crate::conversation::types::ConversationSendPartRequest {
+(B[m[31m-                client_part_id: "fault_batch_c1".into(),
+(B[m[31m-                content: crate::conversation::types::ConversationSendPartContent::Text {
+(B[m[31m-                    text: "Fault Batch 1".into(),
+(B[m[31m-                    mentions: Vec::new(),
+(B[m[31m-                },
+(B[m[32m+        parts: vec![crate::conversation::types::ConversationSendPartRequest {
+(B[m[32m+            client_part_id: "fault_batch_c1".into(),
+(B[m[32m+            content: crate::conversation::types::ConversationSendPartContent::Text {
+(B[m[32m+                text: "Fault Batch 1".into(),
+(B[m[32m+                mentions: Vec::new(),
+(B[m             },
+[31m-        ],
+(B[m[32m+        }],
+(B[m         message_tag: None,
+     };
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:6998:
+[31m-    let res = harness.repository.enqueue_outbound_batch(&request, "2026-08-31T00:00:00.000Z");
+(B[m[32m+    let res = harness
+(B[m[32m+        .repository
+(B[m[32m+        .enqueue_outbound_batch(&request, "2026-08-31T00:00:00.000Z");
+(B[m     assert!(res.is_err(), "Must fail-closed when delta recording fails");
+ 
+     // Verify messages table has no entry with text 'Fault Batch 1'
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:7028:
+         "CREATE TRIGGER fail_delta_trigger_zalo BEFORE INSERT ON conversation_deltas
+          BEGIN
+              SELECT RAISE(ABORT, 'Fault injection: zalo normalized message delta failure');
+[31m-         END;"
+(B[m[31m-    ).unwrap();
+(B[m[32m+         END;",
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     let mut msg = direct_message_with_client_id("zalo-msg-fault", "cli-zalo-fault");
+     msg.channel = crate::conversation::types::Channel::Zalo;
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:7046:
+     }];
+ 
+     let res = harness.repository.apply_normalized_message(&msg);
+[31m-    assert!(res.is_err(), "Must fail-closed when delta recording fails during Zalo ingest");
+(B[m[32m+    assert!(
+(B[m[32m+        res.is_err(),
+(B[m[32m+        "Must fail-closed when delta recording fails during Zalo ingest"
+(B[m[32m+    );
+(B[m 
+     // Verify messages table has no entry
+     let msg_count: i64 = conn
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:7056:
+             |r| r.get(0),
+         )
+         .unwrap();
+[31m-    assert_eq!(msg_count, 0, "No message row should persist after delta failure");
+(B[m[32m+    assert_eq!(
+(B[m[32m+        msg_count, 0,
+(B[m[32m+        "No message row should persist after delta failure"
+(B[m[32m+    );
+(B[m 
+     // Verify attachments table has no entry
+     let att_count: i64 = conn
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/repository_test.rs:7066:
+             |r| r.get(0),
+         )
+         .unwrap();
+[31m-    assert_eq!(att_count, 0, "No attachment row should persist after delta failure");
+(B[m[32m+    assert_eq!(
+(B[m[32m+        att_count, 0,
+(B[m[32m+        "No attachment row should persist after delta failure"
+(B[m[32m+    );
+(B[m 
+     // Verify deltas table has no entry
+     let delta_count: i64 = conn
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:3952:
+         }))
+         .unwrap();
+ 
+[31m-        let event = zca_rs::listener::ListenerEvent::Message(Box::new(
+(B[m[31m-            zca_rs::models::Message::User(zca_rs::models::UserMessage::new("self-uid", raw_user_msg)),
+(B[m[31m-        ));
+(B[m[32m+        let event =
+(B[m[32m+            zca_rs::listener::ListenerEvent::Message(Box::new(zca_rs::models::Message::User(
+(B[m[32m+                zca_rs::models::UserMessage::new("self-uid", raw_user_msg),
+(B[m[32m+            )));
+(B[m 
+         harness
+             .service
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:3971:
+         assert_eq!(delta.conversation_id, 1);
+         assert_eq!(delta.channel, Channel::Zalo);
+         assert!(delta.sequence > 0);
+[31m-        assert_eq!(delta.message.text_content.as_deref(), Some("Xin chào shop realtime"));
+(B[m[31m-        assert_eq!(delta.message.sender_display_name.as_deref(), Some("Customer 1"));
+(B[m[32m+        assert_eq!(
+(B[m[32m+            delta.message.text_content.as_deref(),
+(B[m[32m+            Some("Xin chào shop realtime")
+(B[m[32m+        );
+(B[m[32m+        assert_eq!(
+(B[m[32m+            delta.message.sender_display_name.as_deref(),
+(B[m[32m+            Some("Customer 1")
+(B[m[32m+        );
+(B[m         assert!(delta.emitted_at_ms > 0);
+     }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:3979:
+     #[test]
+     fn test_enqueue_outbound_batch_returns_hydrated_messages_and_publishes_delta() {
+[31m-        use crate::conversation::types::{ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest};
+(B[m[32m+        use crate::conversation::types::{
+(B[m[32m+            ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest,
+(B[m[32m+        };
+(B[m 
+         let harness = ServiceHarness::new();
+         let mut delta_rx = harness.events.subscribe_delta();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:4001:
+         let res = harness.service.enqueue_batch(&req).unwrap();
+         assert_eq!(res.messages.len(), 1);
+         let msg = &res.messages[0];
+[31m-        assert_eq!(msg.status, crate::conversation::types::MessageStatus::Queued);
+(B[m[32m+        assert_eq!(
+(B[m[32m+            msg.status,
+(B[m[32m+            crate::conversation::types::MessageStatus::Queued
+(B[m[32m+        );
+(B[m         assert_eq!(msg.send_batch.as_ref().unwrap().send_batch_id, res.batch_id);
+         assert_eq!(res.client_batch_id, "batch-hydrated-01");
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:4008:
+         // Verify delta published
+[31m-        let delta = delta_rx.try_recv().expect("Expected delta for enqueued outbound batch");
+(B[m[32m+        let delta = delta_rx
+(B[m[32m+            .try_recv()
+(B[m[32m+            .expect("Expected delta for enqueued outbound batch");
+(B[m         assert_eq!(delta.conversation_id, 1);
+[31m-        assert_eq!(delta.message.text_content.as_deref(), Some("Tin nhắn outbound hydrate"));
+(B[m[31m-        assert_eq!(delta.message.status, crate::conversation::types::MessageStatus::Queued);
+(B[m[32m+        assert_eq!(
+(B[m[32m+            delta.message.text_content.as_deref(),
+(B[m[32m+            Some("Tin nhắn outbound hydrate")
+(B[m[32m+        );
+(B[m[32m+        assert_eq!(
+(B[m[32m+            delta.message.status,
+(B[m[32m+            crate::conversation::types::MessageStatus::Queued
+(B[m[32m+        );
+(B[m         assert!(inval_rx.try_recv().is_ok());
+     }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:4061:
+         }))
+         .unwrap();
+ 
+[31m-        let event = zca_rs::listener::ListenerEvent::Message(Box::new(
+(B[m[31m-            zca_rs::models::Message::User(zca_rs::models::UserMessage::new("self-uid", raw_user_msg)),
+(B[m[31m-        ));
+(B[m[32m+        let event =
+(B[m[32m+            zca_rs::listener::ListenerEvent::Message(Box::new(zca_rs::models::Message::User(
+(B[m[32m+                zca_rs::models::UserMessage::new("self-uid", raw_user_msg),
+(B[m[32m+            )));
+(B[m 
+         harness
+             .service
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:4071:
+             .unwrap();
+ 
+         // 3. Verify delta was published on echo receipt
+[31m-        let delta = delta_rx.try_recv().expect("Expected delta event on echo arrival");
+(B[m[32m+        let delta = delta_rx
+(B[m[32m+            .try_recv()
+(B[m[32m+            .expect("Expected delta event on echo arrival");
+(B[m         assert_eq!(delta.conversation_id, 1);
+         assert_eq!(delta.channel, Channel::Zalo);
+[31m-        assert_eq!(delta.message.text_content.as_deref(), Some("Tin nhắn gửi qua zalo"));
+(B[m[32m+        assert_eq!(
+(B[m[32m+            delta.message.text_content.as_deref(),
+(B[m[32m+            Some("Tin nhắn gửi qua zalo")
+(B[m[32m+        );
+(B[m     }
+ 
+     #[test]
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:4107:
+             }))
+             .unwrap();
+ 
+[31m-            let event = zca_rs::listener::ListenerEvent::Message(Box::new(
+(B[m[31m-                zca_rs::models::Message::User(zca_rs::models::UserMessage::new("self-uid", raw_msg)),
+(B[m[31m-            ));
+(B[m[32m+            let event =
+(B[m[32m+                zca_rs::listener::ListenerEvent::Message(Box::new(zca_rs::models::Message::User(
+(B[m[32m+                    zca_rs::models::UserMessage::new("self-uid", raw_msg),
+(B[m[32m+                )));
+(B[m 
+             harness
+                 .service
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:4119:
+ 
+         // 2. Replay all 300 deltas from sequence 0
+         let all_deltas = harness.service.resume_deltas(0, Some(500)).unwrap();
+[31m-        assert_eq!(all_deltas.len(), 300, "Must recover all 300 messages from SQLite change log");
+(B[m[32m+        assert_eq!(
+(B[m[32m+            all_deltas.len(),
+(B[m[32m+            300,
+(B[m[32m+            "Must recover all 300 messages from SQLite change log"
+(B[m[32m+        );
+(B[m 
+         // 3. Verify sequence monotonicity
+         for (idx, delta) in all_deltas.iter().enumerate() {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/service_test.rs:4126:
+             let expected_seq = (idx + 1) as u64;
+[31m-            assert_eq!(delta.sequence, expected_seq, "Sequence must be strictly monotonic and gapless");
+(B[m[32m+            assert_eq!(
+(B[m[32m+                delta.sequence, expected_seq,
+(B[m[32m+                "Sequence must be strictly monotonic and gapless"
+(B[m[32m+            );
+(B[m             assert_eq!(
+                 delta.message.text_content.as_deref(),
+                 Some(format!("Burst message {}", idx + 1).as_str())
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/types.rs:1:
+[32m+use crate::conversation::events::ConversationMessageDeltaEvent;
+(B[m use chrono::SecondsFormat;
+ use serde::{Deserialize, Deserializer, Serialize};
+[31m-use crate::conversation::events::ConversationMessageDeltaEvent;
+(B[m 
+ pub fn utc_now() -> String {
+     chrono::Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/normalizer.rs:1298:
+             )
+             .optional()?;
+ 
+[31m-        let delta_event = crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+(B[m[31m-            &tx,
+(B[m[31m-            conversation_id,
+(B[m[31m-            lead_id_opt,
+(B[m[31m-            crate::conversation::types::Channel::WhatsApp,
+(B[m[31m-            _message_id,
+(B[m[31m-        )?;
+(B[m[32m+        let delta_event =
+(B[m[32m+            crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+(B[m[32m+                &tx,
+(B[m[32m+                conversation_id,
+(B[m[32m+                lead_id_opt,
+(B[m[32m+                crate::conversation::types::Channel::WhatsApp,
+(B[m[32m+                _message_id,
+(B[m[32m+            )?;
+(B[m 
+         tx.commit()?;
+         Ok(Some(AppliedWhatsAppMessage {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/normalizer_test.rs:2613:
+         "CREATE TRIGGER fail_delta_trigger BEFORE INSERT ON conversation_deltas
+          BEGIN
+              SELECT RAISE(ABORT, 'Fault injection: delta insert failure');
+[31m-         END;"
+(B[m[31m-    ).unwrap();
+(B[m[32m+         END;",
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     let raw = RawWhatsAppMessage {
+         id: "msg_fault_inject_001".to_string(),
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/normalizer_test.rs:2632:
+ 
+     // Ingest must return error due to delta fault injection
+     let res = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw);
+[31m-    assert!(res.is_err(), "Ingestion must fail-closed when delta recording fails");
+(B[m[32m+    assert!(
+(B[m[32m+        res.is_err(),
+(B[m[32m+        "Ingestion must fail-closed when delta recording fails"
+(B[m[32m+    );
+(B[m 
+     // 2. Assert fail-closed atomicity: message was NOT written
+     let msg_count: i64 = conn
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/normalizer_test.rs:2646:
+ 
+     // 3. Assert no partial deltas written
+     let delta_count: i64 = conn
+[31m-        .query_row(
+(B[m[31m-            "SELECT count(*) FROM conversation_deltas",
+(B[m[31m-            [],
+(B[m[31m-            |r| r.get(0),
+(B[m[31m-        )
+(B[m[32m+        .query_row("SELECT count(*) FROM conversation_deltas", [], |r| r.get(0))
+(B[m         .unwrap();
+     assert_eq!(delta_count, 0, "No delta row should exist");
+ }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:695:
+     let (db_path, _dir) = setup_test_supervisor_db();
+     let events = Arc::new(ConversationEventPublisher::new(100));
+     let sessions_dir = _dir.path().join("wa_sessions");
+[31m-    let _supervisor = Arc::new(WhatsAppSupervisor::new(db_path.clone(), sessions_dir, events.clone()));
+(B[m[32m+    let _supervisor = Arc::new(WhatsAppSupervisor::new(
+(B[m[32m+        db_path.clone(),
+(B[m[32m+        sessions_dir,
+(B[m[32m+        events.clone(),
+(B[m[32m+    ));
+(B[m 
+     let mut conn = open_db_connection(&db_path).unwrap();
+     let now = chrono::Utc::now().to_rfc3339();
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:720:
+         mentions: vec![],
+     };
+ 
+[31m-    let applied = crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+(B[m[31m-        &mut conn,
+(B[m[31m-        1,
+(B[m[31m-        &raw_msg,
+(B[m[31m-    ).unwrap().unwrap();
+(B[m[32m+    let applied =
+(B[m[32m+        crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+(B[m[32m+            &mut conn, 1, &raw_msg,
+(B[m[32m+        )
+(B[m[32m+        .unwrap()
+(B[m[32m+        .unwrap();
+(B[m 
+[31m-    let delta = applied.delta_event.expect("Delta must be generated inside the transaction");
+(B[m[32m+    let delta = applied
+(B[m[32m+        .delta_event
+(B[m[32m+        .expect("Delta must be generated inside the transaction");
+(B[m     assert_eq!(delta.channel, crate::conversation::types::Channel::WhatsApp);
+[31m-    assert_eq!(delta.message.text_content.as_deref(), Some("Chao shop qua WhatsApp"));
+(B[m[32m+    assert_eq!(
+(B[m[32m+        delta.message.text_content.as_deref(),
+(B[m[32m+        Some("Chao shop qua WhatsApp")
+(B[m[32m+    );
+(B[m     assert!(delta.sequence > 0);
+ 
+     let repo = ConversationRepository::new(db_path);
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:762:
+          (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+          VALUES (10, 1, '84949743369', 'direct', 'Thao', ?1, ?1)",
+         rusqlite::params![now],
+[31m-    ).unwrap();
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     // Outbound message (from me, like in user screenshot)
+     conn.execute(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:798:
+         .await
+         .unwrap();
+ 
+[31m-    assert_eq!(res_out.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+(B[m[32m+    assert_eq!(
+(B[m[32m+        res_out.status,
+(B[m[32m+        crate::conversation::types::ReactionMutationStatus::Succeeded
+(B[m[32m+    );
+(B[m     let sent = mock_client.get_sent_reactions();
+     assert_eq!(sent.len(), 1);
+     assert_eq!(sent[0].chat_jid, "84949743369@s.whatsapp.net");
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:820:
+         .await
+         .unwrap();
+ 
+[31m-    assert_eq!(res_in.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+(B[m[32m+    assert_eq!(
+(B[m[32m+        res_in.status,
+(B[m[32m+        crate::conversation::types::ReactionMutationStatus::Succeeded
+(B[m[32m+    );
+(B[m     let sent = mock_client.get_sent_reactions();
+     assert_eq!(sent.len(), 2);
+     assert_eq!(sent[1].chat_jid, "84949743369@s.whatsapp.net");
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:842:
+         .await
+         .unwrap();
+ 
+[31m-    assert_eq!(res_unreact.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+(B[m[32m+    assert_eq!(
+(B[m[32m+        res_unreact.status,
+(B[m[32m+        crate::conversation::types::ReactionMutationStatus::Succeeded
+(B[m[32m+    );
+(B[m     let sent = mock_client.get_sent_reactions();
+     assert_eq!(sent.len(), 3);
+     assert_eq!(sent[2].emoji, "");
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:872:
+          (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
+          VALUES (20, 1, '120363123456789@g.us', 'group', 'AI Community', ?1, ?1)",
+         rusqlite::params![now],
+[31m-    ).unwrap();
+(B[m[32m+    )
+(B[m[32m+    .unwrap();
+(B[m 
+     // Group sender identity with raw phone number (no @s.whatsapp.net in external_id)
+     conn.execute(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:916:
+         .await
+         .unwrap();
+ 
+[31m-    assert_eq!(res_in.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+(B[m[32m+    assert_eq!(
+(B[m[32m+        res_in.status,
+(B[m[32m+        crate::conversation::types::ReactionMutationStatus::Succeeded
+(B[m[32m+    );
+(B[m     let sent = mock_client.get_sent_reactions();
+     assert_eq!(sent.len(), 1);
+     assert_eq!(sent[0].chat_jid, "120363123456789@g.us");
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:923:
+     assert_eq!(sent[0].target_message_id, "wamid_grp_in_001");
+[31m-    assert_eq!(sent[0].target_sender_jid, Some("84903333333@s.whatsapp.net".to_string()));
+(B[m[32m+    assert_eq!(
+(B[m[32m+        sent[0].target_sender_jid,
+(B[m[32m+        Some("84903333333@s.whatsapp.net".to_string())
+(B[m[32m+    );
+(B[m     assert_eq!(sent[0].emoji, "😂");
+     assert!(!sent[0].is_from_me);
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:938:
+         .await
+         .unwrap();
+ 
+[31m-    assert_eq!(res_out.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+(B[m[32m+    assert_eq!(
+(B[m[32m+        res_out.status,
+(B[m[32m+        crate::conversation::types::ReactionMutationStatus::Succeeded
+(B[m[32m+    );
+(B[m     let sent = mock_client.get_sent_reactions();
+     assert_eq!(sent.len(), 2);
+     assert_eq!(sent[1].chat_jid, "120363123456789@g.us");
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/conversation/whatsapp/supervisor_test.rs:947:
+     assert_eq!(sent[1].emoji, "😮");
+     assert!(sent[1].is_from_me);
+ }
+[31m-
+(B[m 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/db.rs:39:
+     Ok(())
+ }
+ 
+[31m-
+(B[m pub fn open_db_connection(db_path: &str) -> Result<Connection> {
+     let conn = Connection::open(db_path)?;
+     conn.pragma_update(None, "journal_mode", "WAL")?;
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/db.rs:289:
+             [],
+         )?;
+ 
+[31m-        add_column_if_missing(&tx, "outreach_history", "channel", "channel TEXT NOT NULL DEFAULT 'OMNICHANNEL'")?;
+(B[m[31m-        add_column_if_missing(&tx, "outreach_history", "idempotency_key", "idempotency_key TEXT")?;
+(B[m[31m-        add_column_if_missing(&tx, "outreach_history", "provider_message_id", "provider_message_id TEXT")?;
+(B[m[32m+        add_column_if_missing(
+(B[m[32m+            &tx,
+(B[m[32m+            "outreach_history",
+(B[m[32m+            "channel",
+(B[m[32m+            "channel TEXT NOT NULL DEFAULT 'OMNICHANNEL'",
+(B[m[32m+        )?;
+(B[m[32m+        add_column_if_missing(
+(B[m[32m+            &tx,
+(B[m[32m+            "outreach_history",
+(B[m[32m+            "idempotency_key",
+(B[m[32m+            "idempotency_key TEXT",
+(B[m[32m+        )?;
+(B[m[32m+        add_column_if_missing(
+(B[m[32m+            &tx,
+(B[m[32m+            "outreach_history",
+(B[m[32m+            "provider_message_id",
+(B[m[32m+            "provider_message_id TEXT",
+(B[m[32m+        )?;
+(B[m         tx.execute(
+             "UPDATE outreach_history SET idempotency_key = 'legacy:history:' || id WHERE idempotency_key IS NULL",
+             [],
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/db.rs:1559:
+ }
+ 
+ #[allow(dead_code)]
+[31m-pub fn get_campaign_step(conn: &Connection, id: i64) -> Result<Option<crate::models::CampaignStep>> {
+(B[m[32m+pub fn get_campaign_step(
+(B[m[32m+    conn: &Connection,
+(B[m[32m+    id: i64,
+(B[m[32m+) -> Result<Option<crate::models::CampaignStep>> {
+(B[m     let mut stmt = conn.prepare(
+         "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at, template_id
+          FROM campaign_steps WHERE id = ?1",
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/db.rs:1721:
+ }
+ 
+ #[allow(dead_code)]
+[31m-pub fn claim_campaign_execution(
+(B[m[31m-    conn: &Connection,
+(B[m[31m-    id: i64,
+(B[m[31m-    now_iso: &str,
+(B[m[31m-) -> Result<bool> {
+(B[m[32m+pub fn claim_campaign_execution(conn: &Connection, id: i64, now_iso: &str) -> Result<bool> {
+(B[m     let rows_affected = conn.execute(
+         "UPDATE campaign_executions
+          SET status = 'RUNNING', executed_at = ?1
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/db.rs:2309:
+     )?;
+     Ok(())
+ }
+[31m-
+(B[m[31m-
+(B[m 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/db_test.rs:1640:
+                 channel: "zalo".to_string(),
+                 stage: Some("DISCOVERY".to_string()),
+                 subject: None,
+[31m-                content: "Xin chào Quý khách {{name}}, chào mừng bạn đến với VIP RustSale!".to_string(),
+(B[m[32m+                content: "Xin chào Quý khách {{name}}, chào mừng bạn đến với VIP RustSale!"
+(B[m[32m+                    .to_string(),
+(B[m                 media_url: Some("https://example.com/banner-vip.png".to_string()),
+                 ai_prompt: Some("Thêm giọng điệu trang trọng".to_string()),
+                 tags_json: Some("[\"welcome\", \"vip\"]".to_string()),
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/db_test.rs:1806:
+ 
+         let templates_after_first = db::get_templates(&conn, None).unwrap();
+         assert_eq!(templates_after_first.len(), 2);
+[31m-        assert!(templates_after_first.iter().any(|t| t.channel == "zalo" && t.name == "Mẫu Zalo Chào Khách"));
+(B[m[31m-        assert!(templates_after_first.iter().any(|t| t.channel == "email" && t.name == "Mẫu Email Báo Giá"));
+(B[m[32m+        assert!(templates_after_first
+(B[m[32m+            .iter()
+(B[m[32m+            .any(|t| t.channel == "zalo" && t.name == "Mẫu Zalo Chào Khách"));
+(B[m[32m+        assert!(templates_after_first
+(B[m[32m+            .iter()
+(B[m[32m+            .any(|t| t.channel == "email" && t.name == "Mẫu Email Báo Giá"));
+(B[m 
+         // Re-run the migration queries again to verify idempotency
+         conn.execute(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/db_test.rs:1845:
+         assert_eq!(templates_after_second.len(), 2);
+     }
+ }
+[31m-
+(B[m[31m-
+(B[m 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/models.rs:375:
+     pub search_query: Option<String>,
+     pub tag: Option<String>,
+ }
+[31m-
+(B[m 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/notification.rs:128:
+         *self.settings.write().unwrap() = new_settings;
+     }
+ 
+[31m-    pub fn set_focus(&self, active_conversation_id: Option<i64>, is_focused: bool, seq: Option<u64>) -> FocusSyncResult {
+(B[m[32m+    pub fn set_focus(
+(B[m[32m+        &self,
+(B[m[32m+        active_conversation_id: Option<i64>,
+(B[m[32m+        is_focused: bool,
+(B[m[32m+        seq: Option<u64>,
+(B[m[32m+    ) -> FocusSyncResult {
+(B[m         let mut lock = self.focus_state.lock().unwrap();
+         if let Some(s) = seq {
+             if s <= lock.seq {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/notification_test.rs:193:
+     assert!(manager.check_and_record_rate_limit(200));
+ 
+     // Populate 70 expired entries (> 3 seconds old)
+[31m-    let past_time = Instant::now()
+(B[m[31m-        .checked_sub(Duration::from_secs(10))
+(B[m[31m-        .unwrap();
+(B[m[32m+    let past_time = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
+(B[m     {
+         let mut map = manager.last_notified.lock().unwrap();
+         for i in 1..=70 {
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/notification_test.rs:255:
+         },
+     );
+     assert!(res1.is_ok());
+[31m-    assert!(!fallback_called, "Fallback should not be called when primary succeeds");
+(B[m[32m+    assert!(
+(B[m[32m+        !fallback_called,
+(B[m[32m+        "Fallback should not be called when primary succeeds"
+(B[m[32m+    );
+(B[m 
+     // 2. Primary exits non-zero (Err) -> Fallback is called and succeeds
+     let mut fallback_called = false;
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/notification_test.rs:267:
+         },
+     );
+     assert!(res2.is_ok());
+[31m-    assert!(fallback_called, "Fallback must be called when primary returns non-zero");
+(B[m[32m+    assert!(
+(B[m[32m+        fallback_called,
+(B[m[32m+        "Fallback must be called when primary returns non-zero"
+(B[m[32m+    );
+(B[m 
+     // 3. Primary fails to spawn / missing binary (Err) -> Fallback is called and succeeds
+     let mut fallback_called = false;
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/notification_test.rs:279:
+         },
+     );
+     assert!(res3.is_ok());
+[31m-    assert!(fallback_called, "Fallback must be called when primary fails to spawn");
+(B[m[32m+    assert!(
+(B[m[32m+        fallback_called,
+(B[m[32m+        "Fallback must be called when primary fails to spawn"
+(B[m[32m+    );
+(B[m 
+     // 4. Primary fails and Fallback also fails -> Dual failure returns composite Err preserving both contexts
+     let res4 = dispatch_notification_strategy(
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/notification_test.rs:288:
+     );
+     assert!(res4.is_err(), "Dual failure must return Err");
+     let err_str = res4.unwrap_err();
+[31m-    assert!(err_str.contains("primary timed out"), "Error must contain primary failure context");
+(B[m[31m-    assert!(err_str.contains("plugin delivery failed"), "Error must contain fallback failure context");
+(B[m[32m+    assert!(
+(B[m[32m+        err_str.contains("primary timed out"),
+(B[m[32m+        "Error must contain primary failure context"
+(B[m[32m+    );
+(B[m[32m+    assert!(
+(B[m[32m+        err_str.contains("plugin delivery failed"),
+(B[m[32m+        "Error must contain fallback failure context"
+(B[m[32m+    );
+(B[m }
+ 
+ #[tokio::test]
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/notification_test.rs:321:
+                         let cur = active.fetch_add(1, Ordering::SeqCst) + 1;
+                         let mut prev_max = max.load(Ordering::SeqCst);
+                         while cur > prev_max {
+[31m-                            match max.compare_exchange_weak(prev_max, cur, Ordering::SeqCst, Ordering::SeqCst) {
+(B[m[32m+                            match max.compare_exchange_weak(
+(B[m[32m+                                prev_max,
+(B[m[32m+                                cur,
+(B[m[32m+                                Ordering::SeqCst,
+(B[m[32m+                                Ordering::SeqCst,
+(B[m[32m+                            ) {
+(B[m                                 Ok(_) => break,
+                                 Err(actual) => prev_max = actual,
+                             }
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/src/notification_test.rs:346:
+         h.await.expect("worker task should finish cleanly");
+     }
+ 
+[31m-    assert_eq!(completed_count.load(Ordering::SeqCst), 10, "All 10 jobs must complete");
+(B[m[31m-    assert!(max_concurrency.load(Ordering::SeqCst) <= 4, "Concurrency must never exceed 4");
+(B[m[31m-    assert_eq!(active_workers.load(Ordering::SeqCst), 0, "All worker permits must be released");
+(B[m[32m+    assert_eq!(
+(B[m[32m+        completed_count.load(Ordering::SeqCst),
+(B[m[32m+        10,
+(B[m[32m+        "All 10 jobs must complete"
+(B[m[32m+    );
+(B[m[32m+    assert!(
+(B[m[32m+        max_concurrency.load(Ordering::SeqCst) <= 4,
+(B[m[32m+        "Concurrency must never exceed 4"
+(B[m[32m+    );
+(B[m[32m+    assert_eq!(
+(B[m[32m+        active_workers.load(Ordering::SeqCst),
+(B[m[32m+        0,
+(B[m[32m+        "All worker permits must be released"
+(B[m[32m+    );
+(B[m }
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/tests/updater_signature_verification.rs:31:
+         .expect("Missing plugins.updater.pubkey");
+ 
+     // Decode base64 public key if needed
+[31m-    let pubkey_text = if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_pubkey_str) {
+(B[m[32m+    let pubkey_text = if let Ok(decoded) =
+(B[m[32m+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_pubkey_str)
+(B[m[32m+    {
+(B[m         String::from_utf8(decoded).unwrap_or_else(|_| raw_pubkey_str.to_string())
+     } else {
+         raw_pubkey_str.to_string()
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/tests/updater_signature_verification.rs:42:
+     } else if let Ok(pk) = PublicKey::from_base64(&pubkey_text) {
+         pk
+     } else {
+[31m-        let key_line = pubkey_text.lines().find(|l| l.starts_with("RW")).expect("No RW line found in pubkey");
+(B[m[32m+        let key_line = pubkey_text
+(B[m[32m+            .lines()
+(B[m[32m+            .find(|l| l.starts_with("RW"))
+(B[m[32m+            .expect("No RW line found in pubkey");
+(B[m         PublicKey::from_base64(key_line).expect("Failed to parse base64 key line")
+     };
+ 
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/tests/updater_signature_verification.rs:54:
+         .unwrap_or_else(|_| panic!("Failed to read fixture bytes at {:?}", fixture_path));
+     let raw_sig_str = fs::read_to_string(&sig_path)
+         .unwrap_or_else(|_| panic!("Failed to read fixture signature at {:?}", sig_path));
+[31m-    let sig_text = if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_sig_str.trim()) {
+(B[m[32m+    let sig_text = if let Ok(decoded) = base64::Engine::decode(
+(B[m[32m+        &base64::engine::general_purpose::STANDARD,
+(B[m[32m+        raw_sig_str.trim(),
+(B[m[32m+    ) {
+(B[m         String::from_utf8(decoded).unwrap_or_else(|_| raw_sig_str.to_string())
+     } else {
+         raw_sig_str.to_string()
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/tests/updater_signature_verification.rs:61:
+     };
+ 
+[31m-    let fixture_signature = Signature::decode(&sig_text).expect("Failed to decode fixture signature");
+(B[m[32m+    let fixture_signature =
+(B[m[32m+        Signature::decode(&sig_text).expect("Failed to decode fixture signature");
+(B[m     let fixture_verify_result = public_key.verify(&fixture_bytes, &fixture_signature, false);
+     assert!(
+         fixture_verify_result.is_ok(),
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/tests/updater_signature_verification.rs:72:
+     // 3. If exact release bundle for current version exists, verify it against latest.json (fail-closed)
+     let version = tauri_conf["version"].as_str().unwrap_or("0.1.14");
+     let expected_deb_name = format!("RustSale CRM_{}_amd64.deb", version);
+[31m-    let deb_path = repo_root.join("src-tauri/target/release/bundle/deb").join(&expected_deb_name);
+(B[m[32m+    let deb_path = repo_root
+(B[m[32m+        .join("src-tauri/target/release/bundle/deb")
+(B[m[32m+        .join(&expected_deb_name);
+(B[m 
+     if deb_path.exists() {
+         let latest_json_path = repo_root.join("latest.json");
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/tests/updater_signature_verification.rs:88:
+             .as_str()
+             .expect("Fail-closed: latest.json missing signature for linux-x86_64");
+ 
+[31m-        let sig_text = if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_sig_str) {
+(B[m[32m+        let sig_text = if let Ok(decoded) =
+(B[m[32m+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_sig_str)
+(B[m[32m+        {
+(B[m             String::from_utf8(decoded).unwrap_or_else(|_| raw_sig_str.to_string())
+         } else {
+             raw_sig_str.to_string()
+Diff in /home/arch/Project/test/RustSale_v2/src-tauri/tests/updater_signature_verification.rs:109:
+             deb_bytes.len()
+         );
+     } else {
+[31m-        println!("ℹ️ Release .deb bundle not present in clean checkout - deterministic fixture verified");
+(B[m[32m+        println!(
+(B[m[32m+            "ℹ️ Release .deb bundle not present in clean checkout - deterministic fixture verified"
+(B[m[32m+        );
+(B[m     }
+ }
+ 

@@ -25,6 +25,7 @@ pub struct FacebookMessengerSupervisor {
     events: Arc<ConversationEventPublisher>,
     client: Arc<dyn FacebookGraphClient>,
     cancellation_token: CancellationToken,
+    outbox_notify: Arc<tokio::sync::Notify>,
     service: std::sync::RwLock<Option<Arc<crate::conversation::service::ConversationService>>>,
 }
 
@@ -39,6 +40,7 @@ impl FacebookMessengerSupervisor {
             events,
             client,
             cancellation_token: CancellationToken::new(),
+            outbox_notify: Arc::new(tokio::sync::Notify::new()),
             service: std::sync::RwLock::new(None),
         }
     }
@@ -47,6 +49,43 @@ impl FacebookMessengerSupervisor {
         if let Ok(mut guard) = self.service.write() {
             *guard = Some(service);
         }
+    }
+
+    pub fn notify_outbox(&self) {
+        self.outbox_notify.notify_one();
+    }
+
+    pub async fn drain_outbox_all(&self) -> Result<()> {
+        let conn = Connection::open(&self.db_path)
+            .map_err(|e| anyhow!("Failed to open DB connection: {}", e))?;
+
+        let accounts = self.get_connected_accounts(&conn)?;
+        let maybe_service = self.service.read().ok().and_then(|g| g.as_ref().cloned());
+        let service = match maybe_service {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+
+        for account in accounts {
+            let page_token = match FacebookTokenVault::get_valid_page_token(&conn, account.id, &account.page_id) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(target: "facebook_sync", page_id = %account.page_id, error = %e, "Failed resolving page token during outbox drain");
+                    continue;
+                }
+            };
+
+            while let Ok(true) = service
+                .process_next_messenger_outbox_job(
+                    account.id,
+                    self.client.as_ref(),
+                    &account.page_id,
+                    &page_token,
+                )
+                .await
+            {}
+        }
+        Ok(())
     }
 
     pub fn cancellation_token(&self) -> CancellationToken {
@@ -374,6 +413,7 @@ impl FacebookMessengerSupervisor {
         poll_interval: Duration,
     ) -> tauri::async_runtime::JoinHandle<()> {
         let cancel = self.cancellation_token.clone();
+        let outbox_notify = self.outbox_notify.clone();
         tauri::async_runtime::spawn(async move {
             info!(target: "facebook_sync", "Facebook Messenger sync supervisor background loop started");
             loop {
@@ -381,6 +421,11 @@ impl FacebookMessengerSupervisor {
                     _ = cancel.cancelled() => {
                         info!(target: "facebook_sync", "Facebook Messenger supervisor background loop received shutdown signal");
                         break;
+                    }
+                    _ = outbox_notify.notified() => {
+                        if let Err(e) = self.drain_outbox_all().await {
+                            warn!(target: "facebook_sync", error = %e, "Messenger immediate outbox drain failed");
+                        }
                     }
                     _ = tokio::time::sleep(poll_interval) => {
                         if let Err(e) = self.sync_all().await {

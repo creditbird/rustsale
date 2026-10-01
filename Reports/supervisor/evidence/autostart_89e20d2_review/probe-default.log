@@ -1,0 +1,13 @@
+
+running 4 tests
+
+thread 'test_cleanup_guard_removes_file_on_panic_unwind' (66880) panicked at tests/native_autostart_linux_test.rs:159:9:
+simulated assertion failure to test RAII CleanupGuard drop
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+test test_cleanup_guard_removes_file_on_panic_unwind ... ok
+test test_linux_native_xdg_autostart_lifecycle ... ok
+test test_linux_native_autostart_non_default_xdg_alignment ... ok
+test test_concurrent_autostart_isolation ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+

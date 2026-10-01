@@ -1,0 +1,3 @@
+sentinel UID: valid=[1] invalid=[], runtime_uid=None
+read-only persistence: result=Ok(([], [2])), stored_status=UNTESTED
+missing table: Ok(([], [1]))

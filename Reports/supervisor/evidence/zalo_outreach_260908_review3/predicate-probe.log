@@ -1,0 +1,10 @@
+phone="1" uid=None: sql=false, rust=false
+phone="+84-90-123" uid=None: sql=false, rust=false
+phone="+84 901234567" uid=None: sql=true, rust=true
+phone="\t0901234567" uid=None: sql=true, rust=false
+phone="090[123]4567" uid=None: sql=false, rust=true
+phone="090,1234567" uid=None: sql=false, rust=true
+phone="" uid=Some(" -1 "): sql=false, rust=false
+phone="" uid=Some("cached-uid"): sql=true, rust=true
+phone="" uid=Some("0\t0"): sql=false, rust=true
+phone="" uid=Some("\u{a0}0\u{a0}"): sql=true, rust=false

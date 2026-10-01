@@ -165,15 +165,36 @@ export async function subscribeTrayDndChanged(callback: (enabled: boolean) => vo
   });
 }
 
+const NOTIF_SETTINGS_STORAGE_KEY = 'rustsale_notification_settings_cache';
+const TRAY_CONFIG_STORAGE_KEY = 'rustsale_tray_config_cache';
+
 export async function getNotificationSettings(): Promise<NotificationSettings> {
   try {
     const res = await invoke<NotificationSettings>('get_notification_settings');
     if (res && typeof res.enabled === 'boolean') {
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(NOTIF_SETTINGS_STORAGE_KEY, JSON.stringify(res));
+        }
+      } catch {}
       return res;
     }
   } catch (err) {
-    console.warn('Failed to get notification settings, falling back to defaults:', err);
+    console.warn('Failed to get notification settings from backend, attempting cached fallback:', err);
   }
+
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const cached = localStorage.getItem(NOTIF_SETTINGS_STORAGE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && typeof parsed.enabled === 'boolean') {
+          return parsed;
+        }
+      }
+    }
+  } catch {}
+
   return {
     enabled: true,
     sound_enabled: true,
@@ -183,6 +204,11 @@ export async function getNotificationSettings(): Promise<NotificationSettings> {
 }
 
 export async function updateNotificationSettings(settings: NotificationSettings): Promise<void> {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(NOTIF_SETTINGS_STORAGE_KEY, JSON.stringify(settings));
+    }
+  } catch {}
   await invoke('update_notification_settings', { settings });
 }
 
@@ -194,11 +220,29 @@ export async function getTrayState(): Promise<TrayConfig> {
   try {
     const res = await invoke<TrayConfig>('get_tray_state');
     if (res && typeof res.close_to_tray === 'boolean') {
+      try {
+        if (typeof localStorage !== 'undefined') {
+          localStorage.setItem(TRAY_CONFIG_STORAGE_KEY, JSON.stringify(res));
+        }
+      } catch {}
       return res;
     }
   } catch (err) {
-    console.warn('Failed to get tray state:', err);
+    console.warn('Failed to get tray state from backend, attempting cached fallback:', err);
   }
+
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const cached = localStorage.getItem(TRAY_CONFIG_STORAGE_KEY);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (parsed && typeof parsed.close_to_tray === 'boolean') {
+          return parsed;
+        }
+      }
+    }
+  } catch {}
+
   return {
     close_to_tray: true,
     dnd_enabled: false
@@ -206,10 +250,24 @@ export async function getTrayState(): Promise<TrayConfig> {
 }
 
 export async function setCloseToTray(enabled: boolean): Promise<void> {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const cached = localStorage.getItem(TRAY_CONFIG_STORAGE_KEY);
+      const prev = cached ? JSON.parse(cached) : { close_to_tray: true, dnd_enabled: false };
+      localStorage.setItem(TRAY_CONFIG_STORAGE_KEY, JSON.stringify({ ...prev, close_to_tray: enabled }));
+    }
+  } catch {}
   await invoke('set_close_to_tray', { enabled });
 }
 
 export async function setTrayDnd(enabled: boolean): Promise<void> {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const cached = localStorage.getItem(TRAY_CONFIG_STORAGE_KEY);
+      const prev = cached ? JSON.parse(cached) : { close_to_tray: true, dnd_enabled: false };
+      localStorage.setItem(TRAY_CONFIG_STORAGE_KEY, JSON.stringify({ ...prev, dnd_enabled: enabled }));
+    }
+  } catch {}
   await invoke('set_tray_dnd', { enabled });
 }
 
