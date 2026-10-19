@@ -896,7 +896,7 @@
         <!-- Variable buttons -->
         <div class="flex flex-wrap items-center gap-1.5 pt-1">
           <span class="text-[11px] font-medium text-muted-foreground">{m.whatsapp_outreach_insert_token()}:</span>
-          {#each ['name', 'phone', 'company', 'email', 'notes'] as tag}
+          {#each ['name', 'phone', 'company', 'email', 'notes'] as tag (tag)}
             <button
               type="button"
               class="h-6 px-2 text-[11px] rounded bg-muted hover:bg-accent text-foreground border border-border transition-colors cursor-pointer"
@@ -1064,7 +1064,7 @@
                   {m.whatsapp_outreach_normalized_preview()} ({parsedManualRecipients.length}):
                 </span>
                 <div class="flex flex-wrap gap-1 max-h-20 overflow-y-auto">
-                  {#each parsedManualRecipients.slice(0, 10) as item}
+                  {#each parsedManualRecipients.slice(0, 10) as item (item.e164)}
                     <Badge variant="outline" class="text-[10px] font-mono border-emerald-500/30">
                       {item.e164}
                     </Badge>

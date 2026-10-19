@@ -332,7 +332,7 @@
                   disabled={readonly}
                   class="h-9 px-3 text-xs rounded-lg border border-input bg-background text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
                 >
-                  {#each CHANNEL_OPTIONS as ch}
+                  {#each CHANNEL_OPTIONS as ch (ch.id)}
                     <option value={ch.id}>{ch.label}</option>
                   {/each}
                 </select>
@@ -350,7 +350,7 @@
                   disabled={readonly}
                   class="h-9 px-3 text-xs rounded-lg border border-input bg-background text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
                 >
-                  {#each DELAY_PRESETS as preset}
+                  {#each DELAY_PRESETS as preset (preset.minutes)}
                     <option value={preset.minutes}>{preset.label} ({preset.minutes}p)</option>
                   {/each}
                 </select>
@@ -365,7 +365,7 @@
                   disabled={readonly}
                   class="h-9 px-3 text-xs rounded-lg border border-input bg-background text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
                 >
-                  {#each CONDITION_OPTIONS as cond}
+                  {#each CONDITION_OPTIONS as cond (cond.id)}
                     <option value={cond.id}>{cond.label}</option>
                   {/each}
                 </select>
@@ -415,7 +415,7 @@
                     <!-- Variables & Spintax -->
                     <div class="flex items-center gap-1 flex-wrap">
                       <span class="text-[11px] text-muted-foreground">Biến:</span>
-                      {#each PLACEHOLDERS as p}
+                      {#each PLACEHOLDERS as p (p.token)}
                         <button
                           type="button"
                           onclick={() => insertPlaceholder(index, p.token)}

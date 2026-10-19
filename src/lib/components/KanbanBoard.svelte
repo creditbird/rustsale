@@ -366,7 +366,7 @@
 
   <!-- Kanban Column Grid -->
   <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-4 flex-1 overflow-x-auto min-h-0 pb-2">
-    {#each stages as stage}
+    {#each stages as stage (stage)}
       {@const cfg = stageConfig[stage]}
       {@const stageDeals = filteredDeals.filter(d => d.stage === stage)}
       {@const totalValue = stageDeals.reduce((sum, d) => sum + convertCurrency(d.value || 0, (d.currency as Currency) || 'VND', currencyState.baseCurrency, currencyState.exchangeRate), 0)}
@@ -415,7 +415,7 @@
               <span class="text-[11px] font-medium text-muted-foreground">{m.kanban_empty_column()}</span>
             </div>
           {:else}
-            {#each stageDeals as deal}
+            {#each stageDeals as deal (deal.id)}
               {@const isDragging = activeDragId === deal.id}
               {@const lead = leads.find(l => l.id === deal.lead_id)}
               <Card.Root
@@ -544,7 +544,7 @@
                   {m.kanban_no_leads_found()}
                 </div>
               {:else}
-                {#each filteredModalLeads as lead}
+                {#each filteredModalLeads as lead (lead.id)}
                   <button
                     type="button"
                     onclick={() => selectLead(lead)}
@@ -651,7 +651,7 @@
 
               <!-- Quick Value Presets -->
               <div class="flex items-center gap-1 pt-1 flex-wrap">
-                {#each currentPresets as preset}
+                {#each currentPresets as preset (preset)}
                   <button
                     type="button"
                     onclick={() => newValue = preset}
@@ -669,7 +669,7 @@
                 bind:value={newStage}
                 class="w-full h-10 px-3 rounded-xl border border-input bg-background text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
               >
-                {#each stages as stage}
+                {#each stages as stage (stage)}
                   <option value={stage}>{stageConfig[stage].label} ({stageConfig[stage].prob})</option>
                 {/each}
               </select>

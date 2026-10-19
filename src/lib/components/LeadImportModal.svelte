@@ -449,7 +449,7 @@
                       onchange={(e) => handleSheetChange((e.target as HTMLSelectElement).value)}
                       class="h-8 px-2 rounded-md border border-input bg-background text-xs text-foreground focus:outline-hidden"
                     >
-                      {#each inspection.sheets as sheet}
+                      {#each inspection.sheets as sheet (sheet)}
                         <option value={sheet}>{sheet}</option>
                       {/each}
                     </select>
@@ -464,15 +464,15 @@
                   <table class="w-full text-left text-xs border-collapse">
                     <thead class="bg-muted/70 sticky top-0 border-b border-border">
                       <tr>
-                        {#each inspection.headers as header}
+                        {#each inspection.headers as header, hIdx (hIdx)}
                           <th class="p-2 font-semibold text-foreground whitespace-nowrap">{header}</th>
                         {/each}
                       </tr>
                     </thead>
                     <tbody>
-                      {#each inspection.sample_rows.slice(0, 5) as row, rIdx}
+                      {#each inspection.sample_rows.slice(0, 5) as row, rIdx (rIdx)}
                         <tr class="border-b border-border/50 hover:bg-muted/30">
-                          {#each row as cell}
+                          {#each row as cell, cIdx (cIdx)}
                             <td class="p-2 whitespace-nowrap text-muted-foreground">{cell || '—'}</td>
                           {/each}
                         </tr>
@@ -510,7 +510,7 @@
                         class="w-full h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                       >
                         <option value={null}>{m.leads_import_unmapped()}</option>
-                        {#each inspection.headers as header, idx}
+                        {#each inspection.headers as header, idx (idx)}
                           <option value={idx}>{header}</option>
                         {/each}
                       </select>
@@ -529,7 +529,7 @@
                         class="w-full h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                       >
                         <option value={null}>{m.leads_import_unmapped()}</option>
-                        {#each inspection.headers as header, idx}
+                        {#each inspection.headers as header, idx (idx)}
                           <option value={idx}>{header}</option>
                         {/each}
                       </select>
@@ -548,7 +548,7 @@
                         class="w-full h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                       >
                         <option value={null}>{m.leads_import_unmapped()}</option>
-                        {#each inspection.headers as header, idx}
+                        {#each inspection.headers as header, idx (idx)}
                           <option value={idx}>{header}</option>
                         {/each}
                       </select>
@@ -567,7 +567,7 @@
                         class="w-full h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                       >
                         <option value={null}>{m.leads_import_unmapped()}</option>
-                        {#each inspection.headers as header, idx}
+                        {#each inspection.headers as header, idx (idx)}
                           <option value={idx}>{header}</option>
                         {/each}
                       </select>
@@ -588,7 +588,7 @@
                         class="w-full h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                       >
                         <option value={null}>{m.leads_import_unmapped()}</option>
-                        {#each inspection.headers as header, idx}
+                        {#each inspection.headers as header, idx (idx)}
                           <option value={idx}>{header}</option>
                         {/each}
                       </select>
@@ -607,7 +607,7 @@
                         class="w-full h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                       >
                         <option value={null}>{m.leads_import_unmapped()}</option>
-                        {#each inspection.headers as header, idx}
+                        {#each inspection.headers as header, idx (idx)}
                           <option value={idx}>{header}</option>
                         {/each}
                       </select>
@@ -626,7 +626,7 @@
                         class="w-full h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                       >
                         <option value={null}>{m.leads_import_unmapped()}</option>
-                        {#each inspection.headers as header, idx}
+                        {#each inspection.headers as header, idx (idx)}
                           <option value={idx}>{header}</option>
                         {/each}
                       </select>
@@ -645,7 +645,7 @@
                         class="w-full h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                       >
                         <option value={null}>{m.leads_import_unmapped()}</option>
-                        {#each inspection.headers as header, idx}
+                        {#each inspection.headers as header, idx (idx)}
                           <option value={idx}>{header}</option>
                         {/each}
                       </select>
@@ -664,7 +664,7 @@
                         class="w-full h-8 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                       >
                         <option value={null}>{m.leads_import_unmapped()}</option>
-                        {#each inspection.headers as header, idx}
+                        {#each inspection.headers as header, idx (idx)}
                           <option value={idx}>{header}</option>
                         {/each}
                       </select>
@@ -764,7 +764,7 @@
                   class="h-9 px-2 rounded-md border border-input bg-background text-xs focus:outline-hidden"
                 >
                   <option value={null}>-- Không gán nhóm --</option>
-                  {#each categories as cat}
+                  {#each categories as cat (cat.id)}
                     <option value={cat.id}>{cat.name}</option>
                   {/each}
                 </select>
@@ -883,7 +883,7 @@
                           </tr>
                         </thead>
                         <tbody>
-                          {#each summaryResult.error_rows.slice(0, 10) as err}
+                          {#each summaryResult.error_rows.slice(0, 10) as err (err.row_number)}
                             <tr class="border-b border-border/50 hover:bg-muted/30">
                               <td class="p-2 font-mono text-muted-foreground">{err.row_number}</td>
                               <td class="p-2 text-destructive">{err.reason}</td>

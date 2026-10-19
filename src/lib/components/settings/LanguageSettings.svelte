@@ -148,7 +148,7 @@
         {m.settings_language_label()}
       </h4>
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {#each languages as lang}
+        {#each languages as lang (lang.id)}
           {@const isSelected = localeState.current === lang.id}
           <button
             type="button"
@@ -191,7 +191,7 @@
       </div>
 
       <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
-        {#each currencyOptions as opt}
+        {#each currencyOptions as opt (opt.id)}
           {@const isCurrSelected = currencyState.baseCurrency === opt.id}
           <button
             type="button"

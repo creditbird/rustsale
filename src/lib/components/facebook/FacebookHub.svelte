@@ -473,7 +473,7 @@
                   onchange={handlePageSelectChange}
                   class="px-2 py-0.5 rounded-md border border-input bg-background text-xs text-foreground font-medium focus:outline-hidden focus:ring-1 focus:ring-ring"
                 >
-                  {#each connectedAccounts as acc}
+                  {#each connectedAccounts as acc (acc.pageId)}
                     <option value={acc.pageId}>{acc.pageName || acc.pageId} (ID: {acc.pageId})</option>
                   {/each}
                 </select>
@@ -653,7 +653,7 @@
 
               {#if postMediaPaths.length > 0}
                 <div class="flex flex-wrap gap-2 mt-1">
-                  {#each postMediaPaths as path, index}
+                  {#each postMediaPaths as path, index (index)}
                     <div class="flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-muted text-xs text-foreground border border-border">
                       <span class="max-w-[200px] truncate">{path}</span>
                       <button
@@ -795,9 +795,17 @@
 
           <!-- Media / Link Preview Placeholder -->
           {#if postType === 'link'}
+            {@const linkHostname = (() => {
+              if (!postLinkUrl) return 'EXAMPLE.COM';
+              try {
+                return new URL(postLinkUrl).hostname || 'EXAMPLE.COM';
+              } catch {
+                return 'EXAMPLE.COM';
+              }
+            })()}
             <div class="border-t border-border bg-muted/40 p-4">
               <div class="text-xs font-semibold text-blue-600 uppercase tracking-wider truncate">
-                {postLinkUrl ? new URL(postLinkUrl).hostname : 'EXAMPLE.COM'}
+                {linkHostname}
               </div>
               <div class="font-bold text-sm text-foreground mt-0.5">
                 {m.facebook_hub_preview_offer_title()}
@@ -878,7 +886,7 @@
                 </td>
               </tr>
             {:else}
-              {#each scheduledPosts as post}
+              {#each scheduledPosts as post (post.id)}
                 <tr class="hover:bg-muted/30 transition-colors">
                   <td class="py-2.5 px-3 font-mono text-[11px] text-muted-foreground">{post.id}</td>
                   <td class="py-2.5 px-3">
@@ -987,12 +995,12 @@
                   </td>
                 </tr>
               {:else}
-                {#each automationRules as rule}
+                {#each automationRules as rule (rule.id)}
                   <tr class="hover:bg-muted/30 transition-colors">
                     <td class="py-2.5 px-3 font-semibold text-foreground">{rule.rule_name}</td>
                     <td class="py-2.5 px-3">
                       <div class="flex flex-wrap gap-1">
-                        {#each rule.keywords as kw}
+                        {#each rule.keywords as kw (kw)}
                           <span class="px-1.5 py-0.5 rounded bg-muted text-[10px] text-foreground font-mono">{kw}</span>
                         {/each}
                       </div>
@@ -1078,7 +1086,7 @@
                   </td>
                 </tr>
               {:else}
-                {#each commentLogs as log}
+                {#each commentLogs as log (log.id ?? log.comment_id)}
                   <tr class="hover:bg-muted/30 transition-colors">
                     <td class="py-2 px-3 text-muted-foreground">{log.comment_id}</td>
                     <td class="py-2 px-3 font-sans font-medium text-foreground">{log.sender_name || log.sender_psid}</td>

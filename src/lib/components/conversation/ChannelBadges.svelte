@@ -58,11 +58,7 @@
     }
   };
 
-  let toggleValue = $state<Channel[]>([]);
-
-  $effect(() => {
-    toggleValue = [...activeChannels];
-  });
+  let toggleValue = $derived([...activeChannels]);
 
   function handleValueChange(nextValue: string[]) {
     const nextChannels = nextValue as Channel[];

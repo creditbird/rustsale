@@ -247,6 +247,7 @@ export function extractGalleryImages(messages: Array<{
   occurredAt?: string;
 }>): ExtractedGalleryImage[] {
   const images: ExtractedGalleryImage[] = [];
+  const seenUrls = new Set<string>();
 
   for (const msg of messages) {
     if (msg.attachments && msg.attachments.length > 0) {
@@ -255,7 +256,8 @@ export function extractGalleryImages(messages: Array<{
           const safeRemote = !isEncryptedWhatsAppMediaUrl(att.remoteUrl) ? safeConversationUrl(att.remoteUrl) : null;
           const safeThumb = !isEncryptedWhatsAppMediaUrl(att.thumbnailUrl) ? safeConversationUrl(att.thumbnailUrl) : null;
           const effectiveUrl = safeThumb || safeRemote;
-          if (effectiveUrl && !images.some((img) => img.url === effectiveUrl)) {
+          if (effectiveUrl && !seenUrls.has(effectiveUrl)) {
+            seenUrls.add(effectiveUrl);
             images.push({
               url: effectiveUrl,
               alt: att.fileName ?? 'Image',
@@ -269,7 +271,8 @@ export function extractGalleryImages(messages: Array<{
 
     if (msg.contentType === 'image' || (msg.contentType && msg.contentType.startsWith('image/'))) {
       const legacyUrl = extractLegacyImageUrl(msg.content);
-      if (legacyUrl && !isEncryptedWhatsAppMediaUrl(legacyUrl) && !images.some((img) => img.url === legacyUrl)) {
+      if (legacyUrl && !isEncryptedWhatsAppMediaUrl(legacyUrl) && !seenUrls.has(legacyUrl)) {
+        seenUrls.add(legacyUrl);
         images.push({
           url: legacyUrl,
           alt: msg.textContent || 'Image',

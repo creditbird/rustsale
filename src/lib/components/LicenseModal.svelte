@@ -95,6 +95,9 @@
   onMount(() => {
     initLicenseState();
     loadPlans();
+    return () => {
+      stopPaymentPolling();
+    };
   });
 
   async function loadPlans() {
@@ -480,8 +483,9 @@
         {#if activeTab === 'upgrade'}
           <div class="space-y-4">
             <div class="grid grid-cols-2 gap-3">
-              {#each availablePlans as plan}
+              {#each availablePlans as plan (plan.id)}
                 <button
+                  type="button"
                   onclick={() => handleSelectPlan(plan.id)}
                   class="p-4 rounded-xl border text-left transition-all relative overflow-hidden {selectedPlan === plan.id ? 'border-emerald-500 bg-emerald-500/5 text-foreground ring-1 ring-emerald-500' : 'border-border bg-card text-muted-foreground hover:border-border/80'}"
                 >
@@ -495,6 +499,7 @@
             {#if !currentTransaction}
               {@const targetPlan = availablePlans.find(p => p.id === selectedPlan)}
               <button
+                type="button"
                 onclick={handleCreatePayment}
                 disabled={isLoading}
                 class="w-full py-3 bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs rounded-xl shadow-md flex items-center justify-center gap-2 transition-all"
@@ -565,6 +570,7 @@
                   <div class="text-sm font-bold text-foreground">{user.email}</div>
                 </div>
                 <button
+                  type="button"
                   onclick={handleLogout}
                   class="px-3 py-1.5 bg-destructive/10 hover:bg-destructive/20 text-destructive border border-destructive/20 rounded-lg text-xs flex items-center gap-1 font-medium"
                 >
@@ -575,8 +581,9 @@
               <form onsubmit={(e) => { e.preventDefault(); handleAuth(); }} class="space-y-3">
                 <h3 class="text-sm font-bold text-foreground">{isRegisterMode ? 'Register New Account' : 'Account Sign In'}</h3>
                 <div>
-                  <label class="text-xs text-muted-foreground block mb-1">Email</label>
+                  <label for="license-auth-email" class="text-xs text-muted-foreground block mb-1">Email</label>
                   <input
+                    id="license-auth-email"
                     type="email"
                     bind:value={authEmail}
                     placeholder="name@example.com"
@@ -584,8 +591,9 @@
                   />
                 </div>
                 <div>
-                  <label class="text-xs text-muted-foreground block mb-1">Password</label>
+                  <label for="license-auth-password" class="text-xs text-muted-foreground block mb-1">Password</label>
                   <input
+                    id="license-auth-password"
                     type="password"
                     bind:value={authPassword}
                     placeholder="••••••••"

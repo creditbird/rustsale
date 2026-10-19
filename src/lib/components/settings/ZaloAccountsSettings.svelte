@@ -143,6 +143,9 @@
     }
   }
 
+  let qrSessionSeq = 0;
+  let isMounted = true;
+
   function clearTimers() {
     if (autoCloseTimeout) {
       clearTimeout(autoCloseTimeout);
@@ -151,6 +154,7 @@
   }
 
   function cleanupQrListeners() {
+    qrSessionSeq += 1;
     clearTimers();
     qrUnlistens.forEach((unlisten) => {
       try {
@@ -162,6 +166,19 @@
     qrUnlistens = [];
   }
 
+  function registerQrListener(unlisten: UnlistenFn, sessionSeq: number): boolean {
+    if (!isMounted || !qrOpen || qrSessionSeq !== sessionSeq) {
+      try {
+        unlisten();
+      } catch {
+        // ignore unlisten cleanup errors
+      }
+      return false;
+    }
+    qrUnlistens.push(unlisten);
+    return true;
+  }
+
   export function triggerQrLogin() {
     beginQrLogin();
   }
@@ -169,6 +186,7 @@
   async function beginQrLogin(targetAccount?: ManagedZaloAccount) {
     if (qrStarting) return;
     cleanupQrListeners();
+    const sessionSeq = qrSessionSeq;
     qrOpen = true;
     qrImage = null;
     qrUser = null;
@@ -180,59 +198,66 @@
     qrStarting = true;
 
     try {
-      qrUnlistens.push(
-        await listen<{ image_base64: string }>('zalo-qr-code', (event) => {
-          qrImage = event.payload.image_base64;
-          qrStatus = 'Scan this QR code with the Zalo mobile app.';
-          qrStarting = false;
-        })
-      );
-      qrUnlistens.push(
-        await listen<{ avatar: string; display_name: string }>('zalo-qr-scanned', (event) => {
+      const unlistenCode = await listen<{ image_base64: string }>('zalo-qr-code', (event) => {
+        qrImage = event.payload.image_base64;
+        qrStatus = 'Scan this QR code with the Zalo mobile app.';
+        qrStarting = false;
+      });
+      if (!registerQrListener(unlistenCode, sessionSeq)) return;
+
+      const unlistenScanned = await listen<{ avatar: string; display_name: string }>(
+        'zalo-qr-scanned',
+        (event) => {
           qrUser = {
             avatar: event.payload.avatar,
             displayName: event.payload.display_name
           };
           qrStatus = `Scanned by ${event.payload.display_name}. Confirm the login on your phone.`;
-        })
+        }
       );
-      qrUnlistens.push(
-        await listen<{ imei: string }>('zalo-qr-success', async (event) => {
-          clearTimers();
-          qrSuccess = true;
-          qrStarting = false;
-          qrStatus = 'Zalo login successful! Realtime connection active.';
-          cleanupQrListeners();
+      if (!registerQrListener(unlistenScanned, sessionSeq)) return;
 
-          try {
-            await reconnectZaloAccount(event.payload.imei);
-          } catch (e) {
-            console.warn('Zalo post-login reconnect notice:', e);
-          }
-          await loadAccounts(true);
+      const unlistenSuccess = await listen<{ imei: string }>('zalo-qr-success', async (event) => {
+        clearTimers();
+        qrSuccess = true;
+        qrStarting = false;
+        qrStatus = 'Zalo login successful! Realtime connection active.';
+        cleanupQrListeners();
 
-          autoCloseTimeout = setTimeout(() => {
-            closeQrDialog();
-          }, 1200);
-        })
-      );
-      qrUnlistens.push(
-        await listen<{ message: string }>('zalo-qr-error', (event) => {
-          clearTimers();
-          qrError = event.payload.message;
-          qrStatus = event.payload.message;
-          qrStarting = false;
-          cleanupQrListeners();
-        })
-      );
+        try {
+          await reconnectZaloAccount(event.payload.imei);
+        } catch (e) {
+          console.warn('Zalo post-login reconnect notice:', e);
+        }
+        await loadAccounts(true);
+
+        autoCloseTimeout = setTimeout(() => {
+          closeQrDialog();
+        }, 1200);
+      });
+      if (!registerQrListener(unlistenSuccess, sessionSeq)) return;
+
+      const unlistenError = await listen<{ message: string }>('zalo-qr-error', (event) => {
+        clearTimers();
+        qrError = event.payload.message;
+        qrStatus = event.payload.message;
+        qrStarting = false;
+        cleanupQrListeners();
+      });
+      if (!registerQrListener(unlistenError, sessionSeq)) return;
+
+      if (!isMounted || !qrOpen || qrSessionSeq !== sessionSeq) return;
       await startZaloQrLogin();
     } catch (error) {
+      if (!isMounted || qrSessionSeq !== sessionSeq) return;
       clearTimers();
       qrError = error instanceof Error ? error.message : String(error);
       qrStatus = qrError;
       cleanupQrListeners();
     } finally {
-      qrStarting = false;
+      if (qrSessionSeq === sessionSeq) {
+        qrStarting = false;
+      }
     }
   }
 
@@ -246,12 +271,14 @@
   }
 
   onMount(() => {
+    isMounted = true;
     void loadAccounts();
     const runtimePoll = setInterval(() => {
       void loadAccounts(true);
     }, 5_000);
 
     return () => {
+      isMounted = false;
       clearInterval(runtimePoll);
       cleanupQrListeners();
     };

@@ -23,12 +23,15 @@
   import { AlertCircle, Search, Bell } from 'lucide-svelte';
 
   let activeTab = $state('dashboard');
+  let globalSearchQuery = $state('');
   let showLicenseModal = $state(false);
   let preventLicenseClose = $state(false);
   let isLicenseVerified = $state(false);
   let targetLeadForConversation = $state<{ leadId?: number; phone?: string; name?: string; zalo_uid?: string } | null>(null);
 
   let leads = $state<Lead[]>([]);
+  let activeLeads = $derived(leads.filter((l) => l.status !== 'Converted'));
+  let convertedContacts = $derived(leads.filter((l) => l.status === 'Converted'));
   let errorMsg = $state<string | null>(null);
 
   function handleOpenConversationForLead(lead: { id: number; phone?: string; name?: string; zalo_uid?: string }) {
@@ -108,6 +111,7 @@
   }
 
   onMount(() => {
+    let unmounted = false;
     const unsubBridge = crmService.initScraperEventBridge();
     let unsubNotifBridge: (() => void) | null = null;
 
@@ -117,7 +121,11 @@
         activeTab = 'conversation';
       }
     }).then((cleanup) => {
-      unsubNotifBridge = cleanup;
+      if (unmounted) {
+        cleanup();
+      } else {
+        unsubNotifBridge = cleanup;
+      }
     });
 
     const unsub = crmService.onLeadsChanged(() => {
@@ -148,6 +156,7 @@
       });
 
     return () => {
+      unmounted = true;
       unsub();
       unsubBridge();
       if (unsubNotifBridge) unsubNotifBridge();
@@ -192,6 +201,12 @@
           <Search class="w-4 h-4 absolute left-3 top-2.5 text-muted-foreground" />
           <input
             type="text"
+            bind:value={globalSearchQuery}
+            onkeydown={(e) => {
+              if (e.key === 'Enter' && globalSearchQuery.trim() && activeTab !== 'leads' && activeTab !== 'contacts') {
+                activeTab = 'leads';
+              }
+            }}
             placeholder="Quick search..."
             class="w-full h-9 pl-9 pr-4 rounded-md border border-input bg-background text-xs text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring transition-all"
           />
@@ -200,6 +215,7 @@
         <!-- Notifications -->
         <button
           type="button"
+          onclick={() => (activeTab = 'settings')}
           class="w-9 h-9 rounded-md border border-input bg-background flex items-center justify-center text-muted-foreground hover:text-foreground hover:bg-accent transition-colors relative"
           title="Notifications"
         >
@@ -237,9 +253,9 @@
       {:else if activeTab === 'scraper'}
         <GoogleMapsScraper />
       {:else if activeTab === 'leads'}
-        <LeadsList entityType="leads" leads={leads.filter(l => l.status !== 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
+        <LeadsList entityType="leads" leads={activeLeads} bind:searchQuery={globalSearchQuery} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
       {:else if activeTab === 'contacts'}
-        <LeadsList entityType="contacts" leads={leads.filter(l => l.status === 'Converted')} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
+        <LeadsList entityType="contacts" leads={convertedContacts} bind:searchQuery={globalSearchQuery} onRefresh={loadLeads} onOpenConversation={handleOpenConversationForLead} />
       {:else if activeTab === 'categories'}
         <CategoryManager {activeTab} />
       {:else if activeTab === 'outreach'}

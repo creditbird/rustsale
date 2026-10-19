@@ -1134,16 +1134,16 @@ impl ConversationService {
                     "attachment" | "image" | "file" | "audio" | "video" => {
                         if let Some(att) = &job.attachment {
                             if let Some(path) = &att.local_path {
-                                match std::fs::read(path) {
-                                Ok(data) => Ok(crate::conversation::zalo::client::ProviderOutboundContent::Attachment {
-                                    media_type: att.media_type.clone(),
-                                    mime_type: att.mime_type.clone(),
-                                    file_name: att.file_name.clone().unwrap_or_else(|| "attachment".into()),
-                                    size_bytes: data.len() as u64,
-                                    data,
-                                }),
-                                Err(e) => Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e)),
-                            }
+                                match self.read_outbox_attachment_bytes(path).await {
+                                    Ok(data) => Ok(crate::conversation::zalo::client::ProviderOutboundContent::Attachment {
+                                        media_type: att.media_type.clone(),
+                                        mime_type: att.mime_type.clone(),
+                                        file_name: att.file_name.clone().unwrap_or_else(|| "attachment".into()),
+                                        size_bytes: data.len() as u64,
+                                        data,
+                                    }),
+                                    Err(e) => Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e)),
+                                }
                             } else {
                                 Err(anyhow::anyhow!("Attachment job missing local_path"))
                             }
@@ -1272,6 +1272,38 @@ impl ConversationService {
             }
         }
     }
+
+    async fn read_outbox_attachment_bytes(&self, path: &str) -> Result<Vec<u8>> {
+        let trimmed = path.trim();
+        if trimmed.is_empty() {
+            return Err(anyhow::anyhow!("Attachment path cannot be empty"));
+        }
+        let target_path = std::path::Path::new(trimmed);
+        if target_path
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+        {
+            return Err(anyhow::anyhow!(
+                "Path traversal detected in attachment local_path"
+            ));
+        }
+
+        let metadata = tokio::fs::symlink_metadata(target_path).await?;
+        if metadata.file_type().is_symlink() || !metadata.file_type().is_file() {
+            return Err(anyhow::anyhow!(
+                "Attachment local_path must be a regular non-symlink file"
+            ));
+        }
+        if metadata.len() > crate::conversation::staging::MAX_ATTACHMENT_BYTES {
+            return Err(anyhow::anyhow!(
+                "Attachment exceeds the 50 MiB application limit"
+            ));
+        }
+
+        let bytes = tokio::fs::read(target_path).await?;
+        Ok(bytes)
+    }
+
     pub async fn process_next_messenger_outbox_job(
         &self,
         channel_account_id: i64,
@@ -1332,7 +1364,7 @@ impl ConversationService {
         let send_res = if has_attachment {
             if let Some(att) = &job.attachment {
                 if let Some(path) = &att.local_path {
-                    match std::fs::read(path) {
+                    match self.read_outbox_attachment_bytes(path).await {
                         Ok(bytes) => {
                             client
                                 .send_messenger_attachment(
@@ -1361,7 +1393,7 @@ impl ConversationService {
                     .or_else(|| job.content_json.get("path"))
                     .and_then(|v| v.as_str());
                 if let Some(path) = local_path {
-                    match std::fs::read(path) {
+                    match self.read_outbox_attachment_bytes(path).await {
                         Ok(bytes) => {
                             let file_name = job
                                 .content_json

@@ -164,6 +164,19 @@
     qrStarting = true;
 
     try {
+      const registerQrListener = (unlisten: UnlistenFn): boolean => {
+        if (!isMounted || !qrOpen || activeAttemptId !== attemptId) {
+          try {
+            unlisten();
+          } catch {
+            // ignore cleanup errors
+          }
+          return false;
+        }
+        qrUnlistens.push(unlisten);
+        return true;
+      };
+
       const unlistenQr = await listen<WhatsAppQrCodePayload>(EVENT_WHATSAPP_QR_CODE, async (event) => {
         const payload = event.payload;
         const payloadAttemptId = payload.attemptId || payload.attempt_id;
@@ -193,7 +206,7 @@
           }
         }, 1000);
       });
-      qrUnlistens.push(unlistenQr);
+      if (!registerQrListener(unlistenQr)) return;
 
       const unlistenSuccess = await listen<WhatsAppLoginSuccessPayload>(EVENT_WHATSAPP_LOGIN_SUCCESS, async (event) => {
         const payload = event.payload;
@@ -213,7 +226,7 @@
           closeQrDialog();
         }, 1500);
       });
-      qrUnlistens.push(unlistenSuccess);
+      if (!registerQrListener(unlistenSuccess)) return;
 
       const unlistenError = await listen<WhatsAppLoginErrorPayload>(EVENT_WHATSAPP_LOGIN_ERROR, (event) => {
         const payload = event.payload;
@@ -227,16 +240,20 @@
         qrStatus = qrError;
         qrStarting = false;
       });
-      qrUnlistens.push(unlistenError);
+      if (!registerQrListener(unlistenError)) return;
 
+      if (!isMounted || !qrOpen || activeAttemptId !== attemptId) return;
       await startWhatsAppQrLogin(attemptId);
     } catch (error) {
+      if (!isMounted || activeAttemptId !== attemptId) return;
       clearTimers();
       qrError = error instanceof Error ? error.message : String(error);
       qrStatus = qrError;
       qrStarting = false;
     }
   }
+
+  let isMounted = true;
 
   function closeQrDialog() {
     qrOpen = false;
@@ -263,30 +280,37 @@
     accountToDisconnect = null;
 
     actionError = null;
-    disconnecting.add(target.id);
+    const nextDisconnecting = new Set(disconnecting);
+    nextDisconnecting.add(target.id);
+    disconnecting = nextDisconnecting;
     try {
       await disconnectWhatsAppAccount(target.id);
       await loadAccounts();
     } catch (error) {
       actionError = error instanceof Error ? error.message : String(error);
     } finally {
-      disconnecting.delete(target.id);
+      const doneDisconnecting = new Set(disconnecting);
+      doneDisconnecting.delete(target.id);
+      disconnecting = doneDisconnecting;
     }
   }
 
   onMount(() => {
+    isMounted = true;
     void loadAccounts();
     const pollInterval = setInterval(() => {
       void loadAccounts(true);
     }, 10_000);
 
     return () => {
+      isMounted = false;
       clearInterval(pollInterval);
       cleanupQrListeners();
     };
   });
 
   onDestroy(() => {
+    isMounted = false;
     cleanupQrListeners();
   });
 </script>

@@ -15,9 +15,10 @@
   import LeadImportModal from './LeadImportModal.svelte';
   import { m, formatCurrency, convertCurrency, currencyState, type Currency } from '$lib/i18n';
 
-  let { leads = [], entityType = 'leads', onRefresh, onOpenConversation } = $props<{
+  let { leads = [], entityType = 'leads', searchQuery = $bindable(''), onRefresh, onOpenConversation } = $props<{
     leads: Lead[];
     entityType?: 'leads' | 'contacts';
+    searchQuery?: string;
     onRefresh?: () => void;
     onOpenConversation?: (lead: { id: number; phone?: string; name?: string; zalo_uid?: string }) => void;
   }>();
@@ -57,7 +58,6 @@
   let modalErrorMsg = $state<string | null>(null);
 
   // Search, filter, and pagination states
-  let searchQuery = $state('');
   let filterStatus = $state('all');
   let filterOwner = $state('all');
   let filterValueRange = $state('all');
@@ -77,8 +77,9 @@
         const matchesName = lead.name.toLowerCase().includes(query);
         const matchesCompany = lead.company.toLowerCase().includes(query);
         const matchesEmail = lead.email.toLowerCase().includes(query);
+        const matchesPhone = (lead.phone || '').toLowerCase().includes(query);
         const matchesOwner = (lead.owner || '').toLowerCase().includes(query);
-        if (!matchesName && !matchesCompany && !matchesEmail && !matchesOwner) {
+        if (!matchesName && !matchesCompany && !matchesEmail && !matchesPhone && !matchesOwner) {
           return false;
         }
       }
@@ -489,7 +490,7 @@
               <Table.Cell class="font-medium text-foreground">
                 <div class="flex items-center gap-2.5">
                   <div class="size-7 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-xs flex items-center justify-center border border-emerald-500/20">
-                    {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
+                    {(lead.name || '').trim().split(/\s+/).filter(Boolean).map((n: string) => n[0]).join('').toUpperCase().substring(0, 2) || '?'}
                   </div>
                   <span class="font-semibold text-xs text-foreground">{lead.name}</span>
                 </div>

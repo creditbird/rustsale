@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte';
   import { fade, fly } from 'svelte/transition';
   import { toast } from 'svelte-sonner';
   import * as crmService from '$lib/services/crmService';
@@ -52,7 +53,7 @@
     onOpenConversation?: (lead: { id: number; phone?: string; name?: string; zalo_uid?: string }) => void;
   }>();
 
-  let lead = $state<Lead | null>(initialLead);
+  let lead = $state<Lead | null>(untrack(() => initialLead));
   let activities = $state<Activity[]>([]);
   let deals = $state<Deal[]>([]);
   let loading = $state(false);
@@ -142,6 +143,23 @@
     }
   }
 
+  function getLeadInitials(name?: string | null): string {
+    return (
+      (name || '')
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean)
+        .map((n: string) => n[0])
+        .join('')
+        .toUpperCase()
+        .substring(0, 2) || '?'
+    );
+  }
+
+  function hasValidEmail(email?: string | null): boolean {
+    return Boolean(email && email !== 'No Email' && email.includes('@'));
+  }
+
   function startEditing() {
     if (!lead) return;
     editName = lead.name;
@@ -150,7 +168,7 @@
     editValue = lead.value;
     editCurrency = (lead.currency as Currency) || 'VND';
     editOwner = lead.owner || '';
-    editEmail = lead.email;
+    editEmail = lead.email === 'No Email' ? '' : (lead.email || '');
     editPhone = lead.phone || '';
     editAbout = lead.about || '';
     editAddress = lead.address || '';
@@ -242,7 +260,7 @@
   }
 
   async function openSendEmailModal() {
-    if (!lead?.email) {
+    if (!hasValidEmail(lead?.email)) {
       toast.error(m.lead_details_toast_no_email(), {
         description: m.lead_details_toast_no_email_desc()
       });
@@ -401,7 +419,7 @@
 
   async function handleSaveLead(e: Event) {
     e.preventDefault();
-    if (!lead || !editName.trim() || !editCompany.trim() || !editEmail.trim()) return;
+    if (!lead || !editName.trim() || !editCompany.trim()) return;
 
     savingLead = true;
     errorMsg = null;
@@ -413,7 +431,7 @@
         editStatus,
         editValue,
         editOwner.trim(),
-        editEmail.trim(),
+        editEmail.trim() || 'No Email',
         editPhone.trim(),
         editAbout.trim() || null,
         editAddress.trim() || null,
@@ -560,7 +578,7 @@
       <div class="p-4 rounded-xl border border-border bg-card shadow-xs relative space-y-4">
         <div class="flex items-start gap-4">
           <div class="w-14 h-14 rounded-full bg-emerald-500/10 text-emerald-600 font-bold text-base flex items-center justify-center border border-emerald-500/20 shrink-0 shadow-2xs">
-            {lead.name.split(' ').map((n: string) => n[0]).join('').toUpperCase().substring(0, 2)}
+            {getLeadInitials(lead.name)}
           </div>
           <div class="flex-1 min-w-0 pr-12">
             <h4 class="text-lg font-bold text-foreground truncate">{lead.name}</h4>
@@ -634,7 +652,7 @@
           </div>
         {:else}
           <div class="space-y-2.5">
-            {#each deals as deal}
+            {#each deals as deal (deal.id)}
               {@const badge = stageBadges[deal.stage] || { label: () => deal.stage, bg: 'bg-muted', text: 'text-foreground' }}
               <div class="p-3.5 rounded-xl border border-border bg-card shadow-2xs hover:border-emerald-500/40 transition-colors flex items-center justify-between gap-3">
                 <div class="min-w-0 space-y-1">
@@ -689,8 +707,8 @@
             </div>
 
             <div class="space-y-1">
-              <label for="edit-email" class="font-medium text-foreground">{m.leads_modal_email_label()} *</label>
-              <Input id="edit-email" type="email" bind:value={editEmail} required class="h-9 text-xs" />
+              <label for="edit-email" class="font-medium text-foreground">{m.leads_modal_email_label()}</label>
+              <Input id="edit-email" type="email" bind:value={editEmail} class="h-9 text-xs" />
             </div>
             <div class="space-y-1">
               <label for="edit-phone" class="font-medium text-foreground">{m.leads_modal_phone_label()}</label>
@@ -772,7 +790,11 @@
             <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 pb-3 border-b border-border/60">
               <div>
                 <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Mail class="w-3.5 h-3.5 text-primary" /> {m.leads_modal_email_label()}</span>
-                <a href="mailto:{lead.email}" class="text-primary font-semibold hover:underline break-all">{lead.email}</a>
+                {#if hasValidEmail(lead.email)}
+                  <a href="mailto:{lead.email}" class="text-primary font-semibold hover:underline break-all">{lead.email}</a>
+                {:else}
+                  <span class="text-foreground font-semibold">{lead.email && lead.email !== 'No Email' ? lead.email : '—'}</span>
+                {/if}
               </div>
               <div>
                 <span class="text-muted-foreground flex items-center gap-1.5 mb-1 font-medium"><Phone class="w-3.5 h-3.5 text-primary" /> {m.leads_modal_phone_label()}</span>
@@ -837,7 +859,7 @@
             <p class="text-xs text-muted-foreground italic p-4 rounded-xl border border-border bg-card text-center">{m.lead_details_no_activities()}</p>
           {:else}
             <div class="space-y-3 relative before:absolute before:left-3 before:top-2 before:bottom-2 before:w-0.5 before:bg-border">
-              {#each activities as activity}
+              {#each activities as activity (activity.id)}
                 <div class="flex items-start gap-3 relative">
                   <div class="w-6.5 h-6.5 rounded-full bg-background border border-border flex items-center justify-center text-primary z-10 text-[10px] shrink-0">
                     <Clock class="w-3 h-3 text-muted-foreground" />
@@ -948,7 +970,7 @@
 
               <!-- Quick Value Presets -->
               <div class="flex items-center gap-1 pt-1 flex-wrap">
-                {#each dealPresets as preset}
+                {#each dealPresets as preset (preset)}
                   <button
                     type="button"
                     onclick={() => newDealValue = preset}
@@ -967,7 +989,7 @@
                 bind:value={newDealStage}
                 class="w-full h-10 px-3 rounded-xl border border-input bg-background text-xs font-semibold text-foreground focus:outline-none focus:ring-2 focus:ring-primary/40"
               >
-                {#each stages as stage}
+                {#each stages as stage (stage)}
                   <option value={stage}>{stageBadges[stage]?.label() || stage}</option>
                 {/each}
               </select>
@@ -1092,7 +1114,7 @@
             bind:value={selectedZaloAccountKey}
             class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-sky-500"
           >
-            {#each zaloAccounts as acc}
+            {#each zaloAccounts as acc (acc.accountKey)}
               <option value={acc.accountKey}>
                 {acc.displayName || acc.accountKey} ({acc.authStatus === 'valid' ? m.common_active() : acc.authStatus})
               </option>
@@ -1114,7 +1136,7 @@
             bind:value={selectedZaloTemplateId}
             class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-sky-500"
           >
-            {#each zaloTemplates as tpl}
+            {#each zaloTemplates as tpl (tpl.id)}
               <option value={tpl.id}>{tpl.name}</option>
             {/each}
           </select>
@@ -1205,7 +1227,7 @@
             bind:value={selectedSmtpId}
             class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-emerald-500"
           >
-            {#each smtpAccounts as smtp}
+            {#each smtpAccounts as smtp (smtp.id)}
               <option value={smtp.id}>
                 {smtp.name} ({smtp.fromEmail})
               </option>
@@ -1227,7 +1249,7 @@
             bind:value={selectedEmailTemplateId}
             class="w-full h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-emerald-500"
           >
-            {#each emailTemplates as tpl}
+            {#each emailTemplates as tpl (tpl.id)}
               <option value={tpl.id}>{tpl.name} - {tpl.subject}</option>
             {/each}
           </select>
@@ -1245,7 +1267,7 @@
       </div>
 
       <!-- Native mailto Fallback -->
-      {#if lead?.email}
+      {#if lead && hasValidEmail(lead.email)}
         <div class="pt-2 border-t border-border flex items-center justify-between">
           <span class="text-xs text-muted-foreground">{m.lead_details_or_open_client()}</span>
           <a

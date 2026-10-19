@@ -17,12 +17,15 @@
   let recordingSeconds = $state(0);
   let timerInterval: ReturnType<typeof setInterval> | null = null;
   let errorMessage = $state<string | null>(null);
+  let unmounted = false;
 
   onMount(() => {
+    unmounted = false;
     void startRecording();
   });
 
   onDestroy(() => {
+    unmounted = true;
     stopTimer();
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
@@ -31,6 +34,7 @@
   });
 
   function startTimer() {
+    stopTimer();
     recordingSeconds = 0;
     timerInterval = setInterval(() => {
       recordingSeconds += 1;
@@ -54,6 +58,10 @@
     try {
       errorMessage = null;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      if (unmounted) {
+        stream.getTracks().forEach((track) => track.stop());
+        return;
+      }
       audioChunks = [];
       const recorder = new MediaRecorder(stream);
 
@@ -73,11 +81,14 @@
       isRecording = true;
       startTimer();
     } catch (err) {
-      errorMessage = err instanceof Error ? err.message : 'Unable to access microphone';
+      if (!unmounted) {
+        errorMessage = err instanceof Error ? err.message : 'Unable to access microphone';
+      }
     }
   }
 
   function handleCancel() {
+    unmounted = true;
     if (mediaRecorder && mediaRecorder.state !== 'inactive') {
       mediaRecorder.stop();
     }

@@ -59,11 +59,13 @@
   }
 
   // Configurable Base Target & Stretch Goals (Quarterly baseline in VND)
-  let targetRevenue = $state(getInitialTarget());
-  let stretchRevenue = $state(getInitialStretch(targetRevenue));
+  const initialTarget = getInitialTarget();
+  const initialStretch = getInitialStretch(initialTarget);
+  let targetRevenue = $state(initialTarget);
+  let stretchRevenue = $state(initialStretch);
   let showTargetModal = $state(false);
-  let editTargetInput = $state(targetRevenue);
-  let editStretchInput = $state(stretchRevenue);
+  let editTargetInput = $state(initialTarget);
+  let editStretchInput = $state(initialStretch);
 
   let reloadTimer: ReturnType<typeof setTimeout> | null = null;
   function debouncedReload() {
@@ -528,7 +530,7 @@
     <!-- Controls & Period Filter -->
     <div class="flex items-center gap-2 self-start sm:self-auto flex-wrap">
       <div class="flex items-center gap-1 bg-muted/50 p-1 rounded-xl border border-border text-xs">
-        {#each ['This Month', 'Q3 2026', 'YTD 2026'] as period}
+        {#each ['This Month', 'Q3 2026', 'YTD 2026'] as period (period)}
           <button
             type="button"
             onclick={() => selectedPeriod = period}
@@ -548,7 +550,7 @@
 
   <!-- Primary Executive KPI Cards Grid (3 Columns) -->
   <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
-    {#each stats as stat}
+    {#each stats as stat (stat.label)}
       {@const Icon = stat.icon}
       <Card.Root class="transition-all duration-150 hover:border-foreground/20">
         <Card.Header class="flex flex-row items-center justify-between space-y-0 pb-2">
@@ -654,7 +656,7 @@
         <div class="pt-2">
           <span class="text-xs font-bold text-foreground block mb-3">Revenue Trends & Forecast ({selectedPeriod})</span>
           <div class="grid grid-cols-3 sm:grid-cols-6 gap-2">
-            {#each monthlyTrendData as item}
+            {#each monthlyTrendData as item (item.month)}
               <div class="p-2.5 rounded-xl border border-border/70 bg-muted/20 text-center space-y-1">
                 <span class="text-[10px] font-semibold text-muted-foreground block truncate">{item.month}</span>
                 <span class="text-xs font-extrabold text-foreground block">{formatCompactCurrency(item.value)}</span>
@@ -678,7 +680,7 @@
 
       <Card.Content class="pt-4 flex-1 flex flex-col justify-between space-y-4">
         <div class="space-y-3.5">
-          {#each stageBreakdown as item}
+          {#each stageBreakdown as item (item.stage)}
             <div class="space-y-1">
               <div class="flex items-center justify-between text-xs">
                 <div class="flex items-center gap-1.5">
@@ -725,7 +727,7 @@
       </Card.Header>
       <Card.Content class="pt-4 space-y-4">
         <div class="space-y-2.5">
-          {#each leadStatusStats as status}
+          {#each leadStatusStats as status (status.label)}
             {@const pct = leads.length > 0 ? Math.round((status.count / leads.length) * 100) : 0}
             <div class="space-y-1">
               <div class="flex items-center justify-between text-xs">
@@ -769,7 +771,7 @@
             {m.dashboard_no_deals()}
           </div>
         {:else}
-          {#each topActiveDeals as deal}
+          {#each topActiveDeals as deal (deal.id)}
             {@const lead = leads.find(l => l.id === deal.lead_id)}
             {@const cfg = stageConfig[deal.stage] || { label: deal.stage, color: 'text-foreground', bg: 'bg-muted' }}
             <div class="p-3 rounded-xl border border-border/80 bg-card hover:border-primary/40 transition-colors space-y-1.5 shadow-2xs">
@@ -804,7 +806,7 @@
             {m.dashboard_no_activities()}
           </div>
         {:else}
-          {#each schedule as item}
+          {#each schedule as item, idx (idx)}
             <div class="flex items-start gap-3 p-3 rounded-xl border border-border/80 bg-card hover:bg-muted/40 transition-colors shadow-2xs">
               <CheckCircle2 class="w-4 h-4 text-emerald-500 mt-0.5 shrink-0" />
               <div class="space-y-0.5 min-w-0 flex-1">

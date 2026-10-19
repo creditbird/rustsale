@@ -701,7 +701,7 @@
 
             {#if account.grantedScopes && account.grantedScopes.length > 0}
               <div class="flex flex-wrap items-center gap-1">
-                {#each account.grantedScopes as scope}
+                {#each account.grantedScopes as scope (scope)}
                   <span class="px-1.5 py-0.5 rounded bg-muted text-[9px] font-mono text-muted-foreground">
                     {scope}
                   </span>
@@ -963,6 +963,10 @@
                       target="_blank"
                       rel="noopener noreferrer"
                       class="text-[10px] text-blue-600 dark:text-blue-400 hover:underline flex items-center gap-0.5"
+                      onclick={(e) => {
+                        e.preventDefault();
+                        void openExternalUrl('https://developers.facebook.com/apps');
+                      }}
                     >
                       developers.facebook.com
                       <ExternalLink class="size-2.5" />

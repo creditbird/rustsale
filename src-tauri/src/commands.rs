@@ -7741,15 +7741,66 @@ pub async fn download_lead_import_template<R: tauri::Runtime>(
         None => return Ok(None),
     };
 
-    tokio::fs::write(&file_path, &bytes)
+    match file_path.extension().and_then(|ext| ext.to_str()) {
+        Some(ext) if ext.eq_ignore_ascii_case(filter_ext) => {}
+        _ => {
+            return Err(format!(
+                "Định dạng tệp mẫu phải có phần mở rộng .{}",
+                filter_ext
+            ))
+        }
+    }
+
+    if file_path
+        .components()
+        .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err("Đường dẫn lưu tệp không hợp lệ (chứa ..)".to_string());
+    }
+
+    use tokio::io::AsyncWriteExt;
+
+    #[cfg(unix)]
+    let mut file = open_export_file_unix(&file_path).await?;
+
+    #[cfg(windows)]
+    let mut file = open_export_file_windows(&file_path).await?;
+
+    #[cfg(not(any(unix, windows)))]
+    let mut file = {
+        let mut options = tokio::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        options
+            .open(&file_path)
+            .await
+            .map_err(|e| format!("Lỗi mở tệp mẫu để ghi: {}", e))?
+    };
+
+    file.write_all(&bytes)
         .await
         .map_err(|e| format!("Lỗi ghi tệp mẫu: {}", e))?;
+
+    file.flush()
+        .await
+        .map_err(|e| format!("Lỗi đồng bộ tệp mẫu: {}", e))?;
 
     Ok(Some(file_path.to_string_lossy().into_owned()))
 }
 
-#[tauri::command]
+fn is_valid_release_version(version: &str) -> bool {
+    !version.is_empty()
+        && version.len() <= 32
+        && !version.contains("..")
+        && version
+            .chars()
+            .next()
+            .is_some_and(|first| first.is_ascii_digit())
+        && version
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-')
+}
 
+#[tauri::command]
 pub async fn install_portable_linux_update(version: String) -> Result<bool, String> {
     #[cfg(not(target_os = "linux"))]
     {
@@ -7759,26 +7810,22 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
 
     #[cfg(target_os = "linux")]
     {
-        let clean_version = version.trim().trim_start_matches('v');
+        let clean_version = version.trim().trim_start_matches('v').to_string();
+        if !is_valid_release_version(&clean_version) {
+            return Err("Invalid update version format".to_string());
+        }
+
         let download_url = format!(
             "https://rustsale.trantrongtri.com/v{}/RustSale%20CRM_{}_amd64.deb",
             clean_version, clean_version
         );
 
-        let random_suffix: u64 = rand::random();
-        let temp_dir = std::env::temp_dir().join(format!("rustsale-update-{}", random_suffix));
-        std::fs::create_dir_all(&temp_dir)
-            .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
-
-        let deb_path = temp_dir.join("rustsale.deb");
-
-        // 1. Download package
+        // 1. Download package asynchronously
         let response = reqwest::get(&download_url)
             .await
             .map_err(|e| format!("Failed to download update: {}", e))?;
 
         if !response.status().is_success() {
-            let _ = std::fs::remove_dir_all(&temp_dir);
             return Err(format!(
                 "Update download failed with HTTP {}",
                 response.status()
@@ -7790,222 +7837,238 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
             .await
             .map_err(|e| format!("Failed to read update body: {}", e))?;
 
-        std::fs::write(&deb_path, bytes)
-            .map_err(|e| format!("Failed to write update package: {}", e))?;
+        // 2. Offload blocking filesystem and subprocess extraction/installation to spawn_blocking
+        tokio::task::spawn_blocking(move || -> Result<bool, String> {
+            let random_suffix: u64 = rand::random();
+            let temp_dir = std::env::temp_dir().join(format!("rustsale-update-{}", random_suffix));
+            std::fs::create_dir_all(&temp_dir)
+                .map_err(|e| format!("Failed to create temporary directory: {}", e))?;
 
-        // 2. Extract package
-        let extracted_dir = temp_dir.join("extracted");
-        std::fs::create_dir_all(&extracted_dir).map_err(|e| e.to_string())?;
+            let deb_path = temp_dir.join("rustsale.deb");
+            if let Err(e) = std::fs::write(&deb_path, &bytes) {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(format!("Failed to write update package: {}", e));
+            }
 
-        let mut extracted = false;
+            let extracted_dir = temp_dir.join("extracted");
+            if let Err(e) = std::fs::create_dir_all(&extracted_dir) {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(e.to_string());
+            }
 
-        // Try 'ar x'
-        if std::process::Command::new("ar")
-            .args(["x", deb_path.to_str().unwrap_or("")])
-            .current_dir(&temp_dir)
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-        {
-            if let Ok(entries) = std::fs::read_dir(&temp_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("data.tar") {
-                        let res = std::process::Command::new("tar")
-                            .args(["-xf", &name, "-C", extracted_dir.to_str().unwrap_or("")])
-                            .current_dir(&temp_dir)
-                            .status();
-                        if res.map(|s| s.success()).unwrap_or(false) {
+            let mut extracted = false;
+
+            // Try 'ar x'
+            if std::process::Command::new("ar")
+                .args(["x", deb_path.to_str().unwrap_or("")])
+                .current_dir(&temp_dir)
+                .status()
+                .map(|s| s.success())
+                .unwrap_or(false)
+            {
+                if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with("data.tar") {
+                            let res = std::process::Command::new("tar")
+                                .args(["-xf", &name, "-C", extracted_dir.to_str().unwrap_or("")])
+                                .current_dir(&temp_dir)
+                                .status();
+                            if res.map(|s| s.success()).unwrap_or(false) {
+                                extracted = true;
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Fallback: 7z
+            if !extracted
+                && std::process::Command::new("7z")
+                    .args(["x", deb_path.to_str().unwrap_or(""), "-y"])
+                    .current_dir(&temp_dir)
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            {
+                if let Ok(entries) = std::fs::read_dir(&temp_dir) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with("data.tar") {
+                            let _ = std::process::Command::new("7z")
+                                .args([
+                                    "x",
+                                    &name,
+                                    &format!("-o{}", extracted_dir.to_str().unwrap_or("")),
+                                    "-y",
+                                ])
+                                .current_dir(&temp_dir)
+                                .status();
                             extracted = true;
                             break;
                         }
                     }
                 }
             }
-        }
 
-        // Fallback: 7z
-        if !extracted
-            && std::process::Command::new("7z")
-                .args(["x", deb_path.to_str().unwrap_or(""), "-y"])
-                .current_dir(&temp_dir)
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        {
-            if let Ok(entries) = std::fs::read_dir(&temp_dir) {
-                for entry in entries.flatten() {
-                    let name = entry.file_name().to_string_lossy().to_string();
-                    if name.starts_with("data.tar") {
-                        let _ = std::process::Command::new("7z")
-                            .args([
-                                "x",
-                                &name,
-                                &format!("-o{}", extracted_dir.to_str().unwrap_or("")),
-                                "-y",
-                            ])
-                            .current_dir(&temp_dir)
-                            .status();
-                        extracted = true;
-                        break;
-                    }
-                }
+            // Fallback: dpkg-deb
+            if !extracted
+                && std::process::Command::new("dpkg-deb")
+                    .args([
+                        "-x",
+                        deb_path.to_str().unwrap_or(""),
+                        extracted_dir.to_str().unwrap_or(""),
+                    ])
+                    .status()
+                    .map(|s| s.success())
+                    .unwrap_or(false)
+            {
+                extracted = true;
             }
-        }
 
-        // Fallback: dpkg-deb
-        if !extracted
-            && std::process::Command::new("dpkg-deb")
-                .args([
-                    "-x",
-                    deb_path.to_str().unwrap_or(""),
-                    extracted_dir.to_str().unwrap_or(""),
-                ])
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        {
-            extracted = true;
-        }
+            if !extracted {
+                let _ = std::fs::remove_dir_all(&temp_dir);
+                return Err(
+                    "Failed to extract update package (requires 'ar', '7z', or 'dpkg-deb')"
+                        .to_string(),
+                );
+            }
 
-        if !extracted {
-            let _ = std::fs::remove_dir_all(&temp_dir);
-            return Err(
-                "Failed to extract update package (requires 'ar', '7z', or 'dpkg-deb')".to_string(),
-            );
-        }
+            // 3. Install binaries & icons
+            let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+            let local_bin = std::path::PathBuf::from(&home).join(".local/bin");
+            let local_apps = std::path::PathBuf::from(&home).join(".local/share/applications");
+            let local_icons = std::path::PathBuf::from(&home).join(".local/share/icons");
+            let _ = std::fs::create_dir_all(&local_bin);
+            let _ = std::fs::create_dir_all(&local_apps);
+            let _ = std::fs::create_dir_all(&local_icons);
 
-        // 3. Install binaries & icons
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        let local_bin = std::path::PathBuf::from(&home).join(".local/bin");
-        let local_apps = std::path::PathBuf::from(&home).join(".local/share/applications");
-        let local_icons = std::path::PathBuf::from(&home).join(".local/share/icons");
-        let _ = std::fs::create_dir_all(&local_bin);
-        let _ = std::fs::create_dir_all(&local_apps);
-        let _ = std::fs::create_dir_all(&local_icons);
+            let src_bin_dir = extracted_dir.join("usr/bin");
+            if src_bin_dir.exists() {
+                if let Ok(entries) = std::fs::read_dir(&src_bin_dir) {
+                    for entry in entries.flatten() {
+                        let file_path = entry.path();
+                        if file_path.is_file() {
+                            let file_name = entry.file_name();
+                            let target_path = local_bin.join(&file_name);
 
-        let src_bin_dir = extracted_dir.join("usr/bin");
-        if src_bin_dir.exists() {
-            if let Ok(entries) = std::fs::read_dir(&src_bin_dir) {
-                for entry in entries.flatten() {
-                    let file_path = entry.path();
-                    if file_path.is_file() {
-                        let file_name = entry.file_name();
-                        let target_path = local_bin.join(&file_name);
+                            // Use install -m 755 to safely overwrite running executable
+                            let _ = std::process::Command::new("install")
+                                .args([
+                                    "-m",
+                                    "755",
+                                    file_path.to_str().unwrap_or(""),
+                                    target_path.to_str().unwrap_or(""),
+                                ])
+                                .status();
 
-                        // Use install -m 755 to safely overwrite running executable
-                        let _ = std::process::Command::new("install")
-                            .args([
-                                "-m",
-                                "755",
-                                file_path.to_str().unwrap_or(""),
-                                target_path.to_str().unwrap_or(""),
-                            ])
-                            .status();
-
-                        // Also update current executable path if different and writable
-                        if let Ok(current_exe) = std::env::current_exe() {
-                            if current_exe.file_name() == Some(&file_name)
-                                && current_exe != target_path
-                            {
-                                let _ = std::process::Command::new("install")
-                                    .args([
-                                        "-m",
-                                        "755",
-                                        file_path.to_str().unwrap_or(""),
-                                        current_exe.to_str().unwrap_or(""),
-                                    ])
-                                    .status();
+                            // Also update current executable path if different and writable
+                            if let Ok(current_exe) = std::env::current_exe() {
+                                if current_exe.file_name() == Some(&file_name)
+                                    && current_exe != target_path
+                                {
+                                    let _ = std::process::Command::new("install")
+                                        .args([
+                                            "-m",
+                                            "755",
+                                            file_path.to_str().unwrap_or(""),
+                                            current_exe.to_str().unwrap_or(""),
+                                        ])
+                                        .status();
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Clean up legacy nested directories if present from earlier versions
-        let nested_apps = local_apps.join("applications");
-        if nested_apps.exists() {
-            let _ = std::fs::remove_dir_all(&nested_apps);
-        }
-        let nested_icons = local_icons.join("icons");
-        if nested_icons.exists() {
-            let _ = std::fs::remove_dir_all(&nested_icons);
-        }
+            // Clean up legacy nested directories if present from earlier versions
+            let nested_apps = local_apps.join("applications");
+            if nested_apps.exists() {
+                let _ = std::fs::remove_dir_all(&nested_apps);
+            }
+            let nested_icons = local_icons.join("icons");
+            if nested_icons.exists() {
+                let _ = std::fs::remove_dir_all(&nested_icons);
+            }
 
-        // Copy icon contents into ~/.local/share/icons
-        let src_icons = extracted_dir.join("usr/share/icons");
-        if src_icons.exists() {
-            if let Ok(entries) = std::fs::read_dir(&src_icons) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    let _ = std::process::Command::new("cp")
-                        .args([
-                            "-r",
-                            "-f",
-                            "--remove-destination",
-                            path.to_str().unwrap_or(""),
-                            local_icons.to_str().unwrap_or(""),
-                        ])
-                        .status();
+            // Copy icon contents into ~/.local/share/icons
+            let src_icons = extracted_dir.join("usr/share/icons");
+            if src_icons.exists() {
+                if let Ok(entries) = std::fs::read_dir(&src_icons) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        let _ = std::process::Command::new("cp")
+                            .args([
+                                "-r",
+                                "-f",
+                                "--remove-destination",
+                                path.to_str().unwrap_or(""),
+                                local_icons.to_str().unwrap_or(""),
+                            ])
+                            .status();
+                    }
                 }
             }
-        }
 
-        // Copy .desktop files into ~/.local/share/applications and patch paths
-        let src_apps = extracted_dir.join("usr/share/applications");
-        if src_apps.exists() {
-            if let Ok(entries) = std::fs::read_dir(&src_apps) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.is_file() {
-                        let file_name = entry.file_name();
-                        let target_desktop = local_apps.join(&file_name);
-                        if std::fs::copy(&path, &target_desktop).is_ok() {
-                            if let Ok(content) = std::fs::read_to_string(&target_desktop) {
-                                let exec_path = local_bin.join("rustsale-crm");
-                                let mut new_lines = Vec::new();
-                                for line in content.lines() {
-                                    if line.starts_with("Exec=") {
-                                        new_lines.push(format!("Exec={} %U", exec_path.display()));
-                                    } else if line.starts_with("Icon=") {
-                                        new_lines.push("Icon=rustsale-crm".to_string());
-                                    } else {
-                                        new_lines.push(line.to_string());
+            // Copy .desktop files into ~/.local/share/applications and patch paths
+            let src_apps = extracted_dir.join("usr/share/applications");
+            if src_apps.exists() {
+                if let Ok(entries) = std::fs::read_dir(&src_apps) {
+                    for entry in entries.flatten() {
+                        let path = entry.path();
+                        if path.is_file() {
+                            let file_name = entry.file_name();
+                            let target_desktop = local_apps.join(&file_name);
+                            if std::fs::copy(&path, &target_desktop).is_ok() {
+                                if let Ok(content) = std::fs::read_to_string(&target_desktop) {
+                                    let exec_path = local_bin.join("rustsale-crm");
+                                    let mut new_lines = Vec::new();
+                                    for line in content.lines() {
+                                        if line.starts_with("Exec=") {
+                                            new_lines.push(format!("Exec={} %U", exec_path.display()));
+                                        } else if line.starts_with("Icon=") {
+                                            new_lines.push("Icon=rustsale-crm".to_string());
+                                        } else {
+                                            new_lines.push(line.to_string());
+                                        }
+                                    }
+                                    let _ = std::fs::write(&target_desktop, new_lines.join("\n"));
+                                    #[cfg(unix)]
+                                    {
+                                        use std::os::unix::fs::PermissionsExt;
+                                        let _ = std::fs::set_permissions(
+                                            &target_desktop,
+                                            std::fs::Permissions::from_mode(0o755),
+                                        );
                                     }
                                 }
-                                let _ = std::fs::write(&target_desktop, new_lines.join("\n"));
-                                #[cfg(unix)]
-                                {
-                                    use std::os::unix::fs::PermissionsExt;
-                                    let _ = std::fs::set_permissions(
-                                        &target_desktop,
-                                        std::fs::Permissions::from_mode(0o755),
-                                    );
-                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // Update desktop and icon databases
-        let _ = std::process::Command::new("update-desktop-database")
-            .arg(local_apps.to_str().unwrap_or(""))
-            .status();
-
-        let hicolor_dir = local_icons.join("hicolor");
-        if hicolor_dir.exists() {
-            let _ = std::process::Command::new("gtk-update-icon-cache")
-                .args(["-f", "-t", hicolor_dir.to_str().unwrap_or("")])
+            // Update desktop and icon databases
+            let _ = std::process::Command::new("update-desktop-database")
+                .arg(local_apps.to_str().unwrap_or(""))
                 .status();
-        }
 
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&temp_dir);
+            let hicolor_dir = local_icons.join("hicolor");
+            if hicolor_dir.exists() {
+                let _ = std::process::Command::new("gtk-update-icon-cache")
+                    .args(["-f", "-t", hicolor_dir.to_str().unwrap_or("")])
+                    .status();
+            }
 
-        Ok(true)
+            // Cleanup
+            let _ = std::fs::remove_dir_all(&temp_dir);
+
+            Ok(true)
+        })
+        .await
+        .map_err(|e| format!("Update installation worker failed: {}", e))?
     }
 }
 
@@ -8628,4 +8691,21 @@ pub fn increment_template_usage(id: i64, state: tauri::State<DbState>) -> Result
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
     crate::db::increment_template_usage(&conn, id).map_err(|e| format!("Database error: {}", e))
+}
+
+#[cfg(test)]
+mod security_audit_tests {
+    use super::is_valid_release_version;
+
+    #[test]
+    fn validates_release_version_strictly() {
+        assert!(is_valid_release_version("0.2.0"));
+        assert!(is_valid_release_version("1.10.3-rc1"));
+        assert!(!is_valid_release_version(""));
+        assert!(!is_valid_release_version("../0.2.0"));
+        assert!(!is_valid_release_version("0.2.0/../../etc"));
+        assert!(!is_valid_release_version("0.2.0?foo=bar"));
+        assert!(!is_valid_release_version("v0.2.0"));
+        assert!(!is_valid_release_version("0.2.0..1"));
+    }
 }

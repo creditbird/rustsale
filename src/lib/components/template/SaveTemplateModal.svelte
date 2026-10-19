@@ -256,7 +256,7 @@
               bind:value={channel}
               class="h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer capitalize"
             >
-              {#each CHANNELS as ch}
+              {#each CHANNELS as ch (ch.id)}
                 <option value={ch.id}>{ch.label}</option>
               {/each}
             </select>
@@ -305,7 +305,7 @@
                 class="h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
               >
                 <option value={null}>(Không chọn - Thư mục mặc định)</option>
-                {#each folders as f}
+                {#each folders as f (f.id)}
                   <option value={f.id}>📁 {f.name}</option>
                 {/each}
               </select>
@@ -320,7 +320,7 @@
               bind:value={stage}
               class="h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
             >
-              {#each STAGES as s}
+              {#each STAGES as s (s.id)}
                 <option value={s.id}>{s.label}</option>
               {/each}
             </select>
@@ -352,7 +352,7 @@
 
             <div class="flex items-center gap-1.5 flex-wrap">
               <span class="text-[11px] text-muted-foreground">Chèn nhanh:</span>
-              {#each PLACEHOLDERS as p}
+              {#each PLACEHOLDERS as p (p.token)}
                 <button
                   type="button"
                   onclick={() => insertPlaceholder(p.token)}

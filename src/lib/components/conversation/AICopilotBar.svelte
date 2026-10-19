@@ -179,7 +179,7 @@
     <div class="p-3 rounded-xl border border-border bg-card/60 flex flex-col gap-3 animate-fade-in shadow-xs">
       <!-- 3 Variant Pills -->
       <div class="flex items-center gap-2 flex-wrap">
-        {#each smartReplyData.variants as v, i}
+        {#each smartReplyData.variants as v, i (i)}
           {@const isSelected = i === selectedVariantIndex}
           <button
             type="button"

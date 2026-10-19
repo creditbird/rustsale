@@ -456,7 +456,7 @@
   <div class="flex flex-wrap items-center justify-between gap-3 bg-card p-4 rounded-xl border border-border shadow-2xs">
     <!-- Channel Filter Tabs -->
     <div class="flex items-center gap-1 p-1 bg-muted/60 rounded-lg border border-border/60 overflow-x-auto max-w-full">
-      {#each CHANNELS as ch}
+      {#each CHANNELS as ch (ch.id)}
         {@const Icon = ch.icon}
         {@const isActive = selectedChannel === ch.id}
         <button
@@ -600,7 +600,7 @@
         </h3>
 
         <div class="flex flex-col gap-1">
-          {#each STAGES as s}
+          {#each STAGES as s (s.id)}
             <button
               type="button"
               onclick={() => (selectedStage = s.id)}
@@ -638,7 +638,7 @@
           </div>
 
           <div class="flex flex-wrap gap-1.5">
-            {#each allTags as tag}
+            {#each allTags as tag (tag)}
               <button
                 type="button"
                 onclick={() => (selectedTag = selectedTag === tag ? null : tag)}
@@ -786,7 +786,7 @@
                       <span>{folderName}</span>
                     </span>
                   {/if}
-                  {#each tags.slice(0, 2) as t}
+                  {#each tags.slice(0, 2) as t (t)}
                     <span class="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded">
                       #{t}
                     </span>
@@ -800,7 +800,7 @@
               <!-- Card Footer: Stats & Actions -->
               <div class="pt-3 mt-3 border-t border-border/50 flex items-center justify-between gap-2">
                 <span class="text-[11px] text-muted-foreground flex items-center gap-1 font-mono">
-                  <Clock class="w-3 h-3" />
+                  <Clock class="w-3.5 h-3.5" />
                   <span>{tmpl.usage_count} lượt</span>
                 </span>
 
@@ -914,7 +914,7 @@
               bind:value={formChannel}
               class="h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
             >
-              {#each CHANNELS.filter(c => c.id !== 'all') as ch}
+              {#each CHANNELS.filter(c => c.id !== 'all') as ch (ch.id)}
                 <option value={ch.id}>{ch.label}</option>
               {/each}
             </select>
@@ -930,7 +930,7 @@
               class="h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
             >
               <option value={null}>(Không phân loại)</option>
-              {#each folders as f}
+              {#each folders as f (f.id)}
                 <option value={f.id}>📁 {f.name}</option>
               {/each}
             </select>
@@ -943,7 +943,7 @@
               bind:value={formStage}
               class="h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
             >
-              {#each STAGES.filter(s => s.id !== 'all') as s}
+              {#each STAGES.filter(s => s.id !== 'all') as s (s.id)}
                 <option value={s.id}>{s.label}</option>
               {/each}
             </select>
@@ -959,7 +959,7 @@
               id="edit-subject"
               type="text"
               bind:value={formSubject}
-              placeholder="VD: {{name}} ơi, giải pháp tối ưu chi phí từ RustSale..."
+              placeholder={'VD: {{name}} ơi, giải pháp tối ưu chi phí từ RustSale...'}
               class="h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground placeholder:text-muted-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
             />
           </div>
@@ -973,7 +973,7 @@
 
             <div class="flex items-center gap-1.5 flex-wrap">
               <span class="text-[11px] text-muted-foreground">Chèn biến:</span>
-              {#each PLACEHOLDERS as p}
+              {#each PLACEHOLDERS as p (p.token)}
                 <button
                   type="button"
                   onclick={() => insertFormPlaceholder(p.token)}
@@ -1157,7 +1157,7 @@
               <span class="font-medium text-foreground">Tới:</span> Nguyễn Văn A &lt;nguyenvana@gmail.com&gt;
             </div>
             <div class="text-muted-foreground text-[11px] mt-1">
-              <span class="font-semibold text-foreground">Tiêu đề:</span>{' '}
+              <span class="font-semibold text-foreground">Tiêu đề:</span>
               {previewingTemplate.subject
                 ? renderSpintaxPreview(previewingTemplate.subject)
                 : '(Chưa có tiêu đề)'}
@@ -1246,7 +1246,7 @@
         <div class="flex flex-col gap-1.5">
           <span class="text-xs font-medium text-foreground">Màu Nhận Diện</span>
           <div class="flex items-center gap-2">
-            {#each COLOR_SWATCHES as color}
+            {#each COLOR_SWATCHES as color (color)}
               <button
                 type="button"
                 title={`Màu ${color}`}

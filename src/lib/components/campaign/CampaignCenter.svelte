@@ -699,7 +699,7 @@
             class="h-8 px-2.5 text-xs rounded-md border border-input bg-background text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring"
           >
             <option value={null}>Tất cả danh mục ({allLeads.length})</option>
-            {#each allCategories as cat}
+            {#each allCategories as cat (cat.id)}
               <option value={cat.id}>{cat.name}</option>
             {/each}
           </select>
@@ -851,7 +851,7 @@
                     </tr>
                   </thead>
                   <tbody class="divide-y divide-border/60">
-                    {#each activeAnalytics.step_breakdown as step}
+                    {#each activeAnalytics.step_breakdown as step (step.step_order)}
                       <tr class="hover:bg-muted/30 font-mono text-xs">
                         <td class="px-3.5 py-2.5 font-bold font-sans">Bước {step.step_order}</td>
                         <td class="px-3.5 py-2.5 uppercase text-[11px] font-sans font-medium">{step.channel}</td>

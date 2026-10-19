@@ -248,7 +248,7 @@
 
         <!-- Channel Filter Tabs -->
         <div class="flex items-center gap-1 p-1 bg-muted/60 rounded-lg border border-border/60 overflow-x-auto">
-          {#each CHANNELS as ch}
+          {#each CHANNELS as ch (ch.id)}
             {@const Icon = ch.icon}
             {@const isActive = selectedChannel === ch.id}
             <button
@@ -272,7 +272,7 @@
               class="h-9 px-3 rounded-lg border border-input bg-background text-xs text-foreground focus:outline-hidden focus:ring-1 focus:ring-ring cursor-pointer"
             >
               <option value="all">📁 Tất cả thư mục</option>
-              {#each folders as f}
+              {#each folders as f (f.id)}
                 <option value={f.id}>📁 {f.name}</option>
               {/each}
             </select>
@@ -373,7 +373,7 @@
                           <span>{folderName}</span>
                         </span>
                       {/if}
-                      {#each tags.slice(0, 3) as tag}
+                      {#each tags.slice(0, 3) as tag (tag)}
                         <span class="text-[10px] text-primary/80 bg-primary/10 px-1.5 py-0.5 rounded">
                           #{tag}
                         </span>
@@ -451,7 +451,7 @@
 
                 {#if tags.length > 0}
                   <div class="flex items-center gap-1 flex-wrap pt-1">
-                    {#each tags as tag}
+                    {#each tags as tag (tag)}
                       <span class="text-[10px] bg-primary/10 text-primary px-1.5 py-0.5 rounded">
                         #{tag}
                       </span>
@@ -478,7 +478,7 @@
                         <span class="font-medium text-foreground">Tới:</span> Nguyễn Văn A &lt;nguyenvana@gmail.com&gt;
                       </div>
                       <div class="text-muted-foreground text-[11px] mt-1">
-                        <span class="font-semibold text-foreground">Tiêu đề:</span>{' '}
+                        <span class="font-semibold text-foreground">Tiêu đề:</span>
                         {selectedTemplate.subject
                           ? renderSpintaxPreview(selectedTemplate.subject)
                           : '(Chưa có tiêu đề)'}

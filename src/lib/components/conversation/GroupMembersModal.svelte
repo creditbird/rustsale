@@ -617,7 +617,7 @@
                           <ShieldCheck class="w-3 h-3 text-emerald-500" />
                           <span>Lead</span>
                         </Badge>
-                        {#each member.categories as cat}
+                        {#each member.categories as cat (cat.id)}
                           <Badge variant="secondary" class="text-[10px] py-0 px-1.5">
                             {cat.name}
                           </Badge>
