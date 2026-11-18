@@ -8,6 +8,7 @@ use super::repository::{
 use super::types::{Channel, ConversationRuntimeStatus, InboxItem, TimelineCursor, TimelinePage};
 use crate::conversation::outreach::AppliedOutreachMessage;
 use crate::conversation::zalo::normalizer::{NormalizedGroupSnapshot, ZaloMutation};
+use crate::conversation::zalo::webhook::{ZaloWebhook, ZaloWebhookMessage};
 use crate::conversation::zalo::{
     DIRECT_MESSAGE_WATERMARK_SCOPE, DIRECT_REACTION_WATERMARK_SCOPE, GROUP_MESSAGE_WATERMARK_SCOPE,
     GROUP_REACTION_WATERMARK_SCOPE,
@@ -47,12 +48,35 @@ pub struct PreparedRecall {
     pub provider_client_message_id: String,
 }
 
+fn zalo_webhook_message(
+    message: &crate::conversation::repository::NormalizedMessage,
+    conversation_id: i64,
+    channel_account_id: i64,
+    is_group: bool,
+) -> ZaloWebhookMessage {
+    let sender = message.participant.as_ref();
+    ZaloWebhookMessage {
+        conversation_id,
+        channel_account_id,
+        sender_uid: sender.map(|identity| identity.external_id.clone()),
+        sender_name: sender.and_then(|identity| identity.display_name.clone()),
+        content_type: message.content_type.clone(),
+        text: message.text_content.clone(),
+        ts: message
+            .provider_timestamp
+            .clone()
+            .unwrap_or_else(|| message.ingested_at.clone()),
+        is_group,
+    }
+}
+
 #[derive(Clone)]
 pub struct ConversationService {
     pub repository: Arc<ConversationRepository>,
     pub events: Arc<ConversationEventPublisher>,
     pub stager: ConversationAttachmentStager,
     pub quick_templates: QuickTemplateRepository,
+    zalo_webhook: ZaloWebhook,
 }
 
 impl ConversationService {
@@ -68,7 +92,15 @@ impl ConversationService {
             events,
             stager,
             quick_templates,
+            zalo_webhook: ZaloWebhook::from_env(),
         }
+    }
+
+    /// Replaces the Zalo webhook (tests and explicit wiring).
+    #[must_use]
+    pub fn with_zalo_webhook(mut self, webhook: ZaloWebhook) -> Self {
+        self.zalo_webhook = webhook;
+        self
     }
 
     pub fn list_quick_templates(
@@ -418,6 +450,9 @@ impl ConversationService {
         account_display_name: Option<&str>,
         event: zca_rs::listener::ListenerEvent,
     ) -> Result<()> {
+        // Only live messages may notify the webhook; history backfill
+        // (`OldMessages`) must never fire it.
+        let is_live_message = matches!(event, zca_rs::listener::ListenerEvent::Message(_));
         for mutation in crate::conversation::zalo::normalizer::normalize_listener_event(
             provider_account_key,
             account_display_name,
@@ -451,6 +486,17 @@ impl ConversationService {
                             anyhow::anyhow!("Failed to update message checkpoint: {error}")
                         })?;
                     if !applied.duplicate {
+                        if is_live_message
+                            && message.direction
+                                == crate::conversation::types::MessageDirection::Inbound
+                        {
+                            self.zalo_webhook.notify(zalo_webhook_message(
+                                &message,
+                                applied.conversation_id,
+                                applied.channel_account_id,
+                                is_group,
+                            ));
+                        }
                         if let Some(delta) = &applied.delta_event {
                             self.events.publish_delta(delta.clone());
                         }

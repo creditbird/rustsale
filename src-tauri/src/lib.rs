@@ -69,6 +69,8 @@ const ALLOWED_DOTENV_KEYS: &[&str] = &[
     "VITE_FACEBOOK_APP_SECRET",
     "RUSTSALE_LOCAL_API_TOKEN",
     "RUSTSALE_LOCAL_API_PORT",
+    "RUSTSALE_ZALO_WEBHOOK_URL",
+    "RUSTSALE_ZALO_WEBHOOK_INCLUDE_GROUPS",
 ];
 
 static DOTENV_INIT: std::sync::Once = std::sync::Once::new();

@@ -19,6 +19,7 @@ use crate::conversation::types::{
 };
 use crate::conversation::zalo::client::{NormalizedProfile, ZaloClient};
 use crate::conversation::zalo::normalizer::NormalizedGroupSnapshot;
+use crate::conversation::zalo::webhook::{WebhookTuning, ZaloWebhook};
 use crate::db::open_db_connection;
 
 fn direct_message_event(message_id: &str) -> ListenerEvent {
@@ -439,6 +440,10 @@ impl Default for ServiceHarness {
 
 impl ServiceHarness {
     pub fn new() -> Self {
+        Self::new_with_webhook(ZaloWebhook::disabled())
+    }
+
+    pub fn new_with_webhook(webhook: ZaloWebhook) -> Self {
         let clean_path = std::env::temp_dir().join(format!(
             "rustsale-service-test-{}.db",
             rand::random::<u64>()
@@ -489,11 +494,10 @@ impl ServiceHarness {
             .parent()
             .unwrap()
             .join("spool-service");
-        let service = Arc::new(ConversationService::new(
-            repository.clone(),
-            events.clone(),
-            spool_root,
-        ));
+        let service = Arc::new(
+            ConversationService::new(repository.clone(), events.clone(), spool_root)
+                .with_zalo_webhook(webhook),
+        );
 
         Self {
             db_path,
@@ -4393,5 +4397,369 @@ mod group_member_import_events {
         assert_eq!(resumed.len(), 50);
         assert_eq!(resumed[0].sequence, 251);
         assert_eq!(resumed[49].sequence, 300);
+    }
+}
+
+mod zalo_webhook_tests {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+    use std::time::Duration;
+    use zca_rs::models::{GroupMessage, TGroupMessage};
+
+    /// Short timings so batching tests finish quickly.
+    fn fast_tuning() -> WebhookTuning {
+        WebhookTuning {
+            quiet_period: Duration::from_millis(250),
+            max_wait: Duration::from_millis(900),
+            attempt_timeout: Duration::from_secs(2),
+            retry_delays: [Duration::from_millis(30), Duration::from_millis(60)],
+        }
+    }
+
+    fn webhook(url: &str, include_groups: bool) -> ZaloWebhook {
+        ZaloWebhook::new(Some(url), include_groups, fast_tuning())
+    }
+
+    struct Receiver {
+        bodies: Mutex<Vec<serde_json::Value>>,
+        /// Statuses to answer with, in order; 200 once exhausted.
+        script: Mutex<VecDeque<u16>>,
+    }
+
+    /// Starts a local HTTP server that records every JSON POST body.
+    async fn start_receiver(script: &[u16]) -> (String, Arc<Receiver>) {
+        let state = Arc::new(Receiver {
+            bodies: Mutex::new(Vec::new()),
+            script: Mutex::new(script.iter().copied().collect()),
+        });
+        let shared = state.clone();
+        let app = axum::Router::new().route(
+            "/hook",
+            axum::routing::post(move |axum::Json(body): axum::Json<serde_json::Value>| {
+                let shared = shared.clone();
+                async move {
+                    shared.bodies.lock().unwrap().push(body);
+                    let next = shared.script.lock().unwrap().pop_front().unwrap_or(200);
+                    axum::http::StatusCode::from_u16(next).unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        (format!("http://{addr}/hook"), state)
+    }
+
+    async fn wait_for_posts(receiver: &Receiver, expected: usize) {
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while receiver.bodies.lock().unwrap().len() < expected
+            && std::time::Instant::now() < deadline
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
+
+    fn raw_message(
+        message_id: &str,
+        uid_from: &str,
+        id_to: &str,
+        content: serde_json::Value,
+        msg_type: &str,
+    ) -> TMessage {
+        serde_json::from_value(serde_json::json!({
+            "actionId": "action-hook",
+            "msgId": message_id,
+            "cliMsgId": format!("client-{message_id}"),
+            "msgType": msg_type,
+            "uidFrom": uid_from,
+            "idTo": id_to,
+            "dName": "Chị Bích Việt",
+            "ts": "1785492000000",
+            "status": 1,
+            "content": content,
+            "notify": "",
+            "ttl": 0,
+            "userId": "",
+            "uin": "",
+            "propertyExt": null,
+            "paramsExt": {"countUnread": 1, "containType": 0, "platformType": 1},
+            "cmd": 501,
+            "st": 0,
+            "at": 0,
+            "realMsgId": format!("real-{message_id}"),
+            "quote": null
+        }))
+        .unwrap()
+    }
+
+    fn user_event(message_id: &str, uid_from: &str, text: &str) -> ListenerEvent {
+        let raw = raw_message(message_id, uid_from, "self-uid", text.into(), "webchat");
+        ListenerEvent::Message(Box::new(Message::User(UserMessage::new("self-uid", raw))))
+    }
+
+    fn group_event(message_id: &str, text: &str) -> ListenerEvent {
+        let raw = raw_message(message_id, "peer-uid", "group-1", text.into(), "webchat");
+        ListenerEvent::Message(Box::new(Message::Group(GroupMessage::new(
+            "self-uid",
+            TGroupMessage {
+                base: raw,
+                mentions: None,
+            },
+        ))))
+    }
+
+    fn ingest(harness: &ServiceHarness, event: ListenerEvent) {
+        harness
+            .service
+            .ingest_zalo_event("imei-1", Some("Sale 01"), event)
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn three_quick_messages_make_one_post() {
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+
+        ingest(&harness, user_event("b1", "peer-uid", "một"));
+        ingest(&harness, user_event("b2", "peer-uid", "hai"));
+        ingest(&harness, user_event("b3", "peer-uid", "ba"));
+        // Nothing may be sent before the quiet period has passed.
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(receiver.bodies.lock().unwrap().is_empty());
+
+        wait_for_posts(&receiver, 1).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "exactly one POST expected: {bodies:?}");
+        assert_eq!(bodies[0]["text"], "một\nhai\nba");
+        assert_eq!(bodies[0]["messageCount"], 3);
+        assert_eq!(bodies[0]["senderUid"], "peer-uid");
+    }
+
+    #[tokio::test]
+    async fn two_conversations_make_two_posts() {
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+
+        ingest(&harness, user_event("c1", "peer-a", "từ A"));
+        ingest(&harness, user_event("c2", "peer-b", "từ B"));
+        wait_for_posts(&receiver, 2).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+
+        let bodies = receiver.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        assert_ne!(bodies[0]["conversationId"], bodies[1]["conversationId"]);
+        let mut texts: Vec<_> = bodies.iter().map(|b| b["text"].clone()).collect();
+        texts.sort_by_key(|t| t.to_string());
+        assert_eq!(texts, vec!["từ A", "từ B"]);
+    }
+
+    #[tokio::test]
+    async fn continuous_chatter_is_flushed_after_max_wait() {
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+
+        // A message every 150 ms never reaches the 250 ms quiet period, so only
+        // the 900 ms max wait can flush the first batch.
+        for index in 0..8 {
+            ingest(&harness, user_event(&format!("m{index}"), "peer-uid", "x"));
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        }
+        wait_for_posts(&receiver, 2).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        assert!(
+            bodies.len() >= 2,
+            "max wait must split the stream: {bodies:?}"
+        );
+        let total: u64 = bodies
+            .iter()
+            .map(|b| b["messageCount"].as_u64().unwrap())
+            .sum();
+        assert!(total <= 8);
+    }
+
+    #[tokio::test]
+    async fn group_messages_are_dropped_unless_enabled() {
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        ingest(&harness, group_event("g1", "tin nhóm"));
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(receiver.bodies.lock().unwrap().is_empty());
+
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, true));
+        ingest(&harness, group_event("g2", "tin nhóm"));
+        wait_for_posts(&receiver, 1).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["isGroup"], true);
+    }
+
+    #[tokio::test]
+    async fn server_error_is_retried_then_delivered_once() {
+        let (url, receiver) = start_receiver(&[500]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        ingest(&harness, user_event("r1", "peer-uid", "thử lại"));
+
+        wait_for_posts(&receiver, 2).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        // 500 first, then 200: two attempts, and no third one after success.
+        assert_eq!(bodies.len(), 2, "{bodies:?}");
+        assert_eq!(bodies[0], bodies[1]);
+    }
+
+    #[tokio::test]
+    async fn too_many_requests_is_retried() {
+        let (url, receiver) = start_receiver(&[429]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        ingest(&harness, user_event("t1", "peer-uid", "429"));
+        wait_for_posts(&receiver, 2).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        assert_eq!(receiver.bodies.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn client_error_is_not_retried() {
+        let (url, receiver) = start_receiver(&[400, 400, 400]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        ingest(&harness, user_event("e1", "peer-uid", "sai"));
+
+        wait_for_posts(&receiver, 1).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(receiver.bodies.lock().unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn persistent_server_error_stops_after_three_attempts() {
+        let (url, receiver) = start_receiver(&[503, 503, 503, 503, 503]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        ingest(&harness, user_event("p1", "peer-uid", "hỏng"));
+
+        wait_for_posts(&receiver, 3).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert_eq!(receiver.bodies.lock().unwrap().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn payload_uses_the_agreed_field_names() {
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        ingest(&harness, user_event("f1", "peer-uid", "xin chào"));
+
+        wait_for_posts(&receiver, 1).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        let body = bodies[0].as_object().unwrap();
+        let mut keys: Vec<&str> = body.keys().map(String::as_str).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            [
+                "channelAccountId",
+                "conversationId",
+                "isGroup",
+                "messageCount",
+                "senderName",
+                "senderUid",
+                "test",
+                "text",
+                "ts"
+            ]
+        );
+        assert_eq!(body["text"], "xin chào");
+        assert_eq!(body["senderUid"], "peer-uid");
+        assert_eq!(body["senderName"], "Chị Bích Việt");
+        assert_eq!(body["isGroup"], false);
+        assert_eq!(body["test"], false);
+        assert_eq!(body["channelAccountId"], 1);
+        assert_eq!(body["messageCount"], 1);
+        assert!(body["conversationId"].is_i64());
+        let ts = body["ts"].as_str().unwrap();
+        assert!(chrono::DateTime::parse_from_rfc3339(ts).is_ok(), "{ts}");
+    }
+
+    #[tokio::test]
+    async fn replayed_inbound_message_is_not_batched_twice() {
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        for _ in 0..2 {
+            ingest(&harness, user_event("dup", "peer-uid", "lặp"));
+        }
+        wait_for_posts(&receiver, 1).await;
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0]["messageCount"], 1);
+    }
+
+    #[tokio::test]
+    async fn outbound_self_message_does_not_post() {
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        let raw = raw_message("self1", "self-uid", "user-1", "tôi gửi".into(), "webchat");
+        ingest(
+            &harness,
+            ListenerEvent::Message(Box::new(Message::User(UserMessage::new("self-uid", raw)))),
+        );
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(receiver.bodies.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn history_backfill_does_not_post() {
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        let ListenerEvent::Message(message) = user_event("old1", "peer-uid", "cũ") else {
+            unreachable!("helper always returns a live message");
+        };
+        ingest(
+            &harness,
+            ListenerEvent::OldMessages {
+                messages: vec![*message],
+                thread_type: ThreadType::User,
+            },
+        );
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(receiver.bodies.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn empty_or_missing_url_does_not_post() {
+        let (_url, receiver) = start_receiver(&[]).await;
+        for hook in [
+            ZaloWebhook::new(Some(""), false, fast_tuning()),
+            ZaloWebhook::new(Some("   "), false, fast_tuning()),
+            ZaloWebhook::new(None, false, fast_tuning()),
+            ZaloWebhook::new(Some("ftp://example.invalid/x"), false, fast_tuning()),
+        ] {
+            assert!(!hook.is_enabled());
+            let harness = ServiceHarness::new_with_webhook(hook);
+            ingest(&harness, user_event("off", "peer-uid", "x"));
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert!(receiver.bodies.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn unreachable_webhook_does_not_break_ingestion() {
+        // Port 1 on loopback: connection refused.
+        let harness = ServiceHarness::new_with_webhook(webhook("http://127.0.0.1:1/hook", false));
+        let mut delta_rx = harness.events.subscribe_delta();
+
+        ingest(&harness, user_event("d1", "peer-uid", "một"));
+        ingest(&harness, user_event("d2", "peer-uid", "hai"));
+        tokio::time::sleep(Duration::from_millis(900)).await;
+
+        assert!(delta_rx.try_recv().is_ok());
+        assert!(delta_rx.try_recv().is_ok());
+    }
+
+    #[test]
+    fn notify_outside_runtime_is_a_silent_noop() {
+        let harness = ServiceHarness::new_with_webhook(webhook("http://127.0.0.1:1/hook", false));
+        ingest(&harness, user_event("sync", "peer-uid", "x"));
     }
 }
