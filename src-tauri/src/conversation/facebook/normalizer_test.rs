@@ -13,7 +13,8 @@ fn create_test_db() -> Connection {
             zalo_uid TEXT
         )",
         [],
-    ).unwrap();
+    )
+    .unwrap();
     crate::conversation::migration::migrate(&conn).unwrap();
     conn.execute(
         "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
@@ -99,11 +100,22 @@ fn test_ingest_conversations_batch_success() {
     assert_eq!(summary.new_messages_count, 2);
     assert_eq!(summary.delta_events.len(), 2);
     assert_eq!(summary.delta_events[0].sequence, 1);
-    assert_eq!(summary.delta_events[0].message.text_content, Some("Chào bạn!".to_string()));
+    assert_eq!(
+        summary.delta_events[0].message.text_content,
+        Some("Chào bạn!".to_string())
+    );
     assert_eq!(summary.delta_events[1].sequence, 2);
-    assert_eq!(summary.delta_events[1].message.text_content, Some("Chào chị, shop có thể hỗ trợ gì ạ?".to_string()));
+    assert_eq!(
+        summary.delta_events[1].message.text_content,
+        Some("Chào chị, shop có thể hỗ trợ gì ạ?".to_string())
+    );
     assert_eq!(summary.delta_events[1].message.attachments.len(), 1);
-    assert_eq!(summary.delta_events[1].message.attachments[0].file_name.as_deref(), Some("catalog.png"));
+    assert_eq!(
+        summary.delta_events[1].message.attachments[0]
+            .file_name
+            .as_deref(),
+        Some("catalog.png")
+    );
 
     // Verify channel_identities
     let count: i64 = conn
@@ -442,8 +454,9 @@ fn test_facebook_normalizer_delta_fault_injection_rolls_back_atomically() {
         "CREATE TRIGGER fail_delta_trigger_fb BEFORE INSERT ON conversation_deltas
          BEGIN
              SELECT RAISE(ABORT, 'Fault injection: delta insert failure');
-         END;"
-    ).unwrap();
+         END;",
+    )
+    .unwrap();
 
     let payload = serde_json::json!({
         "sender": { "id": "psid_customer_fault" },
@@ -455,12 +468,7 @@ fn test_facebook_normalizer_delta_fault_injection_rolls_back_atomically() {
         }
     });
 
-    let res = FacebookMessengerNormalizer::ingest_webhook_event(
-        &mut conn,
-        1,
-        "page_123",
-        &payload,
-    );
+    let res = FacebookMessengerNormalizer::ingest_webhook_event(&mut conn, 1, "page_123", &payload);
     assert!(res.is_err(), "Must fail-closed when delta fails");
 
     // Verify messages table has no entry

@@ -39,7 +39,6 @@ fn add_column_if_missing(
     Ok(())
 }
 
-
 pub fn open_db_connection(db_path: &str) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
@@ -289,9 +288,24 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
 
-        add_column_if_missing(&tx, "outreach_history", "channel", "channel TEXT NOT NULL DEFAULT 'OMNICHANNEL'")?;
-        add_column_if_missing(&tx, "outreach_history", "idempotency_key", "idempotency_key TEXT")?;
-        add_column_if_missing(&tx, "outreach_history", "provider_message_id", "provider_message_id TEXT")?;
+        add_column_if_missing(
+            &tx,
+            "outreach_history",
+            "channel",
+            "channel TEXT NOT NULL DEFAULT 'OMNICHANNEL'",
+        )?;
+        add_column_if_missing(
+            &tx,
+            "outreach_history",
+            "idempotency_key",
+            "idempotency_key TEXT",
+        )?;
+        add_column_if_missing(
+            &tx,
+            "outreach_history",
+            "provider_message_id",
+            "provider_message_id TEXT",
+        )?;
         tx.execute(
             "UPDATE outreach_history SET idempotency_key = 'legacy:history:' || id WHERE idempotency_key IS NULL",
             [],
@@ -1559,7 +1573,10 @@ pub fn get_campaign_steps(
 }
 
 #[allow(dead_code)]
-pub fn get_campaign_step(conn: &Connection, id: i64) -> Result<Option<crate::models::CampaignStep>> {
+pub fn get_campaign_step(
+    conn: &Connection,
+    id: i64,
+) -> Result<Option<crate::models::CampaignStep>> {
     let mut stmt = conn.prepare(
         "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at, template_id
          FROM campaign_steps WHERE id = ?1",
@@ -1721,11 +1738,7 @@ pub fn get_due_campaign_executions(
 }
 
 #[allow(dead_code)]
-pub fn claim_campaign_execution(
-    conn: &Connection,
-    id: i64,
-    now_iso: &str,
-) -> Result<bool> {
+pub fn claim_campaign_execution(conn: &Connection, id: i64, now_iso: &str) -> Result<bool> {
     let rows_affected = conn.execute(
         "UPDATE campaign_executions
          SET status = 'RUNNING', executed_at = ?1
@@ -2309,5 +2322,3 @@ pub fn increment_template_usage(conn: &Connection, id: i64) -> Result<()> {
     )?;
     Ok(())
 }
-
-

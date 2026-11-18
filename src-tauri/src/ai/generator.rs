@@ -101,9 +101,12 @@ Yêu cầu định dạng: Trả về DUY NHẤT một chuỗi JSON hợp lệ k
 
         let prompt = Self::build_prompt(context, intent, custom_prompt);
         let messages = [LlmMessage::user(prompt)];
-        let system_prompt = "You are an expert Vietnamese sales copilot in RustSale CRM. Output valid JSON only.";
+        let system_prompt =
+            "You are an expert Vietnamese sales copilot in RustSale CRM. Output valid JSON only.";
 
-        let llm_resp = gateway.chat_completion(&messages, Some(system_prompt)).await;
+        let llm_resp = gateway
+            .chat_completion(&messages, Some(system_prompt))
+            .await;
 
         let mut variants = Vec::new();
 
@@ -168,9 +171,15 @@ Yêu cầu định dạng: Trả về DUY NHẤT một chuỗi JSON hợp lệ k
         };
 
         let product_info = if let Some(prod) = context.known_products.first() {
-            format!("gói \"{}\" với mức giá {:.0} {}", prod.name, prod.price, prod.currency)
+            format!(
+                "gói \"{}\" với mức giá {:.0} {}",
+                prod.name, prod.price, prod.currency
+            )
         } else if context.lead_value > 0.0 {
-            format!("sản phẩm phù hợp với ngân sách {:.0} {}", context.lead_value, context.lead_currency)
+            format!(
+                "sản phẩm phù hợp với ngân sách {:.0} {}",
+                context.lead_value, context.lead_currency
+            )
         } else {
             "các giải pháp phần mềm & dịch vụ chuyên nghiệp bên em".to_string()
         };
@@ -240,7 +249,7 @@ Yêu cầu định dạng: Trả về DUY NHẤT một chuỗi JSON hợp lệ k
                 (
                     "promotional",
                     "Cam kết quyền lợi & Bồi hoàn",
-                    format!("Dạ bên em cam kết bảo hành và đổi mới 100% nếu có bất kỳ sai sót nào từ hệ thống. Để bù đắp sự bất tiện, em xin gửi tặng anh/chị phiếu quà tặng và ưu tiên hỗ trợ VIP trực tiếp cho mình ạ.", ),
+                    "Dạ bên em cam kết bảo hành và đổi mới 100% nếu có bất kỳ sai sót nào từ hệ thống. Để bù đắp sự bất tiện, em xin gửi tặng anh/chị phiếu quà tặng và ưu tiên hỗ trợ VIP trực tiếp cho mình ạ.".to_string(),
                     Some("Áp dụng chính sách đền bù/hỗ trợ".to_string()),
                     0.85,
                 ),
@@ -319,12 +328,8 @@ Yêu cầu định dạng: Trả về DUY NHẤT một chuỗi JSON hợp lệ k
         raw_variants
             .into_iter()
             .map(|(v_type, title, content, action, conf)| {
-                let decision = policy_gate.evaluate_proposed_reply(
-                    &content,
-                    &intent.intent,
-                    conf,
-                    context,
-                );
+                let decision =
+                    policy_gate.evaluate_proposed_reply(&content, &intent.intent, conf, context);
 
                 SmartReplyVariant {
                     variant_type: v_type.to_string(),

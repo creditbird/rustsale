@@ -31,7 +31,9 @@ fn test_updater_signature_against_public_key() {
         .expect("Missing plugins.updater.pubkey");
 
     // Decode base64 public key if needed
-    let pubkey_text = if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_pubkey_str) {
+    let pubkey_text = if let Ok(decoded) =
+        base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_pubkey_str)
+    {
         String::from_utf8(decoded).unwrap_or_else(|_| raw_pubkey_str.to_string())
     } else {
         raw_pubkey_str.to_string()
@@ -42,7 +44,10 @@ fn test_updater_signature_against_public_key() {
     } else if let Ok(pk) = PublicKey::from_base64(&pubkey_text) {
         pk
     } else {
-        let key_line = pubkey_text.lines().find(|l| l.starts_with("RW")).expect("No RW line found in pubkey");
+        let key_line = pubkey_text
+            .lines()
+            .find(|l| l.starts_with("RW"))
+            .expect("No RW line found in pubkey");
         PublicKey::from_base64(key_line).expect("Failed to parse base64 key line")
     };
 
@@ -54,13 +59,17 @@ fn test_updater_signature_against_public_key() {
         .unwrap_or_else(|_| panic!("Failed to read fixture bytes at {:?}", fixture_path));
     let raw_sig_str = fs::read_to_string(&sig_path)
         .unwrap_or_else(|_| panic!("Failed to read fixture signature at {:?}", sig_path));
-    let sig_text = if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_sig_str.trim()) {
+    let sig_text = if let Ok(decoded) = base64::Engine::decode(
+        &base64::engine::general_purpose::STANDARD,
+        raw_sig_str.trim(),
+    ) {
         String::from_utf8(decoded).unwrap_or_else(|_| raw_sig_str.to_string())
     } else {
         raw_sig_str.to_string()
     };
 
-    let fixture_signature = Signature::decode(&sig_text).expect("Failed to decode fixture signature");
+    let fixture_signature =
+        Signature::decode(&sig_text).expect("Failed to decode fixture signature");
     let fixture_verify_result = public_key.verify(&fixture_bytes, &fixture_signature, false);
     assert!(
         fixture_verify_result.is_ok(),
@@ -72,7 +81,9 @@ fn test_updater_signature_against_public_key() {
     // 3. If exact release bundle for current version exists, verify it against latest.json (fail-closed)
     let version = tauri_conf["version"].as_str().unwrap_or("0.1.14");
     let expected_deb_name = format!("RustSale CRM_{}_amd64.deb", version);
-    let deb_path = repo_root.join("src-tauri/target/release/bundle/deb").join(&expected_deb_name);
+    let deb_path = repo_root
+        .join("src-tauri/target/release/bundle/deb")
+        .join(&expected_deb_name);
 
     if deb_path.exists() {
         let latest_json_path = repo_root.join("latest.json");
@@ -88,7 +99,9 @@ fn test_updater_signature_against_public_key() {
             .as_str()
             .expect("Fail-closed: latest.json missing signature for linux-x86_64");
 
-        let sig_text = if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_sig_str) {
+        let sig_text = if let Ok(decoded) =
+            base64::Engine::decode(&base64::engine::general_purpose::STANDARD, raw_sig_str)
+        {
             String::from_utf8(decoded).unwrap_or_else(|_| raw_sig_str.to_string())
         } else {
             raw_sig_str.to_string()
@@ -109,6 +122,8 @@ fn test_updater_signature_against_public_key() {
             deb_bytes.len()
         );
     } else {
-        println!("ℹ️ Release .deb bundle not present in clean checkout - deterministic fixture verified");
+        println!(
+            "ℹ️ Release .deb bundle not present in clean checkout - deterministic fixture verified"
+        );
     }
 }

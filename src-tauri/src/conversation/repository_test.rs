@@ -6781,14 +6781,22 @@ fn test_apply_normalized_message_atomically_records_delta() {
     msg.text_content = Some("Hello atomic delta".to_string());
     let applied = harness.repository.apply_normalized_message(&msg).unwrap();
 
-    let delta = applied.delta_event.expect("Delta should be generated inside transaction");
+    let delta = applied
+        .delta_event
+        .expect("Delta should be generated inside transaction");
     assert_eq!(delta.sequence, 1);
     assert_eq!(delta.conversation_id, applied.conversation_id);
     assert_eq!(delta.message.id, applied.message_id);
-    assert_eq!(delta.message.text_content, Some("Hello atomic delta".to_string()));
+    assert_eq!(
+        delta.message.text_content,
+        Some("Hello atomic delta".to_string())
+    );
 
     // Verify it is immediately queryable via fetch_deltas_after_sequence
-    let replayed = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+    let replayed = harness
+        .repository
+        .fetch_deltas_after_sequence(0, 10)
+        .unwrap();
     assert_eq!(replayed.len(), 1);
     assert_eq!(replayed[0].sequence, 1);
     assert_eq!(replayed[0].message.id, applied.message_id);
@@ -6805,19 +6813,28 @@ fn test_replay_deltas_large_gap_pagination() {
     }
 
     // Page 1: 0..100
-    let page1 = harness.repository.fetch_deltas_after_sequence(0, 100).unwrap();
+    let page1 = harness
+        .repository
+        .fetch_deltas_after_sequence(0, 100)
+        .unwrap();
     assert_eq!(page1.len(), 100);
     assert_eq!(page1.first().unwrap().sequence, 1);
     assert_eq!(page1.last().unwrap().sequence, 100);
 
     // Page 2: 100..200
-    let page2 = harness.repository.fetch_deltas_after_sequence(100, 100).unwrap();
+    let page2 = harness
+        .repository
+        .fetch_deltas_after_sequence(100, 100)
+        .unwrap();
     assert_eq!(page2.len(), 100);
     assert_eq!(page2.first().unwrap().sequence, 101);
     assert_eq!(page2.last().unwrap().sequence, 200);
 
     // Page 3: 200..250
-    let page3 = harness.repository.fetch_deltas_after_sequence(200, 100).unwrap();
+    let page3 = harness
+        .repository
+        .fetch_deltas_after_sequence(200, 100)
+        .unwrap();
     assert_eq!(page3.len(), 50);
     assert_eq!(page3.first().unwrap().sequence, 201);
     assert_eq!(page3.last().unwrap().sequence, 250);
@@ -6844,14 +6861,9 @@ fn test_delta_transaction_rollback_guarantee() {
         .unwrap();
 
     // 2. Record the delta within the SAME transaction
-    let delta = ConversationRepository::record_message_delta_tx(
-        &tx,
-        conv_id,
-        None,
-        Channel::Zalo,
-        msg_id,
-    )
-    .unwrap();
+    let delta =
+        ConversationRepository::record_message_delta_tx(&tx, conv_id, None, Channel::Zalo, msg_id)
+            .unwrap();
     assert!(delta.is_some(), "Delta must be created inside transaction");
     let seq = delta.unwrap().sequence;
     assert!(seq > 0, "Sequence must be generated");
@@ -6864,7 +6876,10 @@ fn test_delta_transaction_rollback_guarantee() {
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(in_tx_deltas, 1, "Delta row must be visible within active tx");
+    assert_eq!(
+        in_tx_deltas, 1,
+        "Delta row must be visible within active tx"
+    );
 
     // 4. Inject fault: abort / drop the transaction without commit
     drop(tx);
@@ -6889,7 +6904,10 @@ fn test_delta_transaction_rollback_guarantee() {
         .unwrap();
     assert_eq!(delta_count, 0, "Delta must be completely rolled back");
 
-    let deltas = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+    let deltas = harness
+        .repository
+        .fetch_deltas_after_sequence(0, 10)
+        .unwrap();
     assert_eq!(deltas.len(), 0, "No delta should exist after rollback");
 
     // 6. Test successful commit path for comparison
@@ -6916,7 +6934,10 @@ fn test_delta_transaction_rollback_guarantee() {
     .unwrap();
     tx2.commit().unwrap();
 
-    let persisted_deltas = harness.repository.fetch_deltas_after_sequence(0, 10).unwrap();
+    let persisted_deltas = harness
+        .repository
+        .fetch_deltas_after_sequence(0, 10)
+        .unwrap();
     assert_eq!(persisted_deltas.len(), 1);
     assert_eq!(persisted_deltas[0].message.id, committed_msg_id);
     assert_eq!(persisted_deltas[0].sequence, committed_delta.sequence);
@@ -6932,8 +6953,9 @@ fn test_start_direct_conversation_delta_fault_injection_rolls_back_atomically() 
         "CREATE TRIGGER fail_delta_trigger_direct BEFORE INSERT ON conversation_deltas
          BEGIN
              SELECT RAISE(ABORT, 'Fault injection: direct-start delta failure');
-         END;"
-    ).unwrap();
+         END;",
+    )
+    .unwrap();
 
     let start_req = crate::conversation::types::StartDirectConversationRequest {
         channel_account_id: 1,
@@ -6942,7 +6964,9 @@ fn test_start_direct_conversation_delta_fault_injection_rolls_back_atomically() 
         initial_message: "Should roll back cleanly".to_string(),
     };
 
-    let res = harness.repository.start_direct_conversation(&start_req, "2026-08-31T00:00:00.000Z");
+    let res = harness
+        .repository
+        .start_direct_conversation(&start_req, "2026-08-31T00:00:00.000Z");
     assert!(res.is_err(), "Must fail-closed when delta recording fails");
 
     // Verify messages table has no entry
@@ -6976,26 +7000,27 @@ fn test_enqueue_outbound_batch_delta_fault_injection_rolls_back_atomically() {
         "CREATE TRIGGER fail_delta_trigger_batch BEFORE INSERT ON conversation_deltas
          BEGIN
              SELECT RAISE(ABORT, 'Fault injection: batch outbound delta failure');
-         END;"
-    ).unwrap();
+         END;",
+    )
+    .unwrap();
 
     let request = crate::conversation::types::SendConversationBatchRequest {
         conversation_id: conv_id,
         client_batch_id: "fault_batch_id_001".into(),
         reply_to_message_id: None,
-        parts: vec![
-            crate::conversation::types::ConversationSendPartRequest {
-                client_part_id: "fault_batch_c1".into(),
-                content: crate::conversation::types::ConversationSendPartContent::Text {
-                    text: "Fault Batch 1".into(),
-                    mentions: Vec::new(),
-                },
+        parts: vec![crate::conversation::types::ConversationSendPartRequest {
+            client_part_id: "fault_batch_c1".into(),
+            content: crate::conversation::types::ConversationSendPartContent::Text {
+                text: "Fault Batch 1".into(),
+                mentions: Vec::new(),
             },
-        ],
+        }],
         message_tag: None,
     };
 
-    let res = harness.repository.enqueue_outbound_batch(&request, "2026-08-31T00:00:00.000Z");
+    let res = harness
+        .repository
+        .enqueue_outbound_batch(&request, "2026-08-31T00:00:00.000Z");
     assert!(res.is_err(), "Must fail-closed when delta recording fails");
 
     // Verify messages table has no entry with text 'Fault Batch 1'
@@ -7028,8 +7053,9 @@ fn test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomicall
         "CREATE TRIGGER fail_delta_trigger_zalo BEFORE INSERT ON conversation_deltas
          BEGIN
              SELECT RAISE(ABORT, 'Fault injection: zalo normalized message delta failure');
-         END;"
-    ).unwrap();
+         END;",
+    )
+    .unwrap();
 
     let mut msg = direct_message_with_client_id("zalo-msg-fault", "cli-zalo-fault");
     msg.channel = crate::conversation::types::Channel::Zalo;
@@ -7046,7 +7072,10 @@ fn test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomicall
     }];
 
     let res = harness.repository.apply_normalized_message(&msg);
-    assert!(res.is_err(), "Must fail-closed when delta recording fails during Zalo ingest");
+    assert!(
+        res.is_err(),
+        "Must fail-closed when delta recording fails during Zalo ingest"
+    );
 
     // Verify messages table has no entry
     let msg_count: i64 = conn
@@ -7056,7 +7085,10 @@ fn test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomicall
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(msg_count, 0, "No message row should persist after delta failure");
+    assert_eq!(
+        msg_count, 0,
+        "No message row should persist after delta failure"
+    );
 
     // Verify attachments table has no entry
     let att_count: i64 = conn
@@ -7066,7 +7098,10 @@ fn test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomicall
             |r| r.get(0),
         )
         .unwrap();
-    assert_eq!(att_count, 0, "No attachment row should persist after delta failure");
+    assert_eq!(
+        att_count, 0,
+        "No attachment row should persist after delta failure"
+    );
 
     // Verify deltas table has no entry
     let delta_count: i64 = conn

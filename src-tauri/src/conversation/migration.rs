@@ -255,14 +255,12 @@ fn upgrade_channel_account_capabilities(conn: &Connection) -> Result<()> {
         &crate::conversation::types::ConversationCapabilities::zalo_phase_one(),
     )
     .unwrap_or_default();
-    let wa_json = serde_json::to_string(
-        &crate::conversation::types::ConversationCapabilities::whatsapp(),
-    )
-    .unwrap_or_default();
-    let fb_json = serde_json::to_string(
-        &crate::conversation::types::ConversationCapabilities::messenger(),
-    )
-    .unwrap_or_default();
+    let wa_json =
+        serde_json::to_string(&crate::conversation::types::ConversationCapabilities::whatsapp())
+            .unwrap_or_default();
+    let fb_json =
+        serde_json::to_string(&crate::conversation::types::ConversationCapabilities::messenger())
+            .unwrap_or_default();
 
     conn.execute(
         "UPDATE channel_accounts SET capabilities_json = ?1 WHERE channel = 'zalo' AND (capabilities_json IS NULL OR capabilities_json = '' OR capabilities_json = '{}' OR capabilities_json NOT LIKE '%wordprocessingml%')",
@@ -1935,9 +1933,9 @@ pub fn reconcile_duplicate_whatsapp_conversations_and_identities(conn: &Connecti
                     && current_canonical.2.chars().any(|c| c.is_ascii_digit());
                 let candidate_is_pn = !candidate.2.contains("@lid")
                     && candidate.2.chars().any(|c| c.is_ascii_digit());
-                if !current_is_pn && candidate_is_pn {
-                    canonical_idx = idx;
-                } else if current_canonical.5.is_none() && candidate.5.is_some() {
+                if (!current_is_pn && candidate_is_pn)
+                    || (current_canonical.5.is_none() && candidate.5.is_some())
+                {
                     canonical_idx = idx;
                 }
             }
@@ -1958,8 +1956,10 @@ pub fn reconcile_duplicate_whatsapp_conversations_and_identities(conn: &Connecti
                 }
                 if let Some(ref name) = item.3 {
                     let n = name.trim();
-                    if !n.is_empty() && !n.starts_with('+') && !n.starts_with("Unknown") {
-                        if best_display_name
+                    if !n.is_empty()
+                        && !n.starts_with('+')
+                        && !n.starts_with("Unknown")
+                        && best_display_name
                             .as_deref()
                             .map(|d| {
                                 d.starts_with('+')
@@ -1967,9 +1967,8 @@ pub fn reconcile_duplicate_whatsapp_conversations_and_identities(conn: &Connecti
                                     || d.trim().is_empty()
                             })
                             .unwrap_or(true)
-                        {
-                            best_display_name = Some(n.to_string());
-                        }
+                    {
+                        best_display_name = Some(n.to_string());
                     }
                 }
                 if best_avatar.is_none() && item.4.is_some() {
@@ -2090,8 +2089,10 @@ pub fn reconcile_duplicate_whatsapp_conversations_and_identities(conn: &Connecti
                 }
                 if let Some(ref title) = conversations[idx].3 {
                     let t = title.trim();
-                    if !t.is_empty() && !t.starts_with('+') && !t.starts_with("Unknown") {
-                        if best_title
+                    if !t.is_empty()
+                        && !t.starts_with('+')
+                        && !t.starts_with("Unknown")
+                        && best_title
                             .as_deref()
                             .map(|b| {
                                 b.starts_with('+')
@@ -2099,9 +2100,8 @@ pub fn reconcile_duplicate_whatsapp_conversations_and_identities(conn: &Connecti
                                     || b.trim().is_empty()
                             })
                             .unwrap_or(true)
-                        {
-                            best_title = Some(t.to_string());
-                        }
+                    {
+                        best_title = Some(t.to_string());
                     }
                 }
             }

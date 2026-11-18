@@ -1386,12 +1386,16 @@ impl ConversationService {
                                 )
                                 .await
                         }
-                        Err(e) => {
-                            Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e))
-                        }
+                        Err(e) => Err(anyhow::anyhow!(
+                            "Failed to read attachment file at {}: {}",
+                            path,
+                            e
+                        )),
                     }
                 } else {
-                    Err(anyhow::anyhow!("Missing local_path for Messenger attachment"))
+                    Err(anyhow::anyhow!(
+                        "Missing local_path for Messenger attachment"
+                    ))
                 }
             } else {
                 let local_path = job
@@ -1425,9 +1429,11 @@ impl ConversationService {
                                 )
                                 .await
                         }
-                        Err(e) => {
-                            Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e))
-                        }
+                        Err(e) => Err(anyhow::anyhow!(
+                            "Failed to read attachment file at {}: {}",
+                            path,
+                            e
+                        )),
                     }
                 } else {
                     let text = job.text_content.as_deref().unwrap_or("");

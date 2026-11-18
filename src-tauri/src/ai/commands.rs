@@ -40,9 +40,7 @@ pub async fn generate_smart_reply_suggestions(
         .find(|m| m.direction == "inbound")
         .map(|m| m.text_content.as_str());
 
-    let text_to_classify = last_inbound
-        .or(custom_prompt.as_deref())
-        .unwrap_or("");
+    let text_to_classify = last_inbound.or(custom_prompt.as_deref()).unwrap_or("");
 
     let intent = if !text_to_classify.trim().is_empty() {
         IntentClassifier::classify(text_to_classify, Some(&gateway)).await
@@ -183,9 +181,7 @@ pub async fn generate_smart_reply_suggestions_internal(
         .find(|m| m.direction == "inbound")
         .map(|m| m.text_content.as_str());
 
-    let text_to_classify = last_inbound
-        .or(custom_prompt.as_deref())
-        .unwrap_or("");
+    let text_to_classify = last_inbound.or(custom_prompt.as_deref()).unwrap_or("");
 
     let intent = if !text_to_classify.trim().is_empty() {
         IntentClassifier::classify(text_to_classify, Some(gateway)).await

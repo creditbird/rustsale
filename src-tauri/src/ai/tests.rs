@@ -1,12 +1,12 @@
+use crate::ai::commands::{
+    generate_smart_reply_suggestions_internal, get_lead_evidence_context_internal,
+    get_pending_ai_proposals_internal, review_ai_proposal_internal,
+};
 use crate::ai::evidence::{EvidenceExtractor, LeadEvidenceContext, ProductEvidence};
 use crate::ai::gateway::{LlmConfig, LlmGateway, LlmProvider};
 use crate::ai::generator::SmartReplyGenerator;
 use crate::ai::intent::{CustomerIntent, IntentClassifier};
 use crate::ai::policy::{PolicyDecision, PolicyGate};
-use crate::ai::commands::{
-    generate_smart_reply_suggestions_internal, get_lead_evidence_context_internal,
-    get_pending_ai_proposals_internal, review_ai_proposal_internal,
-};
 use rusqlite::Connection;
 
 fn setup_test_db() -> Connection {
@@ -72,7 +72,9 @@ fn test_intent_classification_vietnamese_heuristics() {
     let r13 = IntentClassifier::classify_heuristics("Bên bạn có mẫu đầm dạ hội màu đen không?");
     assert_eq!(r13.intent, CustomerIntent::ProductInquiry);
 
-    let r14 = IntentClassifier::classify_heuristics("Tư vấn giúp mình thông tin sản phẩm và tính năng đồng bộ Zalo");
+    let r14 = IntentClassifier::classify_heuristics(
+        "Tư vấn giúp mình thông tin sản phẩm và tính năng đồng bộ Zalo",
+    );
     assert_eq!(r14.intent, CustomerIntent::ProductInquiry);
 
     // 6. GeneralInquiry
@@ -93,7 +95,8 @@ fn test_evidence_extraction_from_db() {
         "INSERT INTO deals (lead_id, title, value, stage, created_at, currency)
          VALUES (?1, 'Gói Phần Mềm Enterprise', 25000000.0, 'PROPOSAL', '2026-09-02', 'VND')",
         rusqlite::params![lead_id],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Add Category
     let cat_id = crate::db::create_category(&conn, "Doanh Nghiệp B2B").unwrap();
@@ -111,7 +114,8 @@ fn test_evidence_extraction_from_db() {
         Some("asking_price"),
         Some(0.95),
         Some("Đã gửi demo"),
-    ).unwrap();
+    )
+    .unwrap();
 
     // Extract Context
     let context = EvidenceExtractor::extract_lead_context(&conn, lead_id, None)
@@ -333,8 +337,8 @@ async fn test_ai_commands_end_to_end() {
     )
     .expect("create_ai_action_proposal failed");
 
-    let proposals = get_pending_ai_proposals_internal(&conn)
-        .expect("get_pending_ai_proposals_internal failed");
+    let proposals =
+        get_pending_ai_proposals_internal(&conn).expect("get_pending_ai_proposals_internal failed");
     assert_eq!(proposals.len(), 1);
     assert_eq!(proposals[0].id, Some(prop_id));
 
@@ -346,5 +350,8 @@ async fn test_ai_commands_end_to_end() {
         .expect("get_ai_action_proposal failed")
         .expect("proposal not found");
     assert_eq!(updated_prop.status, "APPROVED");
-    assert_eq!(updated_prop.reviewed_by.as_deref(), Some("Trưởng Phòng Sale"));
+    assert_eq!(
+        updated_prop.reviewed_by.as_deref(),
+        Some("Trưởng Phòng Sale")
+    );
 }

@@ -1,5 +1,5 @@
-use crate::campaign::evaluator::{ConditionResult, StepConditionEvaluator};
 use crate::campaign::dispatcher::{DispatchMode, DispatchPayload, OmnichannelDispatcher};
+use crate::campaign::evaluator::{ConditionResult, StepConditionEvaluator};
 use crate::campaign::throttling::{AccountRotator, AntiBanThrottler};
 use crate::events::{AppEvent, SharedEventBus};
 use rusqlite::Connection;
@@ -107,19 +107,16 @@ impl CampaignScheduler {
                         "FAILED",
                         Some("Campaign step definition not found"),
                         Some(&now_iso),
-                    ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
+                    )
+                    .map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
                     summary.failed_count += 1;
                     continue;
                 }
             };
 
             // 4. Evaluate step condition
-            let condition_result = StepConditionEvaluator::evaluate(
-                conn,
-                &step,
-                execution.lead_id,
-                Some(exec_id),
-            )?;
+            let condition_result =
+                StepConditionEvaluator::evaluate(conn, &step, execution.lead_id, Some(exec_id))?;
 
             match condition_result {
                 ConditionResult::Skip { reason } => {
@@ -129,7 +126,8 @@ impl CampaignScheduler {
                         "SKIPPED",
                         Some(&reason),
                         Some(&now_iso),
-                    ).map_err(|e| format!("DB error updating execution to SKIPPED: {}", e))?;
+                    )
+                    .map_err(|e| format!("DB error updating execution to SKIPPED: {}", e))?;
                     summary.skipped_count += 1;
                     continue;
                 }
@@ -155,7 +153,10 @@ impl CampaignScheduler {
                                 "PENDING",
                                 Some("Throttled; waiting for rate limit"),
                                 None,
-                            ).map_err(|e| format!("DB error resetting throttled execution: {}", e))?;
+                            )
+                            .map_err(|e| {
+                                format!("DB error resetting throttled execution: {}", e)
+                            })?;
                             summary.throttled_count += 1;
                             continue;
                         }
@@ -182,7 +183,10 @@ impl CampaignScheduler {
                                     "SENT",
                                     None,
                                     Some(&now_iso),
-                                ).map_err(|e| format!("DB error updating execution to SENT: {}", e))?;
+                                )
+                                .map_err(|e| {
+                                    format!("DB error updating execution to SENT: {}", e)
+                                })?;
 
                                 if let Some(ref acc) = account {
                                     self.throttler.record_sent(acc);
@@ -233,7 +237,10 @@ impl CampaignScheduler {
                                         execution.target_phone.as_deref(),
                                         account.as_deref(),
                                         &next_scheduled_iso,
-                                    ).map_err(|e| format!("DB error scheduling next step execution: {}", e))?;
+                                    )
+                                    .map_err(|e| {
+                                        format!("DB error scheduling next step execution: {}", e)
+                                    })?;
                                     summary.next_steps_scheduled += 1;
                                 }
 
@@ -259,7 +266,10 @@ impl CampaignScheduler {
                                     "FAILED",
                                     Some(&err_msg),
                                     Some(&now_iso),
-                                ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
+                                )
+                                .map_err(|e| {
+                                    format!("DB error updating execution to FAILED: {}", e)
+                                })?;
                                 summary.failed_count += 1;
                             }
                         }
@@ -299,7 +309,10 @@ impl CampaignScheduler {
                                     "FAILED",
                                     Some(&terminal_err),
                                     Some(&now_iso),
-                                ).map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
+                                )
+                                .map_err(|e| {
+                                    format!("DB error updating execution to FAILED: {}", e)
+                                })?;
                                 summary.failed_count += 1;
                             }
                         }

@@ -34,11 +34,18 @@ impl CustomerIntent {
         }
     }
 
+    #[allow(clippy::should_implement_trait)]
     pub fn from_str(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
-            "asking_price" | "askingprice" | "price" | "hỏi giá" | "báo giá" => Some(Self::AskingPrice),
-            "product_inquiry" | "productinquiry" | "product" | "tư vấn sản phẩm" => Some(Self::ProductInquiry),
-            "schedule_meeting" | "schedule" | "hẹn gặp" | "xem hàng" => Some(Self::ScheduleMeeting),
+            "asking_price" | "askingprice" | "price" | "hỏi giá" | "báo giá" => {
+                Some(Self::AskingPrice)
+            }
+            "product_inquiry" | "productinquiry" | "product" | "tư vấn sản phẩm" => {
+                Some(Self::ProductInquiry)
+            }
+            "schedule_meeting" | "schedule" | "hẹn gặp" | "xem hàng" => {
+                Some(Self::ScheduleMeeting)
+            }
             "complaint" | "khiếu nại" | "phản ánh" => Some(Self::Complaint),
             "unsubscribe" | "hủy nhận tin" | "từ chối" => Some(Self::Unsubscribe),
             "general_inquiry" | "general" | "chào hỏi" => Some(Self::GeneralInquiry),
@@ -311,15 +318,24 @@ impl IntentClassifier {
 
         let gateway = gateway.unwrap();
         let system_prompt = "You are an AI CRM Intent Classifier for Vietnamese customer messages.\nCategorize into exactly one of: asking_price, product_inquiry, schedule_meeting, complaint, unsubscribe, general_inquiry.\nReturn ONLY valid JSON: {\"intent\": \"...\", \"confidence\": 0.95, \"reasoning\": \"...\"}";
-        let messages = [crate::ai::gateway::LlmMessage::user(format!("Classify message: \"{}\"", text))];
+        let messages = [crate::ai::gateway::LlmMessage::user(format!(
+            "Classify message: \"{}\"",
+            text
+        ))];
 
-        match gateway.chat_completion(&messages, Some(system_prompt)).await {
+        match gateway
+            .chat_completion(&messages, Some(system_prompt))
+            .await
+        {
             Ok(resp) => {
                 if let Ok(json) = serde_json::from_str::<serde_json::Value>(&resp.content) {
                     if let Some(intent_str) = json["intent"].as_str() {
                         if let Some(parsed_intent) = CustomerIntent::from_str(intent_str) {
                             let conf = json["confidence"].as_f64().unwrap_or(0.85);
-                            let reason = json["reasoning"].as_str().unwrap_or("LLM classification").to_string();
+                            let reason = json["reasoning"]
+                                .as_str()
+                                .unwrap_or("LLM classification")
+                                .to_string();
                             return IntentResult {
                                 intent: parsed_intent,
                                 confidence: conf,
@@ -353,11 +369,12 @@ fn match_rules(
 
 fn detect_lang(text: &str) -> String {
     let lower = text.to_lowercase();
-    let vi_chars = ['à', 'á', 'ả', 'ã', 'ạ', 'ă', 'ằ', 'ắ', 'ẳ', 'ẵ', 'ặ', 'â', 'ầ', 'ấ', 'ẩ', 'ẫ', 'ậ',
-                    'đ', 'è', 'é', 'ẻ', 'ẽ', 'ẹ', 'ê', 'ề', 'ế', 'ể', 'ễ', 'ệ',
-                    'ì', 'í', 'ỉ', 'ĩ', 'ị', 'ò', 'ó', 'ỏ', 'õ', 'ọ', 'ô', 'ồ', 'ố', 'ổ', 'ỗ', 'ộ',
-                    'ơ', 'ờ', 'ớ', 'ở', 'ỡ', 'ợ', 'ù', 'ú', 'ủ', 'ũ', 'ụ', 'ư', 'ừ', 'ứ', 'ử', 'ữ', 'ự',
-                    'ỳ', 'ý', 'ỷ', 'ỹ', 'ỵ'];
+    let vi_chars = [
+        'à', 'á', 'ả', 'ã', 'ạ', 'ă', 'ằ', 'ắ', 'ẳ', 'ẵ', 'ặ', 'â', 'ầ', 'ấ', 'ẩ', 'ẫ', 'ậ', 'đ',
+        'è', 'é', 'ẻ', 'ẽ', 'ẹ', 'ê', 'ề', 'ế', 'ể', 'ễ', 'ệ', 'ì', 'í', 'ỉ', 'ĩ', 'ị', 'ò', 'ó',
+        'ỏ', 'õ', 'ọ', 'ô', 'ồ', 'ố', 'ổ', 'ỗ', 'ộ', 'ơ', 'ờ', 'ớ', 'ở', 'ỡ', 'ợ', 'ù', 'ú', 'ủ',
+        'ũ', 'ụ', 'ư', 'ừ', 'ứ', 'ử', 'ữ', 'ự', 'ỳ', 'ý', 'ỷ', 'ỹ', 'ỵ',
+    ];
     if lower.chars().any(|c| vi_chars.contains(&c)) {
         "vi".to_string()
     } else {
@@ -371,11 +388,15 @@ pub fn remove_vietnamese_accents(s: &str) -> String {
         let replacement = match c {
             'à' | 'á' | 'ả' | 'ã' | 'ạ' | 'ă' | 'ằ' | 'ắ' | 'ẳ' | 'ẵ' | 'ặ' | 'â' | 'ầ' | 'ấ'
             | 'ẩ' | 'ẫ' | 'ậ' => 'a',
-            'è' | 'é' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ề' | 'ế' | 'ể' | 'ễ' | 'ệ' => 'e',
+            'è' | 'é' | 'ẻ' | 'ẽ' | 'ẹ' | 'ê' | 'ề' | 'ế' | 'ể' | 'ễ' | 'ệ' => {
+                'e'
+            }
             'ì' | 'í' | 'ỉ' | 'ĩ' | 'ị' => 'i',
             'ò' | 'ó' | 'ỏ' | 'õ' | 'ọ' | 'ô' | 'ồ' | 'ố' | 'ổ' | 'ỗ' | 'ộ' | 'ơ' | 'ờ' | 'ớ'
             | 'ở' | 'ỡ' | 'ợ' => 'o',
-            'ù' | 'ú' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ừ' | 'ứ' | 'ử' | 'ữ' | 'ự' => 'u',
+            'ù' | 'ú' | 'ủ' | 'ũ' | 'ụ' | 'ư' | 'ừ' | 'ứ' | 'ử' | 'ữ' | 'ự' => {
+                'u'
+            }
             'ỳ' | 'ý' | 'ỷ' | 'ỹ' | 'ỵ' => 'y',
             'đ' => 'd',
             _ => c,

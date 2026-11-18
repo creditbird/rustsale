@@ -1,4 +1,5 @@
 use crate::conversation::error::{ConversationError, ConversationErrorCode};
+use crate::conversation::events::ConversationMessageDeltaEvent;
 use crate::conversation::reactions::{canonical_reaction_code, mark_reaction_removed};
 pub use crate::conversation::types::AccountConnectionStatus;
 use crate::conversation::types::{
@@ -12,7 +13,6 @@ pub use crate::conversation::zalo::normalizer::{
     NormalizedGroupParticipant, NormalizedGroupSnapshot, NormalizedReaction, NormalizedReceipt,
     NormalizedUndo, ReceiptKind,
 };
-use crate::conversation::events::ConversationMessageDeltaEvent;
 use crate::db::open_db_connection;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result};
@@ -1585,13 +1585,7 @@ impl ConversationRepository {
         }
 
         // 2. Unknown rows: Unlinked direct conversations grouped by identity_id (key: "identity:{identity_id}")
-        let unlinked_identities: Vec<(
-            i64,
-            Option<String>,
-            Option<String>,
-            String,
-            bool,
-        )> = {
+        let unlinked_identities: Vec<(i64, Option<String>, Option<String>, String, bool)> = {
             let mut stmt = conn.prepare(
                 "SELECT ci.id,
                         ci.display_name,
@@ -1814,13 +1808,8 @@ impl ConversationRepository {
             }
 
             // Assemble Unknown Items
-            for (
-                identity_id,
-                display_name,
-                avatar_url,
-                external_id,
-                matches_account_name,
-            ) in unlinked_identities
+            for (identity_id, display_name, avatar_url, external_id, matches_account_name) in
+                unlinked_identities
             {
                 let stored_display_name = if matches_account_name {
                     None
@@ -3156,7 +3145,8 @@ impl ConversationRepository {
     ) -> Result<Option<ConversationMessageDeltaEvent>> {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
-        let res = Self::record_message_delta_tx(&tx, conversation_id, lead_id, channel, message_id)?;
+        let res =
+            Self::record_message_delta_tx(&tx, conversation_id, lead_id, channel, message_id)?;
         tx.commit()?;
         Ok(res)
     }
@@ -3190,21 +3180,26 @@ impl ConversationRepository {
              ORDER BY sequence ASC
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(rusqlite::params![after_sequence as i64, cap as i64], |row| {
-            let seq: i64 = row.get(0)?;
-            let payload_json: String = row.get(1)?;
-            Ok((seq as u64, payload_json))
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params![after_sequence as i64, cap as i64],
+            |row| {
+                let seq: i64 = row.get(0)?;
+                let payload_json: String = row.get(1)?;
+                Ok((seq as u64, payload_json))
+            },
+        )?;
 
         let mut deltas = Vec::new();
         for row in rows {
             let (seq, payload_json) = row?;
             let mut event: ConversationMessageDeltaEvent = serde_json::from_str(&payload_json)
-                .map_err(|err| rusqlite::Error::FromSqlConversionFailure(
-                    1,
-                    rusqlite::types::Type::Text,
-                    Box::new(err),
-                ))?;
+                .map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(err),
+                    )
+                })?;
             event.sequence = seq;
             deltas.push(event);
         }
@@ -3227,10 +3222,7 @@ impl ConversationRepository {
     }
 
     /// Channel account that owns a conversation; `None` if the conversation does not exist.
-    pub fn get_conversation_channel_account_id(
-        &self,
-        conversation_id: i64,
-    ) -> Result<Option<i64>> {
+    pub fn get_conversation_channel_account_id(&self, conversation_id: i64) -> Result<Option<i64>> {
         let conn = open_db_connection(&self.db_path)?;
         let id: Option<i64> = conn
             .query_row(
@@ -3276,9 +3268,12 @@ impl ConversationRepository {
             let capabilities = if raw_caps.trim().is_empty() || raw_caps.trim() == "{}" {
                 crate::conversation::types::ConversationCapabilities::default_for_channel(channel)
             } else {
-                let parsed = crate::conversation::types::ConversationCapabilities::from_json(&raw_caps);
+                let parsed =
+                    crate::conversation::types::ConversationCapabilities::from_json(&raw_caps);
                 if parsed.supported_doc_types.is_empty() {
-                    crate::conversation::types::ConversationCapabilities::default_for_channel(channel)
+                    crate::conversation::types::ConversationCapabilities::default_for_channel(
+                        channel,
+                    )
                 } else {
                     parsed
                 }
@@ -3965,8 +3960,9 @@ impl ConversationRepository {
             messages.push(msg);
         }
 
-        crate::conversation::projection::hydrate_messages(&tx, &mut messages)
-            .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+        crate::conversation::projection::hydrate_messages(&tx, &mut messages).map_err(|e| {
+            ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+        })?;
 
         let channel_name: String = tx
             .query_row(
@@ -3991,17 +3987,17 @@ impl ConversationRepository {
                 |r| r.get(0),
             )
             .optional()
-            .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+            .map_err(|e| {
+                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+            })?;
 
         let mut delta_events = Vec::new();
         for msg in &messages {
-            let delta = Self::record_message_delta_tx(
-                &tx,
-                msg.conversation_id,
-                lead_id,
-                channel,
-                msg.id,
-            ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+            let delta =
+                Self::record_message_delta_tx(&tx, msg.conversation_id, lead_id, channel, msg.id)
+                    .map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?;
             if let Some(d) = delta {
                 delta_events.push(d);
             }

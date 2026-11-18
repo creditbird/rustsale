@@ -1,5 +1,5 @@
-use std::path::Path;
 use calamine::{open_workbook_auto, Data, Reader, Sheets};
+use std::path::Path;
 
 use crate::lead_importer::types::ImportInspection;
 
@@ -67,7 +67,10 @@ fn inspect_csv(file_path: &Path) -> Result<ImportInspection, String> {
     })
 }
 
-fn inspect_excel(file_path: &Path, requested_sheet: Option<&str>) -> Result<ImportInspection, String> {
+fn inspect_excel(
+    file_path: &Path,
+    requested_sheet: Option<&str>,
+) -> Result<ImportInspection, String> {
     let mut workbook: Sheets<_> = open_workbook_auto(file_path)
         .map_err(|e| format!("Không thể mở bảng tính Excel: {}", e))?;
 
@@ -142,4 +145,3 @@ pub fn cell_to_string(cell: &Data) -> String {
         Data::Error(_) => String::new(),
     }
 }
-

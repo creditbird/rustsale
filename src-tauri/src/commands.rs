@@ -2124,10 +2124,9 @@ pub fn save_managed_facebook_account_internal(
         .unchecked_transaction()
         .map_err(|e| format!("Database transaction error: {}", e))?;
 
-    let fb_caps_json = serde_json::to_string(
-        &crate::conversation::types::ConversationCapabilities::messenger(),
-    )
-    .unwrap_or_else(|_| "{}".to_string());
+    let fb_caps_json =
+        serde_json::to_string(&crate::conversation::types::ConversationCapabilities::messenger())
+            .unwrap_or_else(|_| "{}".to_string());
 
     // 1. Insert or update channel_accounts
     tx.execute(
@@ -8027,7 +8026,8 @@ pub async fn install_portable_linux_update(version: String) -> Result<bool, Stri
                                     let mut new_lines = Vec::new();
                                     for line in content.lines() {
                                         if line.starts_with("Exec=") {
-                                            new_lines.push(format!("Exec={} %U", exec_path.display()));
+                                            new_lines
+                                                .push(format!("Exec={} %U", exec_path.display()));
                                         } else if line.starts_with("Icon=") {
                                             new_lines.push("Icon=rustsale-crm".to_string());
                                         } else {

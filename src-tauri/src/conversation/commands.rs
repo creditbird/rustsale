@@ -1275,15 +1275,17 @@ pub async fn download_conversation_attachment(
             let data_url = format!("data:{};base64,{}", resolved_mime, b64_data);
             persist_attachment_thumbnail(state.service.repository.db_path(), att_id, &data_url)?;
 
-            state.service.events.publish(
-                crate::conversation::events::ConversationInvalidatedEvent {
-                    conversation_id,
-                    lead_id: None,
-                    channel: attachment_channel,
-                    reason: crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
-                    message_id: None,
-                },
-            );
+            state
+                .service
+                .events
+                .publish(crate::conversation::events::ConversationInvalidatedEvent {
+                conversation_id,
+                lead_id: None,
+                channel: attachment_channel,
+                reason:
+                    crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
+                message_id: None,
+            });
 
             let (width, height) = parse_attachment_dimensions(&metadata_json);
             return Ok(crate::conversation::types::ConversationAttachment {
@@ -1660,7 +1662,8 @@ pub async fn download_conversation_attachment(
                 conversation_id,
                 lead_id: None,
                 channel: Channel::WhatsApp,
-                reason: crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
+                reason:
+                    crate::conversation::events::ConversationInvalidationReason::AttachmentUpdate,
                 message_id: None,
             });
 

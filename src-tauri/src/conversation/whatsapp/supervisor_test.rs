@@ -695,7 +695,11 @@ async fn test_whatsapp_inbound_message_publishes_delta_event() {
     let (db_path, _dir) = setup_test_supervisor_db();
     let events = Arc::new(ConversationEventPublisher::new(100));
     let sessions_dir = _dir.path().join("wa_sessions");
-    let _supervisor = Arc::new(WhatsAppSupervisor::new(db_path.clone(), sessions_dir, events.clone()));
+    let _supervisor = Arc::new(WhatsAppSupervisor::new(
+        db_path.clone(),
+        sessions_dir,
+        events.clone(),
+    ));
 
     let mut conn = open_db_connection(&db_path).unwrap();
     let now = chrono::Utc::now().to_rfc3339();
@@ -720,15 +724,21 @@ async fn test_whatsapp_inbound_message_publishes_delta_event() {
         mentions: vec![],
     };
 
-    let applied = crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::ingest_incoming_message(
-        &mut conn,
-        1,
-        &raw_msg,
-    ).unwrap().unwrap();
+    let applied =
+        crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::ingest_incoming_message(
+            &mut conn, 1, &raw_msg,
+        )
+        .unwrap()
+        .unwrap();
 
-    let delta = applied.delta_event.expect("Delta must be generated inside the transaction");
+    let delta = applied
+        .delta_event
+        .expect("Delta must be generated inside the transaction");
     assert_eq!(delta.channel, crate::conversation::types::Channel::WhatsApp);
-    assert_eq!(delta.message.text_content.as_deref(), Some("Chao shop qua WhatsApp"));
+    assert_eq!(
+        delta.message.text_content.as_deref(),
+        Some("Chao shop qua WhatsApp")
+    );
     assert!(delta.sequence > 0);
 
     let repo = ConversationRepository::new(db_path);
@@ -762,7 +772,8 @@ async fn test_set_whatsapp_conversation_reaction_dm_matrix() {
          (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
          VALUES (10, 1, '84949743369', 'direct', 'Thao', ?1, ?1)",
         rusqlite::params![now],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Outbound message (from me, like in user screenshot)
     conn.execute(
@@ -798,7 +809,10 @@ async fn test_set_whatsapp_conversation_reaction_dm_matrix() {
         .await
         .unwrap();
 
-    assert_eq!(res_out.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    assert_eq!(
+        res_out.status,
+        crate::conversation::types::ReactionMutationStatus::Succeeded
+    );
     let sent = mock_client.get_sent_reactions();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].chat_jid, "84949743369@s.whatsapp.net");
@@ -820,7 +834,10 @@ async fn test_set_whatsapp_conversation_reaction_dm_matrix() {
         .await
         .unwrap();
 
-    assert_eq!(res_in.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    assert_eq!(
+        res_in.status,
+        crate::conversation::types::ReactionMutationStatus::Succeeded
+    );
     let sent = mock_client.get_sent_reactions();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1].chat_jid, "84949743369@s.whatsapp.net");
@@ -842,7 +859,10 @@ async fn test_set_whatsapp_conversation_reaction_dm_matrix() {
         .await
         .unwrap();
 
-    assert_eq!(res_unreact.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    assert_eq!(
+        res_unreact.status,
+        crate::conversation::types::ReactionMutationStatus::Succeeded
+    );
     let sent = mock_client.get_sent_reactions();
     assert_eq!(sent.len(), 3);
     assert_eq!(sent[2].emoji, "");
@@ -872,7 +892,8 @@ async fn test_set_whatsapp_conversation_reaction_group_matrix() {
          (id, channel_account_id, external_thread_id, kind, title, created_at, updated_at)
          VALUES (20, 1, '120363123456789@g.us', 'group', 'AI Community', ?1, ?1)",
         rusqlite::params![now],
-    ).unwrap();
+    )
+    .unwrap();
 
     // Group sender identity with raw phone number (no @s.whatsapp.net in external_id)
     conn.execute(
@@ -916,12 +937,18 @@ async fn test_set_whatsapp_conversation_reaction_group_matrix() {
         .await
         .unwrap();
 
-    assert_eq!(res_in.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    assert_eq!(
+        res_in.status,
+        crate::conversation::types::ReactionMutationStatus::Succeeded
+    );
     let sent = mock_client.get_sent_reactions();
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].chat_jid, "120363123456789@g.us");
     assert_eq!(sent[0].target_message_id, "wamid_grp_in_001");
-    assert_eq!(sent[0].target_sender_jid, Some("84903333333@s.whatsapp.net".to_string()));
+    assert_eq!(
+        sent[0].target_sender_jid,
+        Some("84903333333@s.whatsapp.net".to_string())
+    );
     assert_eq!(sent[0].emoji, "😂");
     assert!(!sent[0].is_from_me);
 
@@ -938,7 +965,10 @@ async fn test_set_whatsapp_conversation_reaction_group_matrix() {
         .await
         .unwrap();
 
-    assert_eq!(res_out.status, crate::conversation::types::ReactionMutationStatus::Succeeded);
+    assert_eq!(
+        res_out.status,
+        crate::conversation::types::ReactionMutationStatus::Succeeded
+    );
     let sent = mock_client.get_sent_reactions();
     assert_eq!(sent.len(), 2);
     assert_eq!(sent[1].chat_jid, "120363123456789@g.us");
@@ -947,4 +977,3 @@ async fn test_set_whatsapp_conversation_reaction_group_matrix() {
     assert_eq!(sent[1].emoji, "😮");
     assert!(sent[1].is_from_me);
 }
-

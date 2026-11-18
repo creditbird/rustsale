@@ -966,7 +966,7 @@ impl WhatsAppNormalizer {
                     "unlinked"
                 };
 
-                let is_valid_name = msg.sender_name.as_ref().map_or(false, |n| {
+                let is_valid_name = msg.sender_name.as_ref().is_some_and(|n| {
                     let t = n.trim();
                     !t.is_empty() && !t.starts_with("12036") && !t.starts_with("+12036")
                 });
@@ -1298,13 +1298,14 @@ impl WhatsAppNormalizer {
             )
             .optional()?;
 
-        let delta_event = crate::conversation::repository::ConversationRepository::record_message_delta_tx(
-            &tx,
-            conversation_id,
-            lead_id_opt,
-            crate::conversation::types::Channel::WhatsApp,
-            _message_id,
-        )?;
+        let delta_event =
+            crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+                &tx,
+                conversation_id,
+                lead_id_opt,
+                crate::conversation::types::Channel::WhatsApp,
+                _message_id,
+            )?;
 
         tx.commit()?;
         Ok(Some(AppliedWhatsAppMessage {
@@ -1473,10 +1474,8 @@ impl WhatsAppNormalizer {
                             phone::normalize_e164(&resolved_conv_phone, Some("84"))
                                 .unwrap_or_else(|| resolved_conv_phone.clone());
 
-                        if normalized_chat_phone == normalized_conv_phone {
-                            true
-                        } else if phone::phone_to_direct_jid(&normalized_chat_phone)
-                            == conv_thread_id
+                        if normalized_chat_phone == normalized_conv_phone
+                            || phone::phone_to_direct_jid(&normalized_chat_phone) == conv_thread_id
                         {
                             true
                         } else {
@@ -1715,62 +1714,62 @@ impl WhatsAppNormalizer {
         mut msg: &whatsapp_rust::prelude::wa::Message,
     ) -> &whatsapp_rust::prelude::wa::Message {
         for _ in 0..10 {
-            if let Some(ref eph) = msg.ephemeral_message.as_option() {
-                if let Some(ref inner) = eph.message.as_option() {
+            if let Some(eph) = msg.ephemeral_message.as_option() {
+                if let Some(inner) = eph.message.as_option() {
                     msg = inner;
                     continue;
                 }
             }
-            if let Some(ref vo) = msg.view_once_message.as_option() {
-                if let Some(ref inner) = vo.message.as_option() {
+            if let Some(vo) = msg.view_once_message.as_option() {
+                if let Some(inner) = vo.message.as_option() {
                     msg = inner;
                     continue;
                 }
             }
-            if let Some(ref vo2) = msg.view_once_message_v2.as_option() {
-                if let Some(ref inner) = vo2.message.as_option() {
+            if let Some(vo2) = msg.view_once_message_v2.as_option() {
+                if let Some(inner) = vo2.message.as_option() {
                     msg = inner;
                     continue;
                 }
             }
-            if let Some(ref vo2_ext) = msg.view_once_message_v2_extension.as_option() {
-                if let Some(ref inner) = vo2_ext.message.as_option() {
+            if let Some(vo2_ext) = msg.view_once_message_v2_extension.as_option() {
+                if let Some(inner) = vo2_ext.message.as_option() {
                     msg = inner;
                     continue;
                 }
             }
-            if let Some(ref doc_cap) = msg.document_with_caption_message.as_option() {
-                if let Some(ref inner) = doc_cap.message.as_option() {
+            if let Some(doc_cap) = msg.document_with_caption_message.as_option() {
+                if let Some(inner) = doc_cap.message.as_option() {
                     msg = inner;
                     continue;
                 }
             }
-            if let Some(ref ed) = msg.edited_message.as_option() {
-                if let Some(ref inner) = ed.message.as_option() {
+            if let Some(ed) = msg.edited_message.as_option() {
+                if let Some(inner) = ed.message.as_option() {
                     msg = inner;
                     continue;
                 }
             }
-            if let Some(ref ds) = msg.device_sent_message.as_option() {
-                if let Some(ref inner) = ds.message.as_option() {
+            if let Some(ds) = msg.device_sent_message.as_option() {
+                if let Some(inner) = ds.message.as_option() {
                     msg = inner;
                     continue;
                 }
             }
-            if let Some(ref gm) = msg.group_mentioned_message.as_option() {
-                if let Some(ref inner) = gm.message.as_option() {
+            if let Some(gm) = msg.group_mentioned_message.as_option() {
+                if let Some(inner) = gm.message.as_option() {
                     msg = inner;
                     continue;
                 }
             }
-            if let Some(ref bi) = msg.bot_invoke_message.as_option() {
-                if let Some(ref inner) = bi.message.as_option() {
+            if let Some(bi) = msg.bot_invoke_message.as_option() {
+                if let Some(inner) = bi.message.as_option() {
                     msg = inner;
                     continue;
                 }
             }
-            if let Some(ref bf) = msg.bot_forwarded_message.as_option() {
-                if let Some(ref inner) = bf.message.as_option() {
+            if let Some(bf) = msg.bot_forwarded_message.as_option() {
+                if let Some(inner) = bf.message.as_option() {
                     msg = inner;
                     continue;
                 }
@@ -2425,7 +2424,7 @@ impl WhatsAppNormalizer {
                 .map(|d| d.to_string())
                 .or_else(|| participant.username.as_ref().map(|u| u.to_string()));
 
-            let is_valid_name = server_name.as_ref().map_or(false, |n| {
+            let is_valid_name = server_name.as_ref().is_some_and(|n| {
                 let t = n.trim();
                 !t.is_empty() && !t.starts_with("12036") && !t.starts_with("+12036")
             });

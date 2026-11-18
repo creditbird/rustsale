@@ -132,38 +132,50 @@ impl ChannelDeliveryProvider for SimulatedChannelDeliveryProvider {
             match channel {
                 "ZALO" => {
                     if account == "IMEI_INACTIVE" {
-                        return Err(format!("Zalo provider rejected: session '{}' is inactive or disconnected", account));
+                        return Err(format!(
+                            "Zalo provider rejected: session '{}' is inactive or disconnected",
+                            account
+                        ));
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("zalo_msg_{}_{}", account, hash_prefix),
-                        status: self.simulated_status.clone(),
+                        status: self.simulated_status,
                     })
                 }
                 "WHATSAPP" => {
                     if account == "wpa_inactive" {
-                        return Err(format!("WhatsApp provider rejected: account '{}' is inactive", account));
+                        return Err(format!(
+                            "WhatsApp provider rejected: account '{}' is inactive",
+                            account
+                        ));
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("wamid.HBg_{}_{}", account, hash_prefix),
-                        status: self.simulated_status.clone(),
+                        status: self.simulated_status,
                     })
                 }
                 "EMAIL" => {
                     if account == "smtp_inactive" {
-                        return Err(format!("Email provider rejected: SMTP server '{}' is disabled", account));
+                        return Err(format!(
+                            "Email provider rejected: SMTP server '{}' is disabled",
+                            account
+                        ));
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("<{}.{}@rustsale.vn>", hash_prefix, account),
-                        status: self.simulated_status.clone(),
+                        status: self.simulated_status,
                     })
                 }
                 "FACEBOOK" => {
                     if account == "fb_inactive" {
-                        return Err(format!("Facebook provider rejected: Page token for '{}' is inactive", account));
+                        return Err(format!(
+                            "Facebook provider rejected: Page token for '{}' is inactive",
+                            account
+                        ));
                     }
                     Ok(ProviderDeliveryResponse {
                         provider_message_id: format!("mid.$gA_{}_{}", account, hash_prefix),
-                        status: self.simulated_status.clone(),
+                        status: self.simulated_status,
                     })
                 }
                 other => Err(format!("Unsupported delivery provider channel '{}'", other)),
@@ -172,7 +184,10 @@ impl ChannelDeliveryProvider for SimulatedChannelDeliveryProvider {
 
         match tokio::time::timeout(timeout_dur, fut).await {
             Ok(res) => res,
-            Err(_) => Err(format!("Provider delivery timed out after {:?}", timeout_dur)),
+            Err(_) => Err(format!(
+                "Provider delivery timed out after {:?}",
+                timeout_dur
+            )),
         }
     }
 }
@@ -196,7 +211,16 @@ impl ChannelDeliveryProvider for LiveChannelDeliveryProvider {
     ) -> Result<ProviderDeliveryResponse, String> {
         // In live runtime, delegates to external APIs (Zalo, WhatsApp Cloud API, SMTP, etc.)
         let simulated = SimulatedChannelDeliveryProvider::default();
-        simulated.deliver(channel, account, recipient, message, idempotency_key, timeout_dur).await
+        simulated
+            .deliver(
+                channel,
+                account,
+                recipient,
+                message,
+                idempotency_key,
+                timeout_dur,
+            )
+            .await
     }
 }
 
@@ -259,11 +283,7 @@ impl OmnichannelDispatcher {
     }
 
     /// Renders template by resolving spintax and lead variables from database.
-    pub fn render_for_lead(
-        conn: &Connection,
-        template: &str,
-        lead_id: i32,
-    ) -> (String, String) {
+    pub fn render_for_lead(conn: &Connection, template: &str, lead_id: i32) -> (String, String) {
         // Query lead details
         let lead_info: Option<(String, String, String, String, Option<String>)> = conn
             .query_row(
@@ -405,7 +425,8 @@ impl OmnichannelDispatcher {
                     error: None,
                     is_dry_run: false,
                     message_id: Some(existing_id),
-                    provider_message_id: prov_id.or_else(|| Some(format!("recovered_idempotent_{}", existing_id))),
+                    provider_message_id: prov_id
+                        .or_else(|| Some(format!("recovered_idempotent_{}", existing_id))),
                     delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
                 });
             } else if status == "SUBMITTED" {
@@ -418,7 +439,8 @@ impl OmnichannelDispatcher {
                     error: None,
                     is_dry_run: false,
                     message_id: Some(existing_id),
-                    provider_message_id: prov_id.or_else(|| Some(format!("recovered_submitted_{}", existing_id))),
+                    provider_message_id: prov_id
+                        .or_else(|| Some(format!("recovered_submitted_{}", existing_id))),
                     delivery_status: DeliveryStatus::Submitted.as_str().to_string(),
                 });
             }
@@ -451,7 +473,9 @@ impl OmnichannelDispatcher {
             Ok(id) => id,
             Err(e) => {
                 // If unique constraint failed because another worker submitted concurrently
-                if e.contains("UNIQUE constraint failed") || e.contains("idx_outreach_history_idempotency") {
+                if e.contains("UNIQUE constraint failed")
+                    || e.contains("idx_outreach_history_idempotency")
+                {
                     let winner: Option<(i64, Option<String>, String, Option<String>)> = conn
                         .query_row(
                             "SELECT id, session_imei, status, provider_message_id FROM outreach_history WHERE idempotency_key = ?1",
@@ -469,7 +493,8 @@ impl OmnichannelDispatcher {
                                 error: None,
                                 is_dry_run: false,
                                 message_id: Some(wid),
-                                provider_message_id: wprov.or_else(|| Some(format!("recovered_idempotent_{}", wid))),
+                                provider_message_id: wprov
+                                    .or_else(|| Some(format!("recovered_idempotent_{}", wid))),
                                 delivery_status: DeliveryStatus::Delivered.as_str().to_string(),
                             });
                         } else if wstatus == "SUBMITTED" {
@@ -481,7 +506,8 @@ impl OmnichannelDispatcher {
                                 error: None,
                                 is_dry_run: false,
                                 message_id: Some(wid),
-                                provider_message_id: wprov.or_else(|| Some(format!("recovered_submitted_{}", wid))),
+                                provider_message_id: wprov
+                                    .or_else(|| Some(format!("recovered_submitted_{}", wid))),
                                 delivery_status: DeliveryStatus::Submitted.as_str().to_string(),
                             });
                         }
@@ -507,7 +533,10 @@ impl OmnichannelDispatcher {
         .await
         {
             Ok(res) => res,
-            Err(_) => Err(format!("Provider delivery timed out after {:?}", timeout_dur)),
+            Err(_) => Err(format!(
+                "Provider delivery timed out after {:?}",
+                timeout_dur
+            )),
         };
 
         match delivery_result {
@@ -566,7 +595,10 @@ impl OmnichannelDispatcher {
             "ZALO" => {
                 let phone_digits: String = clean.chars().filter(|c| c.is_ascii_digit()).collect();
                 if clean.is_empty() || phone_digits.len() < 8 {
-                    return Err(format!("Cannot dispatch Zalo outreach: invalid phone number '{}'", clean));
+                    return Err(format!(
+                        "Cannot dispatch Zalo outreach: invalid phone number '{}'",
+                        clean
+                    ));
                 }
 
                 let account = account_id.unwrap_or("default_zalo").to_string();
@@ -586,7 +618,11 @@ impl OmnichannelDispatcher {
                         let any_session: bool = conn
                             .query_row("SELECT 1 FROM zalo_sessions LIMIT 1", [], |_| Ok(true))
                             .unwrap_or(false);
-                        if !any_session && req_acc != "default_zalo" && req_acc != "IMEI_MAIN" && req_acc != "IMEI_CONC" {
+                        if !any_session
+                            && req_acc != "default_zalo"
+                            && req_acc != "IMEI_MAIN"
+                            && req_acc != "IMEI_CONC"
+                        {
                             return Err(format!("Zalo account '{}' not found or active", req_acc));
                         }
                     }
@@ -596,7 +632,10 @@ impl OmnichannelDispatcher {
             "WHATSAPP" => {
                 let digits: String = clean.chars().filter(|c| c.is_ascii_digit()).collect();
                 if clean.is_empty() || digits.len() < 8 {
-                    return Err(format!("Cannot dispatch WhatsApp outreach: invalid phone number '{}'", clean));
+                    return Err(format!(
+                        "Cannot dispatch WhatsApp outreach: invalid phone number '{}'",
+                        clean
+                    ));
                 }
 
                 let account = account_id.unwrap_or("default_whatsapp").to_string();
@@ -617,7 +656,10 @@ impl OmnichannelDispatcher {
             }
             "EMAIL" => {
                 if clean.is_empty() || !clean.contains('@') || !clean.contains('.') {
-                    return Err(format!("Cannot dispatch Email outreach: invalid email address '{}'", clean));
+                    return Err(format!(
+                        "Cannot dispatch Email outreach: invalid email address '{}'",
+                        clean
+                    ));
                 }
 
                 let account = account_id.unwrap_or("default_smtp").to_string();
@@ -638,7 +680,10 @@ impl OmnichannelDispatcher {
             }
             "FACEBOOK" => {
                 if clean.is_empty() {
-                    return Err("Cannot dispatch Facebook outreach: target recipient/thread ID is empty".to_string());
+                    return Err(
+                        "Cannot dispatch Facebook outreach: target recipient/thread ID is empty"
+                            .to_string(),
+                    );
                 }
 
                 let account = account_id.unwrap_or("default_fb_page").to_string();
@@ -652,7 +697,10 @@ impl OmnichannelDispatcher {
                         .unwrap_or(false);
 
                     if !exists && req_acc != "default_fb_page" {
-                        return Err(format!("Facebook channel account '{}' not found or inactive", req_acc));
+                        return Err(format!(
+                            "Facebook channel account '{}' not found or inactive",
+                            req_acc
+                        ));
                     }
                 }
                 Ok((account, clean.to_string()))
@@ -688,16 +736,18 @@ impl OmnichannelDispatcher {
         now: &str,
         provider_msg_id: &str,
     ) -> Result<(), String> {
-        conn.execute("SAVEPOINT delivery_confirm_tx", []).map_err(|e| e.to_string())?;
+        conn.execute("SAVEPOINT delivery_confirm_tx", [])
+            .map_err(|e| e.to_string())?;
 
         let res: Result<(), String> = (|| {
-            let updated = conn.execute(
-                "UPDATE outreach_history
+            let updated = conn
+                .execute(
+                    "UPDATE outreach_history
                  SET status = 'DELIVERED', provider_message_id = ?1, error_message = NULL
                  WHERE id = ?2 AND status IN ('SUBMITTED', 'SUBMITTED_STALE', 'DELIVERED')",
-                rusqlite::params![provider_msg_id, outreach_id],
-            )
-            .map_err(|e| e.to_string())?;
+                    rusqlite::params![provider_msg_id, outreach_id],
+                )
+                .map_err(|e| e.to_string())?;
 
             if updated == 0 {
                 return Err(format!("Cannot transition outreach {} to DELIVERED: current status does not permit delivery confirmation", outreach_id));
@@ -736,13 +786,14 @@ impl OmnichannelDispatcher {
         outreach_id: i64,
         error_message: &str,
     ) -> Result<(), String> {
-        let updated = conn.execute(
-            "UPDATE outreach_history
+        let updated = conn
+            .execute(
+                "UPDATE outreach_history
              SET status = 'FAILED', error_message = ?1
              WHERE id = ?2 AND status != 'DELIVERED'",
-            rusqlite::params![error_message, outreach_id],
-        )
-        .map_err(|e| format!("Failed to update outreach history to FAILED: {}", e))?;
+                rusqlite::params![error_message, outreach_id],
+            )
+            .map_err(|e| format!("Failed to update outreach history to FAILED: {}", e))?;
 
         if updated == 0 {
             // Already delivered terminal record; cannot be demoted backwards
@@ -764,7 +815,10 @@ impl OmnichannelDispatcher {
     }
 
     /// Freshness verification to prevent webhook replay attacks.
-    pub fn verify_webhook_timestamp(timestamp_epoch: i64, max_skew_secs: i64) -> Result<(), String> {
+    pub fn verify_webhook_timestamp(
+        timestamp_epoch: i64,
+        max_skew_secs: i64,
+    ) -> Result<(), String> {
         let now = chrono::Utc::now().timestamp();
         if (now - timestamp_epoch).abs() > max_skew_secs {
             return Err(format!(
@@ -831,12 +885,17 @@ impl OmnichannelDispatcher {
                     }
                 }
                 None => {
-                    return Err("Unauthorized webhook: missing required authentication secret".to_string());
+                    return Err(
+                        "Unauthorized webhook: missing required authentication secret".to_string(),
+                    );
                 }
             }
         } else if let Some(provided) = provided_secret {
             if provided.trim().is_empty() {
-                return Err("Webhook delivery confirmation failed: empty authentication token provided".to_string());
+                return Err(
+                    "Webhook delivery confirmation failed: empty authentication token provided"
+                        .to_string(),
+                );
             }
         }
 
@@ -878,30 +937,38 @@ impl OmnichannelDispatcher {
         };
 
         let (outreach_id, lead_id, channel, status) = record;
-            if status == "DELIVERED" || status == "SENT" || status == "SUCCESS" {
-                tracing::info!(
+        if status == "DELIVERED" || status == "SENT" || status == "SUCCESS" {
+            tracing::info!(
                     "Idempotent duplicate webhook delivery confirmed for provider_message_id={}, outreach_id={}",
                     provider_msg_id, outreach_id
                 );
-                return Ok(true); // Terminal idempotent state
-            }
+            return Ok(true); // Terminal idempotent state
+        }
 
-            if let Some(expected) = expected_channel {
-                if !channel.eq_ignore_ascii_case("OMNICHANNEL") && !channel.eq_ignore_ascii_case(expected) {
-                    return Err(format!("Channel mismatch: expected {}, found {}", expected, channel));
-                }
+        if let Some(expected) = expected_channel {
+            if !channel.eq_ignore_ascii_case("OMNICHANNEL")
+                && !channel.eq_ignore_ascii_case(expected)
+            {
+                return Err(format!(
+                    "Channel mismatch: expected {}, found {}",
+                    expected, channel
+                ));
             }
+        }
 
-            // Only allow transition from SUBMITTED or SUBMITTED_STALE
-            if status != "SUBMITTED" && status != "SUBMITTED_STALE" {
-                return Err(format!("Invalid state transition from {} to DELIVERED for outreach {}", status, outreach_id));
-            }
+        // Only allow transition from SUBMITTED or SUBMITTED_STALE
+        if status != "SUBMITTED" && status != "SUBMITTED_STALE" {
+            return Err(format!(
+                "Invalid state transition from {} to DELIVERED for outreach {}",
+                status, outreach_id
+            ));
+        }
 
-            let channel_name = if !channel.is_empty() && !channel.eq_ignore_ascii_case("OMNICHANNEL") {
-                channel.as_str()
-            } else {
-                expected_channel.unwrap_or("OMNICHANNEL")
-            };
+        let channel_name = if !channel.is_empty() && !channel.eq_ignore_ascii_case("OMNICHANNEL") {
+            channel.as_str()
+        } else {
+            expected_channel.unwrap_or("OMNICHANNEL")
+        };
 
         Self::confirm_outreach_delivery(
             conn,
@@ -952,14 +1019,15 @@ impl OmnichannelDispatcher {
         for id in stuck_ids {
             // Atomic conditional update ensures that if another worker or late webhook already transitioned this
             // record, affected rows is 0 and count only increments for actual state transitions.
-            let affected = conn.execute(
-                "UPDATE outreach_history
+            let affected = conn
+                .execute(
+                    "UPDATE outreach_history
                  SET status = 'SUBMITTED_STALE',
                      error_message = ?1
                  WHERE id = ?2 AND status = 'SUBMITTED'",
-                rusqlite::params![note, id],
-            )
-            .map_err(|e| format!("Failed to reconcile submission {}: {}", id, e))?;
+                    rusqlite::params![note, id],
+                )
+                .map_err(|e| format!("Failed to reconcile submission {}: {}", id, e))?;
 
             if affected > 0 {
                 reconciled_count += affected;

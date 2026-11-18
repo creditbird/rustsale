@@ -96,12 +96,11 @@ pub fn load_dotenv_if_present() {
                         if let Some((key, val)) = trimmed.split_once('=') {
                             let k = key.trim();
                             let mut v = val.trim();
-                            if (v.starts_with('"') && v.ends_with('"'))
-                                || (v.starts_with('\'') && v.ends_with('\''))
+                            if ((v.starts_with('"') && v.ends_with('"'))
+                                || (v.starts_with('\'') && v.ends_with('\'')))
+                                && v.len() >= 2
                             {
-                                if v.len() >= 2 {
-                                    v = &v[1..v.len() - 1];
-                                }
+                                v = &v[1..v.len() - 1];
                             }
                             if !k.is_empty()
                                 && ALLOWED_DOTENV_KEYS.contains(&k)

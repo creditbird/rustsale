@@ -328,7 +328,6 @@ impl WhatsAppSupervisor {
                             remote_jid: Some(chat_jid.clone()),
                             from_me: Some(is_from_me),
                             participant: sender_jid,
-                            ..Default::default()
                         };
 
                         let timestamp_secs = Some(ctx.info.timestamp.timestamp() as u64);
@@ -431,7 +430,7 @@ impl WhatsAppSupervisor {
                                     account_id_val,
                                 );
                                 if let Ok(groups_map) = client.groups().get_participating().await {
-                                    for (_group_jid, group_meta) in &groups_map {
+                                    for group_meta in groups_map.values() {
                                         if let Ok(conv_id) = super::normalizer::WhatsAppNormalizer::sync_group_metadata(
                                             &mut conn,
                                             account_id_val,
@@ -475,7 +474,7 @@ impl WhatsAppSupervisor {
                                 if let Ok(mut conn) = rusqlite::Connection::open(&db_path) {
                                     // Save phoneNumberToLidMappings from sync
                                     for mapping in &history_sync.phone_number_to_lid_mappings {
-                                        if let (Some(ref pn_jid), Some(ref lid_jid)) = (mapping.pn_jid.as_ref(), mapping.lid_jid.as_ref()) {
+                                        if let (Some(pn_jid), Some(lid_jid)) = (mapping.pn_jid.as_ref(), mapping.lid_jid.as_ref()) {
                                             let clean_pn = super::phone::jid_to_phone(pn_jid)
                                                 .or_else(|| super::phone::normalize_e164(pn_jid, None))
                                                 .unwrap_or_else(|| pn_jid.chars().filter(|c| c.is_ascii_digit()).collect());
@@ -491,7 +490,7 @@ impl WhatsAppSupervisor {
                                         let chat_jid = conv.id.clone();
                                         let conv_title = conv.name.as_deref().or(conv.display_name.as_deref());
 
-                                        if let (Some(ref pn_jid), Some(ref lid_jid)) = (conv.pn_jid.as_ref(), conv.lid_jid.as_ref()) {
+                                        if let (Some(pn_jid), Some(lid_jid)) = (conv.pn_jid.as_ref(), conv.lid_jid.as_ref()) {
                                             let clean_pn = super::phone::jid_to_phone(pn_jid)
                                                 .or_else(|| super::phone::normalize_e164(pn_jid, None))
                                                 .unwrap_or_else(|| pn_jid.chars().filter(|c| c.is_ascii_digit()).collect());
@@ -513,8 +512,8 @@ impl WhatsAppSupervisor {
                                         // Ingest historical messages & reactions
                                         for history_msg in &conv.messages {
                                             if let Some(web_msg) = history_msg.message.as_option() {
-                                                if let Some(ref msg_content) = web_msg.message.as_option() {
-                                                    if let Some(ref key) = web_msg.key.as_option() {
+                                                if let Some(msg_content) = web_msg.message.as_option() {
+                                                    if let Some(key) = web_msg.key.as_option() {
                                                         let push_name = web_msg.push_name.as_deref();
                                                         let participant_override = web_msg
                                                             .participant
@@ -560,7 +559,7 @@ impl WhatsAppSupervisor {
 
                                     // Also sync full participating groups metadata & members
                                     if let Ok(groups_map) = client.groups().get_participating().await {
-                                        for (_group_jid, group_meta) in &groups_map {
+                                        for group_meta in groups_map.values() {
                                             if let Ok(conv_id) = super::normalizer::WhatsAppNormalizer::sync_group_metadata(
                                                 &mut conn,
                                                 account_id_val,
@@ -668,8 +667,8 @@ impl WhatsAppSupervisor {
             )?;
 
             let mapped = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
-            let list = mapped.collect::<rusqlite::Result<Vec<_>>>()?;
-            list
+
+            mapped.collect::<rusqlite::Result<Vec<_>>>()?
         };
 
         let mut loaded = 0;
@@ -784,7 +783,7 @@ pub(crate) fn map_whatsapp_receipt_event(
                 // For error ACKs (NACK), class is optional in wacore/whatsapp-rust (can be None or Some("message")).
                 // Reject explicit non-message classes (e.g. Some("call"), Some("notification")).
                 let class_valid = if is_error_ack {
-                    ack.class.as_deref().map_or(true, |c| c == "message")
+                    ack.class.as_deref().is_none_or(|c| c == "message")
                 } else {
                     is_message_class
                 };

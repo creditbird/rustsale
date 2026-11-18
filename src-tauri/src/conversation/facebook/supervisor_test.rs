@@ -564,7 +564,10 @@ async fn test_supervisor_ingest_webhook_events_emits_invalidation() {
 
     // Delta event must also be emitted with durable sequence
     let delta = delta_rx.try_recv().expect("Expected delta event");
-    assert_eq!(delta.channel, crate::conversation::types::Channel::Messenger);
+    assert_eq!(
+        delta.channel,
+        crate::conversation::types::Channel::Messenger
+    );
     assert_eq!(delta.message.text_content.as_deref(), Some("Quận 8 e ơi"));
     assert!(delta.sequence > 0);
 }
@@ -607,7 +610,7 @@ async fn test_supervisor_ingest_webhook_events_rejects_unregistered_or_disabled_
 
     // Ingest for disabled account returns 0 and writes nothing
     let count = supervisor
-        .ingest_webhook_events("page_disabled_123", &[webhook_payload.clone()])
+        .ingest_webhook_events("page_disabled_123", std::slice::from_ref(&webhook_payload))
         .unwrap();
     assert_eq!(count, 0);
 

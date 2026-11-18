@@ -128,7 +128,12 @@ impl NotificationManager {
         *self.settings.write().unwrap() = new_settings;
     }
 
-    pub fn set_focus(&self, active_conversation_id: Option<i64>, is_focused: bool, seq: Option<u64>) -> FocusSyncResult {
+    pub fn set_focus(
+        &self,
+        active_conversation_id: Option<i64>,
+        is_focused: bool,
+        seq: Option<u64>,
+    ) -> FocusSyncResult {
         let mut lock = self.focus_state.lock().unwrap();
         if let Some(s) = seq {
             if s <= lock.seq {

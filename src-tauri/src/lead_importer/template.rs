@@ -74,7 +74,6 @@ pub fn generate_excel_lead_template() -> Result<Vec<u8>, String> {
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
-
     // 1. [Content_Types].xml
     zip.start_file("[Content_Types].xml", options)
         .map_err(|e| format!("Lỗi tạo [Content_Types].xml: {}", e))?;
@@ -142,7 +141,8 @@ pub fn generate_excel_lead_template() -> Result<Vec<u8>, String> {
         let col = col_letters.get(i).unwrap_or(&"A");
         sheet_content.push_str(&format!(
             "      <c r=\"{}1\" t=\"inlineStr\"><is><t>{}</t></is></c>\n",
-            col, xml_escape(h)
+            col,
+            xml_escape(h)
         ));
     }
     sheet_content.push_str("    </row>\n");
@@ -153,7 +153,8 @@ pub fn generate_excel_lead_template() -> Result<Vec<u8>, String> {
         let col = col_letters.get(i).unwrap_or(&"A");
         sheet_content.push_str(&format!(
             "      <c r=\"{}2\" t=\"inlineStr\"><is><t>{}</t></is></c>\n",
-            col, xml_escape(val)
+            col,
+            xml_escape(val)
         ));
     }
     sheet_content.push_str("    </row>\n");
@@ -164,7 +165,8 @@ pub fn generate_excel_lead_template() -> Result<Vec<u8>, String> {
         let col = col_letters.get(i).unwrap_or(&"A");
         sheet_content.push_str(&format!(
             "      <c r=\"{}3\" t=\"inlineStr\"><is><t>{}</t></is></c>\n",
-            col, xml_escape(val)
+            col,
+            xml_escape(val)
         ));
     }
     sheet_content.push_str("    </row>\n");

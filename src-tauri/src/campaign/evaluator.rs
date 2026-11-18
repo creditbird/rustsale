@@ -155,11 +155,9 @@ impl StepConditionEvaluator {
 
         // 3. Check leads.status as additional fallback
         let lead_status: Option<String> = conn
-            .query_row(
-                "SELECT status FROM leads WHERE id = ?1",
-                [lead_id],
-                |row| row.get(0),
-            )
+            .query_row("SELECT status FROM leads WHERE id = ?1", [lead_id], |row| {
+                row.get(0)
+            })
             .ok();
 
         let current_stage = deal_stage
@@ -190,8 +188,7 @@ impl StepConditionEvaluator {
         let expected_normalized = expected_intent
             .trim()
             .to_uppercase()
-            .replace('_', "")
-            .replace(' ', "");
+            .replace(['_', ' '], "");
 
         let intent_tag: Option<String> = conn
             .query_row(
@@ -203,11 +200,7 @@ impl StepConditionEvaluator {
             .flatten();
 
         let current_intent = intent_tag.unwrap_or_else(|| "UNKNOWN".to_string());
-        let current_normalized = current_intent
-            .trim()
-            .to_uppercase()
-            .replace('_', "")
-            .replace(' ', "");
+        let current_normalized = current_intent.trim().to_uppercase().replace(['_', ' '], "");
 
         if current_normalized == expected_normalized {
             Ok(ConditionResult::Execute)

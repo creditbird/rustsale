@@ -54,8 +54,8 @@ fn test_tray_config_sqlite_roundtrip_and_restart() {
 
     // 3. Reload from SQLite and assert exact persistence
     let loaded = load_tray_config(&conn);
-    assert_eq!(loaded.close_to_tray, false);
-    assert_eq!(loaded.dnd_enabled, true);
+    assert!(!loaded.close_to_tray);
+    assert!(loaded.dnd_enabled);
 
     // 4. Simulate application restart: instantiate default state, then restore from SQLite
     let fresh_state = TrayState::default();
@@ -97,5 +97,5 @@ async fn test_set_close_to_tray_command_persists_to_db() {
     let db_state_ref = app.state::<crate::commands::DbState>();
     let db_conn = db_state_ref.conn.lock().unwrap();
     let loaded = load_tray_config(&db_conn);
-    assert_eq!(loaded.close_to_tray, false);
+    assert!(!loaded.close_to_tray);
 }

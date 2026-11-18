@@ -335,7 +335,7 @@ pub fn populate_recipients(
             } => ("pending", None, phone_e164, jid, Some(rendered_text)),
             RecipientEvaluation::Skipped { reason } => {
                 let e164 = super::phone::normalize_e164(&r.recipient_phone_raw, Some("84"))
-                    .unwrap_or_else(|| format!("invalid_{}", &r.recipient_phone_raw));
+                    .unwrap_or_else(|| format!("invalid_{}", r.recipient_phone_raw));
                 let jid = super::phone::phone_to_direct_jid(&e164);
                 ("skipped", Some(reason), e164, jid, None)
             }

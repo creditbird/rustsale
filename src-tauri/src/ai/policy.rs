@@ -128,7 +128,9 @@ impl PolicyGate {
             if is_pushy {
                 reject_reasons.push("Khách hàng yêu cầu hủy nhận tin, không được gửi thông điệp bán hàng/khuyến mãi".to_string());
             } else if !is_apologetic {
-                review_reasons.push("Cần nhân viên xác nhận việc hủy đăng ký nhận tin của khách hàng".to_string());
+                review_reasons.push(
+                    "Cần nhân viên xác nhận việc hủy đăng ký nhận tin của khách hàng".to_string(),
+                );
             }
         }
 
@@ -149,7 +151,10 @@ impl PolicyGate {
 
         // 4. Complaint Intent Check -> Require Human Review
         if *intent == CustomerIntent::Complaint && self.config.require_review_for_complaints {
-            review_reasons.push("Khách hàng đang khiếu nại/phản ánh sự cố, bắt buộc chuyên viên duyệt phản hồi".to_string());
+            review_reasons.push(
+                "Khách hàng đang khiếu nại/phản ánh sự cố, bắt buộc chuyên viên duyệt phản hồi"
+                    .to_string(),
+            );
         }
 
         // 5. High Value Deal Threshold
@@ -174,7 +179,10 @@ impl PolicyGate {
             if mentions_price && evidence.known_products.is_empty() && evidence.lead_value == 0.0 {
                 review_reasons.push("Báo giá cho khách hàng nhưng chưa có dữ liệu giá niêm yết trong CRM để đối chiếu".to_string());
             } else if self.config.require_review_for_price_quotes {
-                review_reasons.push("Cam kết về giá hoặc báo giá chính thức cần nhân viên kinh doanh xác nhận".to_string());
+                review_reasons.push(
+                    "Cam kết về giá hoặc báo giá chính thức cần nhân viên kinh doanh xác nhận"
+                        .to_string(),
+                );
             }
         }
 

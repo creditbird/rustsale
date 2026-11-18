@@ -81,3 +81,8 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Pre-existing signatures (db/repository/campaign helpers); refactor separately.
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"

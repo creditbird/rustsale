@@ -395,7 +395,8 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
                         if let Some(q) = quote_val {
                             // 1. WhatsApp quote path (has participant_jid)
                             if q.get("participant_jid").is_some() {
-                                let text = q.get("text").and_then(|t| t.as_str()).map(str::to_string);
+                                let text =
+                                    q.get("text").and_then(|t| t.as_str()).map(str::to_string);
                                 let participant_jid = q
                                     .get("participant_jid")
                                     .and_then(|p| p.as_str())
@@ -559,14 +560,12 @@ pub fn hydrate_messages(conn: &Connection, messages: &mut [ConversationMessage])
 
         if msg.channel == crate::conversation::types::Channel::WhatsApp {
             if msg.sender_external_id.is_none() {
-                if let Ok(raw_sender) = conn.query_row(
+                if let Ok(Some(s_jid)) = conn.query_row(
                     "SELECT json_extract(raw_payload_json, '$.sender_jid') FROM messages WHERE id = ?1",
                     [msg.id],
                     |r| r.get::<_, Option<String>>(0),
                 ) {
-                    if let Some(s_jid) = raw_sender {
-                        msg.sender_external_id = Some(s_jid);
-                    }
+                    msg.sender_external_id = Some(s_jid);
                 }
             }
 

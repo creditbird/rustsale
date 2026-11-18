@@ -3517,7 +3517,10 @@ mod group_member_import_events {
         let sent_media = mock_client.get_sent_media();
         assert_eq!(sent_media.len(), 1);
         assert_eq!(sent_media[0].media_type, "file");
-        assert_eq!(sent_media[0].file_name.as_deref(), Some("quarterly_report.docx"));
+        assert_eq!(
+            sent_media[0].file_name.as_deref(),
+            Some("quarterly_report.docx")
+        );
         assert_eq!(
             sent_media[0].mime_type.as_deref(),
             Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
@@ -3526,7 +3529,9 @@ mod group_member_import_events {
 
     #[tokio::test]
     async fn test_process_messenger_outbox_job_docx_attachment() {
-        use crate::conversation::facebook::client::{FacebookGraphClient, SendFacebookMessageResponse};
+        use crate::conversation::facebook::client::{
+            FacebookGraphClient, SendFacebookMessageResponse,
+        };
 
         struct MockMessengerAttachmentClient {
             sent_file_name: std::sync::Mutex<Option<String>>,
@@ -3537,9 +3542,36 @@ mod group_member_import_events {
 
         #[async_trait::async_trait]
         impl FacebookGraphClient for MockMessengerAttachmentClient {
-            async fn fetch_page_conversations(&self, _: &str, _: &str, _: usize, _: Option<&str>) -> anyhow::Result<crate::conversation::facebook::client::FacebookConversationsPage> { unimplemented!() }
-            async fn fetch_thread_messages(&self, _: &str, _: &str, _: usize, _: Option<&str>) -> anyhow::Result<crate::conversation::facebook::client::FacebookMessagesPage> { unimplemented!() }
-            async fn send_messenger_message(&self, _: &str, _: &str, _: &str, _: &str, _: Option<&str>) -> anyhow::Result<SendFacebookMessageResponse> { unimplemented!() }
+            async fn fetch_page_conversations(
+                &self,
+                _: &str,
+                _: &str,
+                _: usize,
+                _: Option<&str>,
+            ) -> anyhow::Result<crate::conversation::facebook::client::FacebookConversationsPage>
+            {
+                unimplemented!()
+            }
+            async fn fetch_thread_messages(
+                &self,
+                _: &str,
+                _: &str,
+                _: usize,
+                _: Option<&str>,
+            ) -> anyhow::Result<crate::conversation::facebook::client::FacebookMessagesPage>
+            {
+                unimplemented!()
+            }
+            async fn send_messenger_message(
+                &self,
+                _: &str,
+                _: &str,
+                _: &str,
+                _: &str,
+                _: Option<&str>,
+            ) -> anyhow::Result<SendFacebookMessageResponse> {
+                unimplemented!()
+            }
 
             async fn send_messenger_attachment(
                 &self,
@@ -3630,13 +3662,22 @@ mod group_member_import_events {
         let _ = std::fs::remove_file(&docx_file);
 
         assert!(processed);
-        assert_eq!(mock_client.sent_file_name.lock().unwrap().as_deref(), Some("contract.docx"));
+        assert_eq!(
+            mock_client.sent_file_name.lock().unwrap().as_deref(),
+            Some("contract.docx")
+        );
         assert_eq!(
             mock_client.sent_mime_type.lock().unwrap().as_deref(),
             Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
         );
-        assert_eq!(mock_client.sent_media_type.lock().unwrap().as_deref(), Some("file"));
-        assert_eq!(mock_client.sent_bytes_len.lock().unwrap().as_ref(), Some(&b"PK\x03\x04fb_docx_payload".len()));
+        assert_eq!(
+            mock_client.sent_media_type.lock().unwrap().as_deref(),
+            Some("file")
+        );
+        assert_eq!(
+            mock_client.sent_bytes_len.lock().unwrap().as_ref(),
+            Some(&b"PK\x03\x04fb_docx_payload".len())
+        );
     }
 
     #[tokio::test]
@@ -4134,9 +4175,10 @@ mod group_member_import_events {
         }))
         .unwrap();
 
-        let event = zca_rs::listener::ListenerEvent::Message(Box::new(
-            zca_rs::models::Message::User(zca_rs::models::UserMessage::new("self-uid", raw_user_msg)),
-        ));
+        let event =
+            zca_rs::listener::ListenerEvent::Message(Box::new(zca_rs::models::Message::User(
+                zca_rs::models::UserMessage::new("self-uid", raw_user_msg),
+            )));
 
         harness
             .service
@@ -4153,14 +4195,22 @@ mod group_member_import_events {
         assert_eq!(delta.conversation_id, 1);
         assert_eq!(delta.channel, Channel::Zalo);
         assert!(delta.sequence > 0);
-        assert_eq!(delta.message.text_content.as_deref(), Some("Xin chào shop realtime"));
-        assert_eq!(delta.message.sender_display_name.as_deref(), Some("Customer 1"));
+        assert_eq!(
+            delta.message.text_content.as_deref(),
+            Some("Xin chào shop realtime")
+        );
+        assert_eq!(
+            delta.message.sender_display_name.as_deref(),
+            Some("Customer 1")
+        );
         assert!(delta.emitted_at_ms > 0);
     }
 
     #[test]
     fn test_enqueue_outbound_batch_returns_hydrated_messages_and_publishes_delta() {
-        use crate::conversation::types::{ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest};
+        use crate::conversation::types::{
+            ConversationSendPartContent, ConversationSendPartRequest, SendConversationBatchRequest,
+        };
 
         let harness = ServiceHarness::new();
         let mut delta_rx = harness.events.subscribe_delta();
@@ -4183,15 +4233,26 @@ mod group_member_import_events {
         let res = harness.service.enqueue_batch(&req).unwrap();
         assert_eq!(res.messages.len(), 1);
         let msg = &res.messages[0];
-        assert_eq!(msg.status, crate::conversation::types::MessageStatus::Queued);
+        assert_eq!(
+            msg.status,
+            crate::conversation::types::MessageStatus::Queued
+        );
         assert_eq!(msg.send_batch.as_ref().unwrap().send_batch_id, res.batch_id);
         assert_eq!(res.client_batch_id, "batch-hydrated-01");
 
         // Verify delta published
-        let delta = delta_rx.try_recv().expect("Expected delta for enqueued outbound batch");
+        let delta = delta_rx
+            .try_recv()
+            .expect("Expected delta for enqueued outbound batch");
         assert_eq!(delta.conversation_id, 1);
-        assert_eq!(delta.message.text_content.as_deref(), Some("Tin nhắn outbound hydrate"));
-        assert_eq!(delta.message.status, crate::conversation::types::MessageStatus::Queued);
+        assert_eq!(
+            delta.message.text_content.as_deref(),
+            Some("Tin nhắn outbound hydrate")
+        );
+        assert_eq!(
+            delta.message.status,
+            crate::conversation::types::MessageStatus::Queued
+        );
         assert!(inval_rx.try_recv().is_ok());
     }
 
@@ -4243,9 +4304,10 @@ mod group_member_import_events {
         }))
         .unwrap();
 
-        let event = zca_rs::listener::ListenerEvent::Message(Box::new(
-            zca_rs::models::Message::User(zca_rs::models::UserMessage::new("self-uid", raw_user_msg)),
-        ));
+        let event =
+            zca_rs::listener::ListenerEvent::Message(Box::new(zca_rs::models::Message::User(
+                zca_rs::models::UserMessage::new("self-uid", raw_user_msg),
+            )));
 
         harness
             .service
@@ -4253,10 +4315,15 @@ mod group_member_import_events {
             .unwrap();
 
         // 3. Verify delta was published on echo receipt
-        let delta = delta_rx.try_recv().expect("Expected delta event on echo arrival");
+        let delta = delta_rx
+            .try_recv()
+            .expect("Expected delta event on echo arrival");
         assert_eq!(delta.conversation_id, 1);
         assert_eq!(delta.channel, Channel::Zalo);
-        assert_eq!(delta.message.text_content.as_deref(), Some("Tin nhắn gửi qua zalo"));
+        assert_eq!(
+            delta.message.text_content.as_deref(),
+            Some("Tin nhắn gửi qua zalo")
+        );
     }
 
     #[test]
@@ -4289,9 +4356,10 @@ mod group_member_import_events {
             }))
             .unwrap();
 
-            let event = zca_rs::listener::ListenerEvent::Message(Box::new(
-                zca_rs::models::Message::User(zca_rs::models::UserMessage::new("self-uid", raw_msg)),
-            ));
+            let event =
+                zca_rs::listener::ListenerEvent::Message(Box::new(zca_rs::models::Message::User(
+                    zca_rs::models::UserMessage::new("self-uid", raw_msg),
+                )));
 
             harness
                 .service
@@ -4301,12 +4369,19 @@ mod group_member_import_events {
 
         // 2. Replay all 300 deltas from sequence 0
         let all_deltas = harness.service.resume_deltas(0, Some(500)).unwrap();
-        assert_eq!(all_deltas.len(), 300, "Must recover all 300 messages from SQLite change log");
+        assert_eq!(
+            all_deltas.len(),
+            300,
+            "Must recover all 300 messages from SQLite change log"
+        );
 
         // 3. Verify sequence monotonicity
         for (idx, delta) in all_deltas.iter().enumerate() {
             let expected_seq = (idx + 1) as u64;
-            assert_eq!(delta.sequence, expected_seq, "Sequence must be strictly monotonic and gapless");
+            assert_eq!(
+                delta.sequence, expected_seq,
+                "Sequence must be strictly monotonic and gapless"
+            );
             assert_eq!(
                 delta.message.text_content.as_deref(),
                 Some(format!("Burst message {}", idx + 1).as_str())
