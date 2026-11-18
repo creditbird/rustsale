@@ -21,6 +21,7 @@ use super::whatsapp::supervisor::WhatsAppSupervisor;
 use super::zalo::supervisor::ZaloSessionSupervisor;
 use std::sync::Arc;
 
+#[derive(Clone)]
 pub struct ConversationState {
     pub service: Arc<ConversationService>,
     pub zalo_supervisor: Arc<ZaloSessionSupervisor>,

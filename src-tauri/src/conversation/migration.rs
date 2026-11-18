@@ -1101,6 +1101,17 @@ fn merge_message(
          WHERE id = ?1",
         params![canonical_message_id, duplicate_message_id, merged_status],
     )?;
+    conn.execute(
+        "UPDATE OR IGNORE conversation_deltas
+         SET message_id = ?1,
+             conversation_id = (SELECT conversation_id FROM messages WHERE id = ?1)
+         WHERE message_id = ?2",
+        params![canonical_message_id, duplicate_message_id],
+    )?;
+    conn.execute(
+        "DELETE FROM conversation_deltas WHERE message_id = ?1",
+        [duplicate_message_id],
+    )?;
     conn.execute("DELETE FROM messages WHERE id = ?1", [duplicate_message_id])?;
     Ok(())
 }
@@ -1137,6 +1148,10 @@ fn merge_messages(
         } else {
             conn.execute(
                 "UPDATE messages SET conversation_id = ?1 WHERE id = ?2",
+                params![canonical_conversation_id, message.id],
+            )?;
+            conn.execute(
+                "UPDATE conversation_deltas SET conversation_id = ?1 WHERE message_id = ?2",
                 params![canonical_conversation_id, message.id],
             )?;
         }
@@ -1499,6 +1514,10 @@ fn merge_conversation(
     )?;
     merge_forward_targets(conn, canonical_conversation_id, duplicate_conversation_id)?;
     merge_pinned_messages(conn, canonical_conversation_id, duplicate_conversation_id)?;
+    conn.execute(
+        "DELETE FROM conversation_deltas WHERE conversation_id = ?1",
+        [duplicate_conversation_id],
+    )?;
     conn.execute(
         "DELETE FROM channel_conversations WHERE id = ?1",
         [duplicate_conversation_id],

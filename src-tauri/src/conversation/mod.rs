@@ -24,7 +24,7 @@ pub mod whatsapp;
 pub mod zalo;
 
 #[cfg(test)]
-mod commands_test;
+pub mod commands_test;
 #[cfg(test)]
 mod forwarding_test;
 #[cfg(test)]
