@@ -3226,6 +3226,22 @@ impl ConversationRepository {
         Ok(key)
     }
 
+    /// Channel account that owns a conversation; `None` if the conversation does not exist.
+    pub fn get_conversation_channel_account_id(
+        &self,
+        conversation_id: i64,
+    ) -> Result<Option<i64>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let id: Option<i64> = conn
+            .query_row(
+                "SELECT channel_account_id FROM channel_conversations WHERE id = ?1",
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
     pub fn get_channel_account_id(&self, provider_account_key: &str) -> Result<Option<i64>> {
         let conn = open_db_connection(&self.db_path)?;
         let id: Option<i64> = conn

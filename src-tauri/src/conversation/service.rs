@@ -690,9 +690,13 @@ impl ConversationService {
     pub fn enqueue_message(
         &self,
         request: &super::types::SendConversationMessageRequest,
-    ) -> Result<super::types::ConversationMessage> {
+    ) -> Result<super::types::ConversationMessage, super::error::ConversationError> {
+        use super::error::{ConversationError, ConversationErrorCode};
         if request.text.trim().is_empty() {
-            anyhow::bail!("message text must not be empty");
+            return Err(ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                "message text must not be empty",
+            ));
         }
         let batch_req = super::types::SendConversationBatchRequest {
             conversation_id: request.conversation_id,
@@ -707,10 +711,13 @@ impl ConversationService {
                 },
             }],
         };
-        let res = self
-            .enqueue_batch(&batch_req)
-            .map_err(|e| anyhow::anyhow!(e.message))?;
-        Ok(res.messages.into_iter().next().unwrap())
+        let res = self.enqueue_batch(&batch_req)?;
+        res.messages.into_iter().next().ok_or_else(|| {
+            ConversationError::new(
+                ConversationErrorCode::ProviderFailure,
+                "enqueue produced no message",
+            )
+        })
     }
 
     pub fn recover_startup(&self) -> Result<u64> {
