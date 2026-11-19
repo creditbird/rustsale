@@ -380,7 +380,7 @@ fn spawn_delivery(
 }
 
 /// Joins a batch into one payload; `None` for an empty batch.
-fn build_payload(
+pub(crate) fn build_payload(
     conversation_id: i64,
     messages: Vec<ZaloWebhookMessage>,
 ) -> Option<ZaloWebhookPayload> {

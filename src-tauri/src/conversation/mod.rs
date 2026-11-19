@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod caption;
 pub mod commands;
 pub mod deletion_sync;
 pub mod echo_cache;

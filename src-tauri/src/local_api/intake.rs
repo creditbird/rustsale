@@ -5,6 +5,7 @@ use base64::Engine;
 use serde::Serialize;
 
 use super::error::{ApiError, ApiResult};
+use crate::conversation::caption::text_or_caption;
 use crate::conversation::commands::ConversationState;
 use crate::conversation::types::{
     ConversationMessage, InboxItem, InboxItemKind, MessageDirection, MessageStatus,
@@ -142,11 +143,13 @@ fn compact_message(message: ConversationMessage) -> TimelineEntry {
     TimelineEntry {
         id: message.id,
         dir,
-        text: message
-            .text_content
-            .as_deref()
-            .filter(|t| !t.is_empty())
-            .map(|t| truncate(t, MESSAGE_CHARS)),
+        text: text_or_caption(
+            &message.content_type,
+            message.text_content.as_deref().filter(|t| !t.is_empty()),
+            &message.content,
+            MESSAGE_CHARS + 1,
+        )
+        .map(|t| truncate(&t, MESSAGE_CHARS)),
         at: message.occurred_at,
         att: message
             .attachments
@@ -233,4 +236,190 @@ pub fn send_message(
     state.zalo_supervisor.notify_outbox();
     state.whatsapp_supervisor.notify_outbox();
     Ok(message)
+}
+
+#[cfg(test)]
+mod compact_message_tests {
+    use super::*;
+    use crate::conversation::types::{Channel, ConversationMessageActions};
+    use serde_json::json;
+
+    fn message(kind: &str, text: Option<&str>, content: serde_json::Value) -> ConversationMessage {
+        ConversationMessage {
+            id: 1,
+            conversation_id: 2,
+            channel_account_id: 3,
+            channel: Channel::Zalo,
+            account_display_name: None,
+            sender_identity_id: None,
+            sender_external_id: None,
+            sender_display_name: None,
+            sender_avatar_url: None,
+            direction: MessageDirection::Inbound,
+            provider_message_id: None,
+            provider_client_message_id: None,
+            content_type: kind.to_string(),
+            text_content: text.map(str::to_string),
+            content,
+            occurred_at: "2026-11-19T09:42:00Z".to_string(),
+            status: MessageStatus::Received,
+            removed_at: None,
+            error_message: None,
+            reply_to_message_id: None,
+            attachments: Vec::new(),
+            reply_target: None,
+            reactions: Vec::new(),
+            batch_index: None,
+            send_batch: None,
+            mentions: Vec::new(),
+            actions: ConversationMessageActions::default(),
+        }
+    }
+
+    fn text_of(message: ConversationMessage) -> Option<String> {
+        compact_message(message).text
+    }
+
+    #[test]
+    fn image_caption_fills_empty_text() {
+        let m = message("image", None, json!({ "title": " cont này " }));
+        assert_eq!(text_of(m).as_deref(), Some("cont này"));
+        let m = message("image", Some(""), json!({ "title": "cap" }));
+        assert_eq!(text_of(m).as_deref(), Some("cap"));
+    }
+
+    #[test]
+    fn image_without_caption_has_no_text() {
+        assert_eq!(text_of(message("image", None, json!({}))), None);
+        assert_eq!(
+            text_of(message("image", None, json!({ "title": " " }))),
+            None
+        );
+    }
+
+    #[test]
+    fn plain_text_is_unchanged() {
+        let m = message("text", Some("xin chào"), json!({ "title": "ignored" }));
+        assert_eq!(text_of(m).as_deref(), Some("xin chào"));
+    }
+
+    #[test]
+    fn video_caption_is_used() {
+        let m = message("video", None, json!({ "title": "clip" }));
+        assert_eq!(text_of(m).as_deref(), Some("clip"));
+    }
+
+    #[test]
+    fn unsupported_title_is_not_used() {
+        let m = message(
+            "unsupported",
+            None,
+            json!({ "title": "https://example.test" }),
+        );
+        assert_eq!(text_of(m), None);
+    }
+
+    #[test]
+    fn long_caption_is_truncated_with_ellipsis() {
+        let m = message(
+            "image",
+            None,
+            json!({ "title": "a".repeat(MESSAGE_CHARS + 10) }),
+        );
+        let text = text_of(m).unwrap_or_default();
+        assert_eq!(text.chars().count(), MESSAGE_CHARS + 1);
+        assert!(text.ends_with('…'));
+    }
+
+    #[test]
+    fn json_shape_is_unchanged() {
+        let mut m = message("image", None, json!({ "title": "cap" }));
+        m.attachments
+            .push(crate::conversation::types::ConversationAttachment {
+                id: 9,
+                media_type: "image".to_string(),
+                mime_type: "image/jpeg".to_string(),
+                file_name: None,
+                size_bytes: None,
+                local_path: None,
+                remote_url: None,
+                thumbnail_url: None,
+                width: None,
+                height: None,
+                duration_seconds: None,
+            });
+        let value = serde_json::to_value(compact_message(m)).unwrap_or_default();
+        let mut keys: Vec<_> = value
+            .as_object()
+            .map(|o| o.keys().cloned().collect())
+            .unwrap_or_default();
+        keys.sort();
+        assert_eq!(keys, ["at", "att", "dir", "id", "text"]);
+        assert_eq!(value["att"], json!(["image"]));
+    }
+}
+
+/// Manual check against a COPY of `rustsale.db` (never the live file):
+/// `RUSTSALE_CAPTION_CHECK_DB=/tmp/copy/rustsale.db RUSTSALE_CAPTION_CHECK_IDS=92836,92842 \
+///  RUSTSALE_CAPTION_CHECK_CONV=2250596 cargo test --lib caption_check_on_db_copy -- --ignored --nocapture`
+#[cfg(test)]
+mod db_copy_check {
+    use super::*;
+    use crate::conversation::repository::ConversationRepository;
+    use crate::conversation::zalo::webhook::{build_payload, ZaloWebhookMessage};
+
+    #[test]
+    #[ignore = "needs RUSTSALE_CAPTION_CHECK_DB pointing at a copy of rustsale.db"]
+    fn caption_check_on_db_copy() {
+        let (Ok(path), Ok(ids), Ok(conv)) = (
+            std::env::var("RUSTSALE_CAPTION_CHECK_DB"),
+            std::env::var("RUSTSALE_CAPTION_CHECK_IDS"),
+            std::env::var("RUSTSALE_CAPTION_CHECK_CONV"),
+        ) else {
+            panic!("set RUSTSALE_CAPTION_CHECK_DB, _IDS and _CONV");
+        };
+        let live = std::env::var("HOME")
+            .map(|home| format!("{home}/.local/share/com.rustsale.crm"))
+            .unwrap_or_default();
+        assert!(
+            !path.starts_with(&live),
+            "refusing to open the live database; pass a copy"
+        );
+        let wanted: Vec<i64> = ids
+            .split(',')
+            .filter_map(|v| v.trim().parse().ok())
+            .collect();
+        let conversation_id: i64 = conv.trim().parse().expect("numeric conversation id");
+        let repository = ConversationRepository::new(path);
+        let page = repository
+            .get_conversation_timeline(conversation_id, None, 500)
+            .expect("timeline");
+        let mut found = 0;
+        for message in page.items.into_iter().filter(|m| wanted.contains(&m.id)) {
+            found += 1;
+            let webhook = ZaloWebhookMessage {
+                conversation_id,
+                channel_account_id: message.channel_account_id,
+                sender_uid: None,
+                sender_name: None,
+                content_type: message.content_type.clone(),
+                text: crate::conversation::caption::text_or_caption(
+                    &message.content_type,
+                    message.text_content.as_deref(),
+                    &message.content,
+                    2000,
+                ),
+                ts: message.occurred_at.clone(),
+                is_group: false,
+            };
+            let webhook_text = build_payload(conversation_id, vec![webhook])
+                .map(|p| p.text)
+                .unwrap_or_default();
+            let id = message.id;
+            let kind = message.content_type.clone();
+            let timeline = compact_message(message).text;
+            println!("id={id} type={kind}\n  webhook : {webhook_text}\n  timeline: {timeline:?}");
+        }
+        assert_eq!(found, wanted.len(), "not every requested id was found");
+    }
 }

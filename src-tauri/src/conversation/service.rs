@@ -48,6 +48,9 @@ pub struct PreparedRecall {
     pub provider_client_message_id: String,
 }
 
+/// Mirrors the webhook's per-message character limit.
+const WEBHOOK_TEXT_MAX_CHARS: usize = 2000;
+
 fn zalo_webhook_message(
     message: &crate::conversation::repository::NormalizedMessage,
     conversation_id: i64,
@@ -61,7 +64,12 @@ fn zalo_webhook_message(
         sender_uid: sender.map(|identity| identity.external_id.clone()),
         sender_name: sender.and_then(|identity| identity.display_name.clone()),
         content_type: message.content_type.clone(),
-        text: message.text_content.clone(),
+        text: super::caption::text_or_caption(
+            &message.content_type,
+            message.text_content.as_deref(),
+            &message.content,
+            WEBHOOK_TEXT_MAX_CHARS,
+        ),
         ts: message
             .provider_timestamp
             .clone()
@@ -2515,5 +2523,77 @@ impl ConversationService {
         conversation_id: i64,
     ) -> Result<Vec<crate::conversation::types::PinnedMessage>> {
         Ok(self.repository.list_pinned_messages(conversation_id)?)
+    }
+}
+
+#[cfg(test)]
+mod webhook_caption_tests {
+    use super::*;
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::repository::NormalizedMessage;
+    use crate::conversation::zalo::webhook::build_payload;
+    use serde_json::json;
+
+    fn message(kind: &str, text: Option<&str>, content: serde_json::Value) -> NormalizedMessage {
+        let mut message = direct_message("acc", "m1");
+        message.content_type = kind.to_string();
+        message.text_content = text.map(str::to_string);
+        message.content = content;
+        message
+    }
+
+    fn payload_text(message: &NormalizedMessage) -> String {
+        let webhook = zalo_webhook_message(message, 7, 1, false);
+        build_payload(7, vec![webhook])
+            .map(|p| p.text)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn image_with_caption_sends_type_and_caption() {
+        let m = message("image", None, json!({ "title": " TGBU4673319 cont này " }));
+        assert_eq!(payload_text(&m), "[image] TGBU4673319 cont này");
+    }
+
+    #[test]
+    fn image_without_caption_stays_placeholder() {
+        assert_eq!(payload_text(&message("image", None, json!({}))), "[image]");
+        assert_eq!(
+            payload_text(&message("image", None, json!({ "title": "  " }))),
+            "[image]"
+        );
+    }
+
+    #[test]
+    fn plain_text_is_unchanged() {
+        let m = message("text", Some("xin chào"), json!({ "title": "ignored" }));
+        assert_eq!(payload_text(&m), "xin chào");
+    }
+
+    #[test]
+    fn video_with_caption_sends_type_and_caption() {
+        let m = message("video", None, json!({ "title": "clip" }));
+        assert_eq!(payload_text(&m), "[video] clip");
+    }
+
+    #[test]
+    fn unsupported_title_is_not_used() {
+        let m = message(
+            "unsupported",
+            None,
+            json!({ "title": "https://example.test" }),
+        );
+        assert_eq!(payload_text(&m), "[unsupported]");
+    }
+
+    #[test]
+    fn long_caption_is_cut_to_the_webhook_limit() {
+        let long = "a".repeat(WEBHOOK_TEXT_MAX_CHARS + 50);
+        let m = message("image", None, json!({ "title": long }));
+        let text = payload_text(&m);
+        assert_eq!(
+            text.chars().count(),
+            "[image] ".chars().count() + WEBHOOK_TEXT_MAX_CHARS
+        );
     }
 }
