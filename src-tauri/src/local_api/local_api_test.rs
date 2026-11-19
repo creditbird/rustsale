@@ -6,6 +6,7 @@ use http_body_util::BodyExt;
 use serde_json::Value;
 use tower::ServiceExt;
 
+use super::attachment::MediaFetcher;
 use super::clients::{sha256, ClientStore};
 use super::handlers::ApiState;
 use super::rate_limit::RateLimiter;
@@ -65,6 +66,8 @@ fn build_harness() -> Harness {
         conversation: Arc::new(conv_state),
         clients: Arc::new(ClientStore::new(Some(clients_file.clone()), Some(TOKEN))),
         limiter: Arc::new(RateLimiter::default()),
+        // Loopback is allowed so tests can serve attachments from a fake CDN.
+        media: Arc::new(MediaFetcher::new(true, FAKE_LIMIT)),
     };
     let router = build_router(api_state);
     Harness {
@@ -438,7 +441,13 @@ async fn mcp_protocol_basics() {
         .collect();
     assert_eq!(
         names,
-        ["inbox_unread", "read_timeline", "mark_read", "send_message"]
+        [
+            "inbox_unread",
+            "read_timeline",
+            "mark_read",
+            "send_message",
+            "read_attachment"
+        ]
     );
 
     let (_, body) = mcp(
@@ -592,4 +601,358 @@ fn conversation_errors_map_to_http_status() {
     let internal = map(C::ProviderFailure);
     assert_eq!(internal.status, StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(internal.message, "internal error");
+}
+
+// ---- read_attachment -------------------------------------------------------------------
+
+const FAKE_LIMIT: u64 = 1024;
+/// Tiny PNG.
+const PNG: &[u8] = &[
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+    0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00, 0x00, 0x1f, 0x15, 0xc4,
+    0x89, 0x00, 0x00, 0x00, 0x0d, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0x00, 0x01, 0x00, 0x00,
+    0x05, 0x00, 0x01, 0x0d, 0x0a, 0x2d, 0xb4, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae,
+    0x42, 0x60, 0x82,
+];
+
+/// Fake CDN on a random loopback port; returns its base URL (`http://127.0.0.1:port`).
+async fn fake_cdn() -> String {
+    use axum::http::header::CONTENT_TYPE;
+    use axum::routing::get;
+    let app = axum::Router::new()
+        .route(
+            "/ok.png",
+            get(|| async { ([(CONTENT_TYPE, "image/png")], PNG.to_vec()) }),
+        )
+        .route("/gone.png", get(|| async { StatusCode::NOT_FOUND }))
+        .route("/denied.png", get(|| async { StatusCode::FORBIDDEN }))
+        .route(
+            "/boom.png",
+            get(|| async { StatusCode::INTERNAL_SERVER_ERROR }),
+        )
+        .route(
+            "/huge.png",
+            get(|| async { ([(CONTENT_TYPE, "image/png")], vec![7u8; 2048]) }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let _ = axum::serve(listener, app).await;
+    });
+    format!("http://{addr}")
+}
+
+fn attachment(
+    media_type: &str,
+    remote_url: Option<String>,
+    thumbnail_url: Option<String>,
+    size_bytes: Option<u64>,
+) -> crate::conversation::repository::NormalizedAttachment {
+    crate::conversation::repository::NormalizedAttachment {
+        provider_attachment_id: None,
+        media_type: media_type.to_string(),
+        mime_type: if media_type == "image" {
+            "image/png".to_string()
+        } else {
+            "application/pdf".to_string()
+        },
+        file_name: None,
+        size_bytes,
+        remote_url,
+        thumbnail_url,
+        metadata_json: Some(serde_json::json!({})),
+    }
+}
+
+/// Stores one inbound message with one attachment; returns (conversation id, attachment id).
+fn seed(
+    harness: &Harness,
+    key: &str,
+    attachment: crate::conversation::repository::NormalizedAttachment,
+) -> (i64, i64) {
+    let mut message = direct_message("imei-local-api", key);
+    message.content_type = "image".to_string();
+    message.attachments = vec![attachment];
+    let applied = harness
+        ._service_harness
+        .repository
+        .apply_normalized_message(&message)
+        .unwrap();
+    let refs = harness
+        ._service_harness
+        .repository
+        .list_message_attachment_refs(applied.message_id)
+        .unwrap();
+    assert_eq!(refs.len(), 1);
+    (applied.conversation_id, refs[0].0)
+}
+
+async fn mcp_read_attachment(harness: &Harness, token: &str, id: i64) -> Value {
+    let (status, body) = mcp(
+        &harness.router,
+        token,
+        serde_json::json!({"jsonrpc":"2.0","id":9,"method":"tools/call",
+            "params":{"name":"read_attachment","arguments":{"attachment_id": id}}}),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    body
+}
+
+#[tokio::test]
+async fn compact_timeline_lists_attachment_ids_and_keeps_legacy_att() {
+    let harness = build_harness();
+    let (conversation, attachment_id) = seed(
+        &harness,
+        "m-ids",
+        attachment(
+            "image",
+            Some("https://cdn.example/a.png".into()),
+            None,
+            None,
+        ),
+    );
+    let (status, body) = send(
+        &harness.router,
+        "GET",
+        &format!("/api/conversations/{conversation}/timeline?view=compact"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let item = &body["items"][0];
+    assert_eq!(item["att"], serde_json::json!(["image"]));
+    assert_eq!(
+        item["atts"],
+        serde_json::json!([{"id": attachment_id, "kind": "image", "mime": "image/png"}])
+    );
+    assert!(
+        !body.to_string().contains("cdn.example"),
+        "compact timeline must not expose provider URLs"
+    );
+}
+
+#[tokio::test]
+async fn read_attachment_over_mcp_returns_the_image_as_base64() {
+    use base64::Engine as _;
+    let cdn = fake_cdn().await;
+    let harness = build_harness();
+    let (_, id) = seed(
+        &harness,
+        "m-ok",
+        attachment("image", Some(format!("{cdn}/ok.png")), None, None),
+    );
+    let body = mcp_read_attachment(&harness, TOKEN, id).await;
+    let content = &body["result"]["content"][0];
+    assert_eq!(content["type"], "image");
+    assert_eq!(content["mimeType"], "image/png");
+    assert_eq!(
+        content["data"],
+        base64::engine::general_purpose::STANDARD.encode(PNG)
+    );
+    assert!(body["result"].get("isError").is_none());
+}
+
+#[tokio::test]
+async fn read_attachment_over_rest_returns_raw_bytes_with_mime() {
+    let cdn = fake_cdn().await;
+    let harness = build_harness();
+    let (_, id) = seed(
+        &harness,
+        "m-rest",
+        attachment("image", Some(format!("{cdn}/ok.png")), None, None),
+    );
+    let request = Request::builder()
+        .uri(format!("/api/attachments/{id}"))
+        .header("authorization", format!("Bearer {TOKEN}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = harness.router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "image/png");
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    assert_eq!(bytes.as_ref(), PNG);
+}
+
+#[tokio::test]
+async fn read_attachment_uses_inline_thumbnail_when_there_is_no_remote_url() {
+    use base64::Engine as _;
+    let harness = build_harness();
+    let data_url = format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(PNG)
+    );
+    let (_, id) = seed(
+        &harness,
+        "m-thumb",
+        attachment("image", None, Some(data_url), None),
+    );
+    let body = mcp_read_attachment(&harness, TOKEN, id).await;
+    assert_eq!(body["result"]["content"][0]["type"], "image");
+    assert_eq!(
+        body["result"]["content"][0]["data"],
+        base64::engine::general_purpose::STANDARD.encode(PNG)
+    );
+}
+
+#[tokio::test]
+async fn expired_cdn_links_report_link_expired_without_leaking_the_url() {
+    let cdn = fake_cdn().await;
+    let harness = build_harness();
+    for (key, path) in [("m-404", "gone.png"), ("m-403", "denied.png")] {
+        let url = format!("{cdn}/{path}");
+        let (_, id) = seed(
+            &harness,
+            key,
+            attachment("image", Some(url.clone()), None, None),
+        );
+        let body = mcp_read_attachment(&harness, TOKEN, id).await;
+        assert_eq!(body["result"]["isError"], true);
+        let error = tool_payload(&body);
+        assert_eq!(error["code"], "LINK_EXPIRED");
+        assert!(!error.to_string().contains(&url));
+
+        let (status, rest) = send(
+            &harness.router,
+            "GET",
+            &format!("/api/attachments/{id}"),
+            Some(TOKEN),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::GONE);
+        assert_eq!(rest["code"], "LINK_EXPIRED");
+    }
+}
+
+#[tokio::test]
+async fn cdn_server_error_reports_download_failed() {
+    let cdn = fake_cdn().await;
+    let harness = build_harness();
+    let (_, id) = seed(
+        &harness,
+        "m-500",
+        attachment("image", Some(format!("{cdn}/boom.png")), None, None),
+    );
+    let error = tool_payload(&mcp_read_attachment(&harness, TOKEN, id).await);
+    assert_eq!(error["code"], "DOWNLOAD_FAILED");
+    let (status, _) = send(
+        &harness.router,
+        "GET",
+        &format!("/api/attachments/{id}"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
+}
+
+#[tokio::test]
+async fn attachment_without_any_source_reports_download_failed() {
+    let harness = build_harness();
+    let (_, id) = seed(&harness, "m-nosrc", attachment("image", None, None, None));
+    let error = tool_payload(&mcp_read_attachment(&harness, TOKEN, id).await);
+    assert_eq!(error["code"], "DOWNLOAD_FAILED");
+}
+
+#[tokio::test]
+async fn non_image_attachment_reports_unsupported_kind() {
+    let harness = build_harness();
+    let (_, id) = seed(
+        &harness,
+        "m-file",
+        attachment("file", Some("https://cdn.example/x.pdf".into()), None, None),
+    );
+    let error = tool_payload(&mcp_read_attachment(&harness, TOKEN, id).await);
+    assert_eq!(error["code"], "UNSUPPORTED_KIND");
+    let (status, _) = send(
+        &harness.router,
+        "GET",
+        &format!("/api/attachments/{id}"),
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNSUPPORTED_MEDIA_TYPE);
+}
+
+#[tokio::test]
+async fn unknown_attachment_id_reports_attachment_not_found() {
+    let harness = build_harness();
+    let error = tool_payload(&mcp_read_attachment(&harness, TOKEN, 987_654).await);
+    assert_eq!(error["code"], "ATTACHMENT_NOT_FOUND");
+    let (status, body) = send(
+        &harness.router,
+        "GET",
+        "/api/attachments/987654",
+        Some(TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(body["code"], "ATTACHMENT_NOT_FOUND");
+}
+
+#[tokio::test]
+async fn oversized_attachment_reports_too_large_declared_or_streamed() {
+    let cdn = fake_cdn().await;
+    let harness = build_harness();
+    // Declared size already over the limit: rejected before any download.
+    let (_, declared) = seed(
+        &harness,
+        "m-big-declared",
+        attachment(
+            "image",
+            Some(format!("{cdn}/ok.png")),
+            None,
+            Some(FAKE_LIMIT + 1),
+        ),
+    );
+    // Declared size lies (None): the body itself is over the limit.
+    let (_, streamed) = seed(
+        &harness,
+        "m-big-streamed",
+        attachment("image", Some(format!("{cdn}/huge.png")), None, None),
+    );
+    for id in [declared, streamed] {
+        let error = tool_payload(&mcp_read_attachment(&harness, TOKEN, id).await);
+        assert_eq!(error["code"], "TOO_LARGE");
+        let (status, _) = send(
+            &harness.router,
+            "GET",
+            &format!("/api/attachments/{id}"),
+            Some(TOKEN),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+}
+
+#[tokio::test]
+async fn read_attachment_needs_the_timeline_scope() {
+    let harness = build_harness();
+    let (_, id) = seed(&harness, "m-scope", attachment("image", None, None, None));
+    let (status, body) = send(
+        &harness.router,
+        "GET",
+        &format!("/api/attachments/{id}"),
+        Some(READER_TOKEN),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "forbidden");
+    let body = mcp_read_attachment(&harness, READER_TOKEN, id).await;
+    assert_eq!(body["result"]["isError"], true);
+    assert_eq!(tool_payload(&body)["code"], "forbidden");
+}
+
+#[tokio::test]
+async fn private_hosts_are_not_fetched_in_production_mode() {
+    let cdn = fake_cdn().await;
+    let strict = MediaFetcher::new(false, FAKE_LIMIT);
+    let outcome = strict.fetch(&format!("{cdn}/ok.png")).await;
+    assert_eq!(outcome.err().map(|e| e.code), Some("DOWNLOAD_FAILED"));
 }

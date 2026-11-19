@@ -4,11 +4,12 @@
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Deserialize;
 
+use super::attachment::{self, MediaFetcher};
 use super::clients::ClientStore;
 use super::error::{ApiError, ApiResult};
 use super::intake;
@@ -24,6 +25,7 @@ pub struct ApiState {
     pub conversation: Arc<ConversationState>,
     pub clients: Arc<ClientStore>,
     pub limiter: Arc<RateLimiter>,
+    pub media: Arc<MediaFetcher>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -117,4 +119,13 @@ pub async fn send_message(
         body.reply_to_message_id,
     )?;
     Ok((StatusCode::CREATED, Json(message)).into_response())
+}
+
+/// Raw bytes of one image attachment (same scope and limits as the timeline).
+pub async fn get_attachment(
+    State(state): State<ApiState>,
+    Path(attachment_id): Path<i64>,
+) -> ApiResult<Response> {
+    let image = attachment::read_image(&state.conversation, &state.media, attachment_id).await?;
+    Ok(([(header::CONTENT_TYPE, image.mime)], image.bytes).into_response())
 }

@@ -19,9 +19,12 @@ Per client, fixed 1-minute window: 60 requests, 10 sends. Over budget → `429` 
 | Method | Path | Scope | Notes |
 |---|---|---|---|
 | GET | `/api/inbox[?view=compact&limit=20]` | inbox | compact: unread private chats `{id,name,unread,preview,channelAccountId,at}`; limit ≤ 50 |
-| GET | `/api/conversations/{id}/timeline[?view=compact&limit=10&before=]` | timeline | compact: `{items:[{id,dir,text,at,att?,st?}],next}`, oldest first, limit ≤ 50, `before` = `next`. Full view: limit ≤ 100, `before` = JSON cursor |
+| GET | `/api/conversations/{id}/timeline[?view=compact&limit=10&before=]` | timeline | compact: `{items:[{id,dir,text,at,att?,atts?,st?}],next}`, oldest first, limit ≤ 50, `before` = `next`. Full view: limit ≤ 100, `before` = JSON cursor |
+| GET | `/api/attachments/{id}` | timeline | raw bytes of one **image** attachment, `Content-Type` = detected image MIME; limit 8 MiB. Errors: see below |
 | POST | `/api/conversations/{id}/read` | read | `{rowsMarked}` |
 | POST | `/api/conversations/{id}/messages` | send | body `{text, channelAccountId?, replyToMessageId?}`; text 1..2000 chars; account inferred if omitted, mismatch → 400. `201` + message |
+
+`att` (legacy) lists attachment kinds, e.g. `["image"]`. `atts` lists the same attachments as `[{id,kind,mime?}]`; `id` is the `attachment_id` for `read_attachment`. Neither exposes provider URLs.
 
 Without `view=compact` the responses keep the original full shape.
 
@@ -36,6 +39,21 @@ Tool failures come back as `result.isError: true` with text `{"code","message"}`
 | `read_timeline` | `id, limit?, before?` | timeline | same as compact timeline |
 | `mark_read` | `id` | read | `{ok, marked}` |
 | `send_message` | `id, text, replyTo?` | send | `{ok, id, status:"queued"}` |
+| `read_attachment` | `attachment_id` | timeline | MCP image block `{"type":"image","data":<base64>,"mimeType":"image/jpeg"}`; same limits as REST. Counts against the timeline budget |
+
+### `read_attachment` / `GET /api/attachments/{id}` errors
+Bytes come from the stored local file, else the provider URL (http/https, public hosts only, no redirects, 15 s), else an inline thumbnail. URLs and paths are never returned.
+
+| `code` | HTTP | When |
+|---|---|---|
+| `ATTACHMENT_NOT_FOUND` | 404 | unknown attachment id |
+| `UNSUPPORTED_KIND` | 415 | not an image (file, video, voice, sticker…) |
+| `LINK_EXPIRED` | 410 | provider answered 401/403/404/410 — ask the customer to resend |
+| `DOWNLOAD_FAILED` | 502 | network error, provider 5xx, no usable source, not an image, private host |
+| `TOO_LARGE` | 413 | declared or actual size > 8 MiB |
+
+## Zalo webhook payload
+Besides the text fields, each POST carries `attachments: [{messageId, attachmentId, kind}]` for every message of the batch (empty when none). Pass `attachmentId` to `read_attachment`. No provider URL is ever included.
 
 ## Status codes
 | Code | When |

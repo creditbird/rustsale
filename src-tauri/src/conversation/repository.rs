@@ -142,6 +142,18 @@ pub struct GroupMemberLeadImportResult {
     pub assigned_category_ids: Vec<i32>,
 }
 
+/// Stored location of one attachment (never serialized to API clients).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentSource {
+    pub id: i64,
+    pub media_type: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub local_path: Option<String>,
+    pub remote_url: Option<String>,
+    pub thumbnail_url: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct NormalizedAttachment {
     pub provider_attachment_id: Option<String>,
@@ -3232,6 +3244,42 @@ impl ConversationRepository {
             )
             .optional()?;
         Ok(id)
+    }
+
+    /// `(attachment id, media type)` of a message's attachments, oldest first.
+    pub fn list_message_attachment_refs(&self, message_id: i64) -> Result<Vec<(i64, String)>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, attachment_type FROM message_attachments WHERE message_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([message_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+    }
+
+    /// Where the bytes of one attachment can be read from; `None` if the id is unknown.
+    pub fn get_attachment_source(&self, attachment_id: i64) -> Result<Option<AttachmentSource>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let source = conn
+            .query_row(
+                "SELECT id, attachment_type, mime_type, size_bytes, local_path, remote_url, thumbnail_url
+                 FROM message_attachments WHERE id = ?1",
+                [attachment_id],
+                |row| {
+                    Ok(AttachmentSource {
+                        id: row.get(0)?,
+                        media_type: row.get(1)?,
+                        mime_type: row.get(2)?,
+                        size_bytes: row
+                            .get::<_, Option<i64>>(3)?
+                            .and_then(|v| u64::try_from(v).ok()),
+                        local_path: row.get(4)?,
+                        remote_url: row.get(5)?,
+                        thumbnail_url: row.get(6)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(source)
     }
 
     pub fn get_channel_account_id(&self, provider_account_key: &str) -> Result<Option<i64>> {

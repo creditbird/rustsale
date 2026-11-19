@@ -8,7 +8,7 @@ use super::repository::{
 use super::types::{Channel, ConversationRuntimeStatus, InboxItem, TimelineCursor, TimelinePage};
 use crate::conversation::outreach::AppliedOutreachMessage;
 use crate::conversation::zalo::normalizer::{NormalizedGroupSnapshot, ZaloMutation};
-use crate::conversation::zalo::webhook::{ZaloWebhook, ZaloWebhookMessage};
+use crate::conversation::zalo::webhook::{WebhookAttachment, ZaloWebhook, ZaloWebhookMessage};
 use crate::conversation::zalo::{
     DIRECT_MESSAGE_WATERMARK_SCOPE, DIRECT_REACTION_WATERMARK_SCOPE, GROUP_MESSAGE_WATERMARK_SCOPE,
     GROUP_REACTION_WATERMARK_SCOPE,
@@ -51,11 +51,34 @@ pub struct PreparedRecall {
 /// Mirrors the webhook's per-message character limit.
 const WEBHOOK_TEXT_MAX_CHARS: usize = 2000;
 
+/// Ids of the attachments stored for a message. A lookup failure only loses the references:
+/// the notification itself must still go out, so it is logged and treated as "none".
+fn webhook_attachments(
+    repository: &ConversationRepository,
+    message_id: i64,
+) -> Vec<WebhookAttachment> {
+    match repository.list_message_attachment_refs(message_id) {
+        Ok(refs) => refs
+            .into_iter()
+            .map(|(attachment_id, kind)| WebhookAttachment {
+                message_id,
+                attachment_id,
+                kind,
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(message_id, %error, "zalo.webhook.attachment_refs_unavailable");
+            Vec::new()
+        }
+    }
+}
+
 fn zalo_webhook_message(
     message: &crate::conversation::repository::NormalizedMessage,
     conversation_id: i64,
     channel_account_id: i64,
     is_group: bool,
+    attachments: Vec<WebhookAttachment>,
 ) -> ZaloWebhookMessage {
     let sender = message.participant.as_ref();
     ZaloWebhookMessage {
@@ -75,6 +98,7 @@ fn zalo_webhook_message(
             .clone()
             .unwrap_or_else(|| message.ingested_at.clone()),
         is_group,
+        attachments,
     }
 }
 
@@ -503,6 +527,7 @@ impl ConversationService {
                                 applied.conversation_id,
                                 applied.channel_account_id,
                                 is_group,
+                                webhook_attachments(&self.repository, applied.message_id),
                             ));
                         }
                         if let Some(delta) = &applied.delta_event {
@@ -2543,7 +2568,7 @@ mod webhook_caption_tests {
     }
 
     fn payload_text(message: &NormalizedMessage) -> String {
-        let webhook = zalo_webhook_message(message, 7, 1, false);
+        let webhook = zalo_webhook_message(message, 7, 1, false, Vec::new());
         build_payload(7, vec![webhook])
             .map(|p| p.text)
             .unwrap_or_default()
@@ -2595,5 +2620,42 @@ mod webhook_caption_tests {
             text.chars().count(),
             "[image] ".chars().count() + WEBHOOK_TEXT_MAX_CHARS
         );
+    }
+
+    #[test]
+    fn stored_attachments_become_webhook_references_with_their_database_ids() {
+        use crate::conversation::commands_test::ServiceHarness;
+        use crate::conversation::repository::NormalizedAttachment;
+        let attachment = |kind: &str| NormalizedAttachment {
+            provider_attachment_id: None,
+            media_type: kind.to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            file_name: None,
+            size_bytes: None,
+            remote_url: Some(format!("https://cdn.example/secret-token-{kind}")),
+            thumbnail_url: None,
+            metadata_json: Some(serde_json::json!({})),
+        };
+        let harness = ServiceHarness::new();
+        let mut message = direct_message("acc", "m-att");
+        message.content_type = "image".to_string();
+        message.attachments = vec![attachment("image"), attachment("file")];
+        let applied = harness
+            .repository
+            .apply_normalized_message(&message)
+            .expect("stored");
+
+        let refs = webhook_attachments(&harness.repository, applied.message_id);
+        let stored = harness
+            .repository
+            .list_message_attachment_refs(applied.message_id)
+            .expect("listed");
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].kind, "image");
+        assert_eq!(refs[1].kind, "file");
+        assert_eq!(refs[0].attachment_id, stored[0].0);
+        assert_eq!(refs[1].attachment_id, stored[1].0);
+        assert!(refs.iter().all(|r| r.message_id == applied.message_id));
+        assert_ne!(refs[0].attachment_id, refs[1].attachment_id);
     }
 }

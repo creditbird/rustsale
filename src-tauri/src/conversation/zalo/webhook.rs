@@ -98,6 +98,17 @@ pub struct ZaloWebhookMessage {
     /// RFC 3339 timestamp of the message.
     pub ts: String,
     pub is_group: bool,
+    /// Stored attachments of this message (ids only; never provider URLs).
+    pub attachments: Vec<WebhookAttachment>,
+}
+
+/// Reference to a stored attachment, readable through the local API `read_attachment`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookAttachment {
+    pub message_id: i64,
+    pub attachment_id: i64,
+    pub kind: String,
 }
 
 /// JSON body of one POST. Field names are part of the receiver contract.
@@ -116,6 +127,8 @@ pub struct ZaloWebhookPayload {
     pub ts: String,
     pub is_group: bool,
     pub message_count: usize,
+    /// Attachments of every message in the batch, in message order.
+    pub attachments: Vec<WebhookAttachment>,
     /// Always `false`; reserved so receivers can tell real sends from probes.
     pub test: bool,
 }
@@ -391,6 +404,10 @@ pub(crate) fn build_payload(
     let sender_name = last.sender_name.clone();
     let ts = last.ts.clone();
     let is_group = last.is_group;
+    let attachments = messages
+        .iter()
+        .flat_map(|message| message.attachments.iter().cloned())
+        .collect();
     let text = messages
         .iter()
         .map(message_line)
@@ -405,6 +422,7 @@ pub(crate) fn build_payload(
         ts,
         is_group,
         message_count,
+        attachments,
         test: false,
     })
 }
@@ -526,6 +544,7 @@ mod tests {
             text: text.map(str::to_string),
             ts: "2026-11-18T10:00:00+00:00".into(),
             is_group: false,
+            attachments: Vec::new(),
         }
     }
 
@@ -535,6 +554,47 @@ mod tests {
         assert_eq!(message_line(&message("sticker", None)), "[sticker]");
         assert_eq!(message_line(&message("image", Some("ảnh"))), "[image] ảnh");
         assert_eq!(message_line(&message("text", Some(" hi "))), "hi");
+    }
+
+    #[test]
+    fn payload_lists_attachment_ids_of_every_message_without_urls() {
+        let mut first = message("image", Some("cont này"));
+        first.attachments = vec![WebhookAttachment {
+            message_id: 11,
+            attachment_id: 21,
+            kind: "image".into(),
+        }];
+        let mut second = message("image", None);
+        second.attachments = vec![
+            WebhookAttachment {
+                message_id: 12,
+                attachment_id: 22,
+                kind: "image".into(),
+            },
+            WebhookAttachment {
+                message_id: 12,
+                attachment_id: 23,
+                kind: "file".into(),
+            },
+        ];
+        let payload = build_payload(7, vec![first, second]).expect("non-empty batch");
+        let value = serde_json::to_value(&payload).expect("serializes");
+        assert_eq!(
+            value["attachments"],
+            serde_json::json!([
+                {"messageId": 11, "attachmentId": 21, "kind": "image"},
+                {"messageId": 12, "attachmentId": 22, "kind": "image"},
+                {"messageId": 12, "attachmentId": 23, "kind": "file"},
+            ])
+        );
+        assert!(!value.to_string().contains("http"));
+    }
+
+    #[test]
+    fn payload_without_attachments_has_an_empty_list() {
+        let payload = build_payload(7, vec![message("text", Some("hi"))]).expect("non-empty batch");
+        let value = serde_json::to_value(&payload).expect("serializes");
+        assert_eq!(value["attachments"], serde_json::json!([]));
     }
 
     #[test]

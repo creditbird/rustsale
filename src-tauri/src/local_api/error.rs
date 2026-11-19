@@ -39,6 +39,38 @@ impl ApiError {
     pub fn forbidden(message: impl Into<String>) -> Self {
         Self::new(StatusCode::FORBIDDEN, "forbidden", message)
     }
+    /// Attachment kinds, ids and sources the bot can reason about (`read_attachment`).
+    pub fn attachment_not_found() -> Self {
+        Self::new(
+            StatusCode::NOT_FOUND,
+            "ATTACHMENT_NOT_FOUND",
+            "attachment not found",
+        )
+    }
+    pub fn unsupported_kind(kind: &str) -> Self {
+        Self::new(
+            StatusCode::UNSUPPORTED_MEDIA_TYPE,
+            "UNSUPPORTED_KIND",
+            format!("only image attachments can be read (this one is '{kind}')"),
+        )
+    }
+    pub fn link_expired() -> Self {
+        Self::new(
+            StatusCode::GONE,
+            "LINK_EXPIRED",
+            "the provider no longer serves this attachment (link expired)",
+        )
+    }
+    pub fn download_failed(reason: &'static str) -> Self {
+        Self::new(StatusCode::BAD_GATEWAY, "DOWNLOAD_FAILED", reason)
+    }
+    pub fn too_large(max_bytes: u64) -> Self {
+        Self::new(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "TOO_LARGE",
+            format!("attachment is larger than {max_bytes} bytes"),
+        )
+    }
     pub fn rate_limited(retry_after: u64) -> Self {
         Self {
             retry_after: Some(retry_after),

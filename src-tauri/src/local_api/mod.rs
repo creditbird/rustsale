@@ -2,6 +2,7 @@
 //! automation tooling on the same machine. Bound to 127.0.0.1 only; see
 //! `server::spawn` and docs/local-api.md.
 
+pub mod attachment;
 pub mod auth;
 pub mod clients;
 pub mod error;

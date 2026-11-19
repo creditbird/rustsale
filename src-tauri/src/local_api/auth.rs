@@ -22,6 +22,7 @@ fn route_scope(method: &Method, route: &str) -> Option<&'static str> {
     match (method.as_str(), route) {
         ("GET", "/api/inbox") => Some(SCOPE_INBOX),
         ("GET", "/api/conversations/{id}/timeline") => Some(SCOPE_TIMELINE),
+        ("GET", "/api/attachments/{id}") => Some(SCOPE_TIMELINE),
         ("POST", "/api/conversations/{id}/read") => Some(SCOPE_READ),
         ("POST", "/api/conversations/{id}/messages") => Some(SCOPE_SEND),
         _ => None,

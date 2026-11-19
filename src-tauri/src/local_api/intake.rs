@@ -40,10 +40,23 @@ pub struct TimelineEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     pub at: String,
+    /// Legacy: attachment kinds only. Kept so existing clients keep working.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub att: Vec<String>,
+    /// Attachment ids, for `read_attachment`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub atts: Vec<AttachmentRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub st: Option<&'static str>,
+}
+
+/// Handle to read one attachment through `read_attachment`; carries no provider URL.
+#[derive(Debug, Serialize, PartialEq)]
+pub struct AttachmentRef {
+    pub id: i64,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mime: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -153,8 +166,17 @@ fn compact_message(message: ConversationMessage) -> TimelineEntry {
         at: message.occurred_at,
         att: message
             .attachments
+            .iter()
+            .map(|a| a.media_type.clone())
+            .collect(),
+        atts: message
+            .attachments
             .into_iter()
-            .map(|a| a.media_type)
+            .map(|a| AttachmentRef {
+                id: a.id,
+                kind: a.media_type,
+                mime: Some(a.mime_type).filter(|m| !m.is_empty()),
+            })
             .collect(),
         st,
     }
@@ -354,8 +376,12 @@ mod compact_message_tests {
             .map(|o| o.keys().cloned().collect())
             .unwrap_or_default();
         keys.sort();
-        assert_eq!(keys, ["at", "att", "dir", "id", "text"]);
+        assert_eq!(keys, ["at", "att", "atts", "dir", "id", "text"]);
         assert_eq!(value["att"], json!(["image"]));
+        assert_eq!(
+            value["atts"],
+            json!([{"id": 9, "kind": "image", "mime": "image/jpeg"}])
+        );
     }
 }
 
@@ -411,6 +437,7 @@ mod db_copy_check {
                 ),
                 ts: message.occurred_at.clone(),
                 is_group: false,
+                attachments: Vec::new(),
             };
             let webhook_text = build_payload(conversation_id, vec![webhook])
                 .map(|p| p.text)

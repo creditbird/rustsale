@@ -6,9 +6,10 @@ use axum::extract::DefaultBodyLimit;
 use axum::routing::{get, post};
 use axum::Router;
 
+use super::attachment::MediaFetcher;
 use super::auth::{guard, json_errors, MAX_BODY_BYTES};
 use super::clients::ClientStore;
-use super::handlers::{get_inbox, get_timeline, mark_read, send_message, ApiState};
+use super::handlers::{get_attachment, get_inbox, get_timeline, mark_read, send_message, ApiState};
 use super::mcp;
 use super::rate_limit::RateLimiter;
 use crate::conversation::commands::ConversationState;
@@ -23,6 +24,7 @@ pub fn build_router(state: ApiState) -> Router {
     Router::new()
         .route("/api/inbox", get(get_inbox))
         .route("/api/conversations/{id}/timeline", get(get_timeline))
+        .route("/api/attachments/{id}", get(get_attachment))
         .route("/api/conversations/{id}/read", post(mark_read))
         .route("/api/conversations/{id}/messages", post(send_message))
         .route("/mcp", post(mcp::handle))
@@ -71,6 +73,7 @@ pub fn spawn(conversation: Arc<ConversationState>) {
         conversation,
         clients: Arc::new(ClientStore::new(path, legacy)),
         limiter: Arc::new(RateLimiter::default()),
+        media: Arc::new(MediaFetcher::production()),
     };
     let router = build_router(state);
     let addr = SocketAddr::from(([127, 0, 0, 1], port));

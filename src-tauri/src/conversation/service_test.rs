@@ -4645,6 +4645,47 @@ mod zalo_webhook_tests {
     }
 
     #[tokio::test]
+    async fn photo_post_carries_the_stored_attachment_id_but_not_its_url() {
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        let raw = raw_message(
+            "ph1",
+            "peer-uid",
+            "self-uid",
+            serde_json::json!({"url": "https://cdn.example.com/secret-photo.jpg", "caption": "cont này"}),
+            "chat.photo",
+        );
+        ingest(
+            &harness,
+            ListenerEvent::Message(Box::new(Message::User(UserMessage::new("self-uid", raw)))),
+        );
+
+        wait_for_posts(&receiver, 1).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        let body = &bodies[0];
+        let message_id: i64 = harness
+            .repository
+            .get_conversation_timeline(body["conversationId"].as_i64().unwrap(), None, 10)
+            .unwrap()
+            .items[0]
+            .id;
+        let stored = harness
+            .repository
+            .list_message_attachment_refs(message_id)
+            .unwrap();
+        assert_eq!(stored.len(), 1);
+        assert_eq!(
+            body["attachments"],
+            serde_json::json!([{
+                "messageId": message_id,
+                "attachmentId": stored[0].0,
+                "kind": "image"
+            }])
+        );
+        assert!(!body.to_string().contains("secret-photo"));
+    }
+
+    #[tokio::test]
     async fn payload_uses_the_agreed_field_names() {
         let (url, receiver) = start_receiver(&[]).await;
         let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
@@ -4658,6 +4699,7 @@ mod zalo_webhook_tests {
         assert_eq!(
             keys,
             [
+                "attachments",
                 "channelAccountId",
                 "conversationId",
                 "isGroup",
@@ -4676,6 +4718,7 @@ mod zalo_webhook_tests {
         assert_eq!(body["test"], false);
         assert_eq!(body["channelAccountId"], 1);
         assert_eq!(body["messageCount"], 1);
+        assert_eq!(body["attachments"], serde_json::json!([]));
         assert!(body["conversationId"].is_i64());
         let ts = body["ts"].as_str().unwrap();
         assert!(chrono::DateTime::parse_from_rfc3339(ts).is_ok(), "{ts}");

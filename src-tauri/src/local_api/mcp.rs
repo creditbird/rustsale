@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::{Extension, Json};
 use serde_json::{json, Value};
 
+use super::attachment;
 use super::clients::{Client, SCOPE_INBOX, SCOPE_READ, SCOPE_SEND, SCOPE_TIMELINE};
 use super::error::{ApiError, ApiResult};
 use super::handlers::ApiState;
@@ -19,6 +20,7 @@ const PROTOCOL_VERSIONS: [&str; 3] = ["2025-06-18", "2025-03-26", "2024-11-05"];
 pub struct McpTool(pub &'static str);
 
 pub const TOOL_SEND: &str = "send_message";
+const TOOL_READ_ATTACHMENT: &str = "read_attachment";
 
 fn tool_scope(name: &str) -> Option<(&'static str, &'static str)> {
     match name {
@@ -26,6 +28,7 @@ fn tool_scope(name: &str) -> Option<(&'static str, &'static str)> {
         "read_timeline" => Some(("read_timeline", SCOPE_TIMELINE)),
         "mark_read" => Some(("mark_read", SCOPE_READ)),
         TOOL_SEND => Some((TOOL_SEND, SCOPE_SEND)),
+        TOOL_READ_ATTACHMENT => Some((TOOL_READ_ATTACHMENT, SCOPE_TIMELINE)),
         _ => None,
     }
 }
@@ -40,7 +43,9 @@ fn tools() -> Value {
         {"name": "mark_read", "description": "Mark a chat as read.",
          "inputSchema": {"type": "object", "properties": {"id": id}, "required": ["id"]}},
         {"name": TOOL_SEND, "description": "Queue a text reply to a chat.",
-         "inputSchema": {"type": "object", "properties": {"id": id, "text": {"type": "string", "minLength": 1, "maxLength": intake::TEXT_MAX_CHARS}, "replyTo": {"type": "integer"}}, "required": ["id", "text"]}}
+         "inputSchema": {"type": "object", "properties": {"id": id, "text": {"type": "string", "minLength": 1, "maxLength": intake::TEXT_MAX_CHARS}, "replyTo": {"type": "integer"}}, "required": ["id", "text"]}},
+        {"name": TOOL_READ_ATTACHMENT, "description": "Read one image attachment (id from read_timeline atts) and return it as an image.",
+         "inputSchema": {"type": "object", "properties": {"attachment_id": {"type": "integer", "description": "attachment id from read_timeline atts"}}, "required": ["attachment_id"]}}
     ])
 }
 
@@ -91,7 +96,30 @@ fn arg_opt_u32(args: &Value, key: &str) -> ApiResult<Option<u32>> {
     }
 }
 
-fn run_tool(state: &ApiState, name: &str, args: &Value) -> ApiResult<Value> {
+/// What a tool hands back: JSON (sent as text) or an image content block.
+enum ToolOutput {
+    Json(Value),
+    Image { data: String, mime: &'static str },
+}
+
+async fn run_tool(state: &ApiState, name: &str, args: &Value) -> ApiResult<ToolOutput> {
+    if name == TOOL_READ_ATTACHMENT {
+        use base64::Engine as _;
+        let image = attachment::read_image(
+            &state.conversation,
+            &state.media,
+            arg_i64(args, "attachment_id")?,
+        )
+        .await?;
+        return Ok(ToolOutput::Image {
+            data: base64::engine::general_purpose::STANDARD.encode(&image.bytes),
+            mime: image.mime,
+        });
+    }
+    run_json_tool(state, name, args).map(ToolOutput::Json)
+}
+
+fn run_json_tool(state: &ApiState, name: &str, args: &Value) -> ApiResult<Value> {
     let conv = &state.conversation;
     let to_value = |v: Result<Value, serde_json::Error>| v.map_err(ApiError::internal);
     match name {
@@ -130,6 +158,10 @@ fn run_tool(state: &ApiState, name: &str, args: &Value) -> ApiResult<Value> {
             }))
         }
     }
+}
+
+fn tool_image(data: &str, mime: &str) -> Value {
+    json!({"content": [{"type": "image", "data": data, "mimeType": mime}]})
 }
 
 fn tool_text(value: &Value, is_error: bool) -> Value {
@@ -184,12 +216,13 @@ pub async fn handle(
                 tool = Some(McpTool(name));
                 let args = params.get("arguments").cloned().unwrap_or(json!({}));
                 let outcome = if client.has_scope(scope) {
-                    run_tool(&state, name, &args)
+                    run_tool(&state, name, &args).await
                 } else {
                     Err(ApiError::forbidden(format!("missing scope '{scope}'")))
                 };
                 match outcome {
-                    Ok(value) => rpc_result(id, tool_text(&value, false)),
+                    Ok(ToolOutput::Json(value)) => rpc_result(id, tool_text(&value, false)),
+                    Ok(ToolOutput::Image { data, mime }) => rpc_result(id, tool_image(&data, mime)),
                     Err(error) => rpc_result(id, tool_text(&json!(error.body()), true)),
                 }
             }
