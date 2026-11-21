@@ -437,6 +437,8 @@ fn message_line(message: &ZaloWebhookMessage) -> String {
         .map(|value| value.chars().take(MAX_TEXT_CHARS).collect::<String>());
     match (message.content_type.as_str(), text) {
         ("text", Some(text)) => text,
+        // Unsupported messages already carry their own text or bracketed label.
+        ("unsupported", Some(text)) => text,
         (kind, Some(text)) => format!("[{kind}] {text}"),
         (kind, None) => format!("[{kind}]"),
     }

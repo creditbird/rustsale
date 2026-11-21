@@ -1101,3 +1101,55 @@ fn complete_outbox_job_updates_provider_client_message_id_when_different_from_qu
 
     let _ = std::fs::remove_file(path);
 }
+
+fn normalized_content(
+    content: serde_json::Value,
+) -> crate::conversation::repository::NormalizedMessage {
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new(
+        "self-uid",
+        base_message("peer-uid", "0", "message-rtf", content),
+    ))));
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = mutations.into_iter().next().unwrap() else {
+        panic!("expected message mutation");
+    };
+    message
+}
+
+#[test]
+fn formatted_rtf_text_keeps_its_title_as_plain_text() {
+    let title = "QUOC ANH // 900814405E--- ACTR\nCHO XE ĐI --- FULL SAILUN";
+    let message = normalized_content(json!({
+        "action": "rtf",
+        "childnumber": 0,
+        "description": "",
+        "href": "",
+        "params": "{\"styles\":[{\"start\":64,\"len\":11,\"st\":\"b\"}],\"ver\":0}",
+        "thumb": "",
+        "title": title,
+        "type": ""
+    }));
+    assert_eq!(message.content_type, "text");
+    assert_eq!(message.text_content.as_deref(), Some(title));
+}
+
+#[test]
+fn empty_description_does_not_hide_title_for_pin_notices() {
+    let message = normalized_content(json!({
+        "action": "msginfo.actionlist",
+        "description": "",
+        "title": "Vận Tải Quốc Anh đã ghim tin nhắn x",
+        "params": "{}"
+    }));
+    assert_eq!(message.content_type, "unsupported");
+    assert_eq!(
+        message.text_content.as_deref(),
+        Some("Vận Tải Quốc Anh đã ghim tin nhắn x")
+    );
+}
+
+#[test]
+fn non_rtf_webchat_object_stays_unsupported() {
+    let message = normalized_content(json!({ "action": "something.else", "title": "t" }));
+    assert_eq!(message.content_type, "unsupported");
+}

@@ -2608,7 +2608,7 @@ mod webhook_caption_tests {
             None,
             json!({ "title": "https://example.test" }),
         );
-        assert_eq!(payload_text(&m), "[unsupported]");
+        assert_eq!(payload_text(&m), "[không đọc được: object]");
     }
 
     #[test]

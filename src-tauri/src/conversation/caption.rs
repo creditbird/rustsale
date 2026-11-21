@@ -26,7 +26,9 @@ pub fn media_caption(content_type: &str, content: &Value, max_chars: usize) -> O
 }
 
 /// Text of a message: `text_content` when it has any non-blank text,
-/// otherwise the media caption.
+/// otherwise the media caption. An `unsupported` message always yields text:
+/// the formatted text the customer typed, or a bracketed label (see
+/// [`super::unsupported_text`]).
 #[must_use]
 pub fn text_or_caption(
     content_type: &str,
@@ -34,6 +36,13 @@ pub fn text_or_caption(
     content: &Value,
     max_chars: usize,
 ) -> Option<String> {
+    if content_type == "unsupported" {
+        // Stored `text_content` of these rows is Zalo's own title/description
+        // (a link title, "Cuộc gọi", ...), not something the customer typed.
+        return Some(super::unsupported_text::unsupported_text(
+            content, max_chars,
+        ));
+    }
     match text_content {
         Some(text) if !text.trim().is_empty() => Some(text.to_string()),
         // Blank text: caption if any, else keep whatever was stored.
@@ -74,7 +83,7 @@ mod tests {
     #[test]
     fn other_kinds_never_use_title() {
         let content = json!({ "title": "https://example.test/x" });
-        for kind in ["unsupported", "file", "sticker", "text", "audio"] {
+        for kind in ["file", "sticker", "text", "audio"] {
             assert_eq!(media_caption(kind, &content, 100), None, "{kind}");
         }
     }
@@ -100,6 +109,24 @@ mod tests {
             text_or_caption("image", None, &content, 100).as_deref(),
             Some("caption")
         );
-        assert_eq!(text_or_caption("unsupported", None, &content, 100), None);
+    }
+
+    #[test]
+    fn unsupported_never_uses_title_as_customer_text() {
+        let content = json!({ "title": "https://example.test/x" });
+        assert_eq!(
+            text_or_caption("unsupported", None, &content, 100).as_deref(),
+            Some("[không đọc được: object]")
+        );
+        let rtf = json!({ "action": "rtf", "title": "chữ in đậm" });
+        assert_eq!(
+            text_or_caption("unsupported", Some(" "), &rtf, 100).as_deref(),
+            Some("chữ in đậm")
+        );
+        let call = json!({ "action": "recommened.calltime", "title": "sendBubbleMessage" });
+        assert_eq!(
+            text_or_caption("unsupported", Some("Cuộc gọi"), &call, 100).as_deref(),
+            Some("[cuộc gọi]")
+        );
     }
 }

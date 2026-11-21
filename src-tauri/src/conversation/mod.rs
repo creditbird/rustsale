@@ -21,6 +21,7 @@ pub mod retry;
 pub mod service;
 pub mod staging;
 pub mod types;
+pub mod unsupported_text;
 pub mod whatsapp;
 pub mod zalo;
 

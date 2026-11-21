@@ -338,7 +338,7 @@ mod compact_message_tests {
             None,
             json!({ "title": "https://example.test" }),
         );
-        assert_eq!(text_of(m), None);
+        assert_eq!(text_of(m).as_deref(), Some("[không đọc được: object]"));
     }
 
     #[test]

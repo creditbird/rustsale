@@ -138,7 +138,10 @@ fn content_parts(
             };
         }
     }
+    let is_formatted_text = message_type == "webchat"
+        && effective_content.get("action").and_then(Value::as_str) == Some("rtf");
     let content_type = match message_type {
+        "webchat" if is_formatted_text => "text",
         "chat.photo" => "image",
         "chat.video.msg" => "video",
         "chat.voice" => "audio",
@@ -148,16 +151,19 @@ fn content_parts(
         _ => "unsupported",
     };
 
-    let text_content = effective_content
-        .get("caption")
-        .or_else(|| effective_content.get("description"))
-        .or_else(|| effective_content.get("title"))
-        .or_else(|| effective_content.get("text"))
-        .or_else(|| effective_content.get("message"))
-        .or_else(|| effective_content.get("subTitle"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string());
+    // First NON-EMPTY candidate: an empty `description` must not hide `title`.
+    let text_content = [
+        "caption",
+        "description",
+        "title",
+        "text",
+        "message",
+        "subTitle",
+    ]
+    .iter()
+    .filter_map(|key| effective_content.get(*key).and_then(Value::as_str))
+    .find(|text| !text.trim().is_empty())
+    .map(str::to_string);
 
     let mut attachments = Vec::new();
     match content_type {
