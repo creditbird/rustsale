@@ -389,6 +389,17 @@ describe('Google Maps block detection', () => {
     ).toBe('rate_limited');
   });
 
+  test('classify_error_page_with_h1_is_not_ready', () => {
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://www.google.com/maps/place/Example',
+        title: 'Error 500 (Server Error)',
+        hasPlaceHeading: true,
+        bodyText: 'Error Server Error',
+      }),
+    ).toBe('selector_changed');
+  });
+
   test('a challenge overlay is detected even while the feed DOM survives', () => {
     expect(
       classifyGoogleMapsPageState({

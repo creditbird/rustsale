@@ -51,12 +51,19 @@ export function classifyGoogleMapsPageState(
     return 'consent_required';
   }
 
-  // 2. Structural presence of search results feed or place details heading
+  // 2. An error page can render an h1 (for example "Error") without being a
+  // place or a result list, so it must not count as ready through the heading
+  // signal alone.
+  if (!snapshot.hasFeed && looksLikeErrorPage(snapshot.title ?? '', body)) {
+    return 'selector_changed';
+  }
+
+  // 3. Structural presence of search results feed or place details heading
   if (snapshot.hasFeed || snapshot.hasPlaceHeading) {
     return 'ready';
   }
 
-  // 3. Fallback text inspection when structural feed/heading is absent
+  // 4. Fallback text inspection when structural feed/heading is absent
   if (
     body.includes('before you continue to google') ||
     body.includes('trước khi tiếp tục đến google') ||
@@ -104,6 +111,19 @@ export function classifyGoogleMapsPageState(
   return 'selector_changed';
 }
 
+function looksLikeErrorPage(title: string, body: string): boolean {
+  const text = `${title}\n${body}`.toLowerCase();
+  return (
+    text.includes('server error') ||
+    text.includes('the server encountered an error') ||
+    text.includes("500. that's an error") ||
+    text.includes('500. that’s an error') ||
+    text.includes('this page isn’t working') ||
+    text.includes("this page isn't working") ||
+    text.includes('service unavailable')
+  );
+}
+
 export async function inspectGoogleMapsPage(page: Page): Promise<{
   state: GoogleMapsPageState;
   url: string;
@@ -114,7 +134,9 @@ export async function inspectGoogleMapsPage(page: Page): Promise<{
     title: document.title,
     bodyText: document.body?.innerText.slice(0, 20_000) ?? '',
     hasFeed: Boolean(document.querySelector('div[role="feed"]')),
-    hasPlaceHeading: Boolean(document.querySelector('h1, [role="main"] h1')),
+    hasPlaceHeading:
+      Boolean(document.querySelector('[role="main"] h1')) &&
+      Boolean(document.querySelector('[data-item-id], [role="main"] button')),
     hasConsentDialog: Boolean(
       document.querySelector(
         'form[action*="consent"], [aria-label*="consent" i], [aria-label*="Đồng ý" i], [aria-label*="Chấp nhận" i]',
