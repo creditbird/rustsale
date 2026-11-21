@@ -386,7 +386,7 @@ impl ScrapeJobRepository {
                        AND last_error_kind IN (
                            'disconnected', 'navigation_timeout', 'evaluation_timeout',
                            'transient_network', 'browser_startup', 'runtime_unavailable',
-                           'selector_changed', 'database'
+                           'selector_changed', 'database', 'invalid_response'
                        )",
                     params![now, job_id],
                 )?;
@@ -1708,6 +1708,57 @@ mod tests {
         assert_eq!(units[0].status, ScrapeUnitStatus::Pending);
         assert_eq!(queued.failed_units, 0);
         assert_eq!(queued.processed_units, 0);
+    }
+
+    /// A10: a place whose panel never rendered fails as `invalid_response`
+    /// after its retries; the user's retry must be able to reopen it.
+    #[tokio::test]
+    async fn retry_resets_retry_exhausted_invalid_response_units() {
+        let context = TestRepository::new();
+        let mut job = sample_job(ScrapeJobStatus::Running);
+        job.total_units = 1;
+        job.processed_units = 1;
+        job.failed_units = 1;
+        context.repository.create_job(job).await.unwrap();
+        let mut unit = sample_unit("unit-1", "place:1", ScrapeUnitStatus::Failed);
+        unit.last_error_kind = Some(ScrapeErrorKind::InvalidResponse);
+        context
+            .repository
+            .insert_units("job-1", vec![unit])
+            .await
+            .unwrap();
+
+        let version = context
+            .repository
+            .get_job("job-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .version;
+        let partial = context
+            .repository
+            .transition_job(
+                "job-1",
+                version,
+                ScrapeJobStatus::Partial,
+                TransitionCause::System,
+            )
+            .await
+            .unwrap();
+        let queued = context
+            .repository
+            .transition_job(
+                "job-1",
+                partial.version,
+                ScrapeJobStatus::Queued,
+                TransitionCause::UserRetry,
+            )
+            .await
+            .unwrap();
+
+        let units = context.repository.list_units("job-1").await.unwrap();
+        assert_eq!(units[0].status, ScrapeUnitStatus::Pending);
+        assert_eq!(queued.failed_units, 0);
     }
 
     #[tokio::test]
