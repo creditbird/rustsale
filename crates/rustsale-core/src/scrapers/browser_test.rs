@@ -281,6 +281,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stray_stdout_line_does_not_fail_inflight_request() {
+        let (supervisor, mut reader, mut writer, _) = supervisor_fixture();
+        let sidecar = tokio::spawn(async move {
+            let request = read_request(&mut reader).await;
+            writer
+                .write_all(b"warn: library printed to stdout\n")
+                .await
+                .unwrap();
+            writer.flush().await.unwrap();
+            write_response(
+                &mut writer,
+                json!({"id": request["id"], "ok": true, "result": {"value": 7}}),
+            )
+            .await;
+        });
+
+        let value = supervisor
+            .evaluate("3 + 4", Duration::from_secs(1))
+            .await
+            .unwrap();
+
+        assert_eq!(value, json!(7));
+        sidecar.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn closed_stdout_fails_all_pending_requests_as_disconnected() {
         let (supervisor, mut reader, writer, _) = supervisor_fixture();
         let sidecar = tokio::spawn(async move {

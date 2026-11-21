@@ -801,15 +801,14 @@ async fn response_loop<R>(
             Ok(Some(line)) => match serde_json::from_str::<RuntimeWireResponse>(&line) {
                 Ok(response) => deliver_response(&pending, response).await,
                 Err(error) => {
-                    fail_all_pending(
-                        &pending,
-                        scrape_error(
-                            ScrapeErrorKind::InvalidResponse,
-                            format!("invalid CloakBrowser response: {error}"),
-                            false,
-                        ),
-                    )
-                    .await;
+                    // A library printing to stdout must not kill the in-flight request:
+                    // the real response is still coming. Only EOF/IO errors fail pending.
+                    tracing::warn!(
+                        target: "google_maps_scraper",
+                        error = %error,
+                        line_bytes = line.len(),
+                        "ignored non-JSON line on CloakBrowser stdout"
+                    );
                 }
             },
             Ok(None) => break,

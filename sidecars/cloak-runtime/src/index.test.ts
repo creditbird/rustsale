@@ -11,7 +11,7 @@ import {
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyGoogleMapsPageState, inspectGoogleMapsPage } from './googleMaps';
-import { dispatch, RuntimeFault, type RuntimeAdapter } from './index';
+import { dispatch, redirectConsoleToStderr, RuntimeFault, type RuntimeAdapter } from './index';
 import {
   CloakRuntime,
   PINNED_CLOAKBROWSER_BINARY_VERSION,
@@ -252,6 +252,33 @@ describe('browser process cleanup', () => {
       rmSync(root, { recursive: true, force: true });
     }
   }, 30_000);
+});
+
+describe('stdout protocol channel', () => {
+  test('console.log and friends go to stderr, not the protocol stdout', () => {
+    const errors: unknown[][] = [];
+    const fake = {
+      log: (..._args: unknown[]) => {
+        throw new Error('log must be redirected');
+      },
+      info: (..._args: unknown[]) => {
+        throw new Error('info must be redirected');
+      },
+      debug: (..._args: unknown[]) => {
+        throw new Error('debug must be redirected');
+      },
+      error: (...args: unknown[]) => {
+        errors.push(args);
+      },
+    };
+
+    redirectConsoleToStderr(fake);
+    fake.log('a');
+    fake.info('b');
+    fake.debug('c');
+
+    expect(errors).toEqual([['a'], ['b'], ['c']]);
+  });
 });
 
 describe('sidecar lifecycle', () => {
