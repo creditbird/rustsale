@@ -199,6 +199,24 @@ impl Core {
                 }
             }
         });
+        let scheduled_service = service.clone();
+        tokio::spawn(async move {
+            // Start-up cleanup can lose a lock race; the schedule picks it up later.
+            let mut ticker = tokio::time::interval_at(
+                tokio::time::Instant::now() + std::time::Duration::from_secs(6 * 60 * 60),
+                std::time::Duration::from_secs(6 * 60 * 60),
+            );
+            loop {
+                ticker.tick().await;
+                if let Err(error) = scheduled_service.cleanup_retention().await {
+                    tracing::error!(
+                        target: "google_maps_scraper",
+                        event = "scheduled_retention_cleanup_failed",
+                        error = %error,
+                    );
+                }
+            }
+        });
         tokio::spawn(async move {
             if let Err(error) = service.recover_startup().await {
                 tracing::error!(

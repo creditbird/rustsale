@@ -358,6 +358,54 @@ async fn retention_deletes_terminal_profile_after_seven_days_but_keeps_job_histo
         .is_some());
 }
 
+/// App start-up shares the database with other writers (Zalo, Facebook
+/// sync). A lock that outlasts one attempt must not fail the whole cleanup.
+#[tokio::test]
+async fn retention_retries_when_database_is_locked() {
+    let harness = Harness::new(false);
+    harness
+        .repository
+        .create_job(old_job(
+            "locked-old",
+            ScrapeJobStatus::Completed,
+            &harness.profile_path("locked-old"),
+            Some("2026-06-01T00:00:00Z"),
+        ))
+        .await
+        .unwrap();
+    // One attempt waits only 20 ms for the lock, far less than the writer holds it.
+    let repository = Arc::new(
+        harness
+            .repository
+            .as_ref()
+            .clone()
+            .with_busy_timeout(std::time::Duration::from_millis(20)),
+    );
+    let service = GoogleMapsJobService::new(
+        repository.clone(),
+        harness.runner.clone(),
+        harness.root.join("profiles"),
+    )
+    .with_retention_backoff(std::time::Duration::from_millis(60));
+
+    let db_path = harness.db_path.clone();
+    let (locked_tx, locked_rx) = std::sync::mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let conn = rusqlite::Connection::open(db_path).unwrap();
+        conn.execute_batch("BEGIN IMMEDIATE").unwrap();
+        locked_tx.send(()).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        conn.execute_batch("COMMIT").unwrap();
+    });
+    locked_rx.recv().unwrap();
+
+    let report = service.cleanup_retention_at(now()).await.unwrap();
+    writer.join().unwrap();
+
+    assert_eq!(report.deleted_jobs, 1);
+    assert!(repository.get_job("locked-old").await.unwrap().is_none());
+}
+
 #[tokio::test]
 async fn retention_never_deletes_captcha_action_required_profile() {
     let harness = Harness::new(false);

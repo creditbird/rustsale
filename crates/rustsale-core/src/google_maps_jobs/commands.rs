@@ -23,6 +23,25 @@ pub struct GoogleMapsJobService {
     repository: Arc<ScrapeJobRepository>,
     runner: Arc<ScrapeJobRunner>,
     profile_root: PathBuf,
+    retention_backoff: std::time::Duration,
+}
+
+/// Attempts (including the first) for retention database calls that hit a lock.
+const RETENTION_DB_ATTEMPTS: u32 = 4;
+/// First wait between retention attempts; it doubles each retry (0.5 s, 1 s, 2 s).
+const RETENTION_BACKOFF: std::time::Duration = std::time::Duration::from_millis(500);
+
+fn is_database_locked(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<rusqlite::Error>(),
+            Some(rusqlite::Error::SqliteFailure(failure, _))
+                if matches!(
+                    failure.code,
+                    rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked
+                )
+        )
+    })
 }
 
 pub struct GoogleMapsJobState {
@@ -40,6 +59,46 @@ impl GoogleMapsJobService {
             repository,
             runner,
             profile_root,
+            retention_backoff: RETENTION_BACKOFF,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_retention_backoff(mut self, backoff: std::time::Duration) -> Self {
+        self.retention_backoff = backoff;
+        self
+    }
+
+    /// Runs one retention database call, retrying with a doubling pause while
+    /// the database is locked by another writer (app start-up shares it with
+    /// the Zalo and Facebook sync tasks). Other errors are returned at once.
+    async fn retry_when_locked<T, F, Fut>(
+        &self,
+        operation_name: &'static str,
+        mut call: F,
+    ) -> Result<T>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<T>>,
+    {
+        let mut delay = self.retention_backoff;
+        let mut attempt = 1;
+        loop {
+            match call().await {
+                Err(error) if attempt < RETENTION_DB_ATTEMPTS && is_database_locked(&error) => {
+                    tracing::warn!(
+                        target: "google_maps_scraper",
+                        event = "retention_database_locked",
+                        operation = operation_name,
+                        attempt,
+                        "retention database call hit a lock; retrying"
+                    );
+                    tokio::time::sleep(delay).await;
+                    delay = delay.saturating_mul(2);
+                    attempt += 1;
+                }
+                other => return other,
+            }
         }
     }
 
@@ -170,7 +229,11 @@ impl GoogleMapsJobService {
         &self,
         now: chrono::DateTime<chrono::Utc>,
     ) -> Result<RetentionReport> {
-        let profile_dirs = self.repository.list_retention_profile_dirs(now, 7).await?;
+        let profile_dirs = self
+            .retry_when_locked("list_retention_profile_dirs", || {
+                self.repository.list_retention_profile_dirs(now, 7)
+            })
+            .await?;
         std::fs::create_dir_all(&self.profile_root).with_context(|| {
             format!(
                 "failed to create Google Maps profile root {}",
@@ -227,8 +290,9 @@ impl GoogleMapsJobService {
             deleted_profiles += 1;
         }
         let deleted_jobs = self
-            .repository
-            .delete_expired_terminal_jobs(now, 30)
+            .retry_when_locked("delete_expired_terminal_jobs", || {
+                self.repository.delete_expired_terminal_jobs(now, 30)
+            })
             .await?;
         Ok(RetentionReport {
             deleted_jobs,

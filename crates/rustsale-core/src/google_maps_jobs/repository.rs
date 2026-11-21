@@ -22,6 +22,7 @@ const RESULT_COLUMNS: &str = "id, job_id, source_unit_id, place_id, canonical_ur
 #[derive(Clone)]
 pub struct ScrapeJobRepository {
     db_path: Arc<String>,
+    busy_timeout: Option<std::time::Duration>,
 }
 
 impl ScrapeJobRepository {
@@ -29,7 +30,16 @@ impl ScrapeJobRepository {
         drop(init_db(&db_path).context("failed to initialize scraper repository schema")?);
         Ok(Self {
             db_path: Arc::new(db_path),
+            busy_timeout: None,
         })
+    }
+
+    /// Shortens how long a connection waits for a lock so tests can exercise
+    /// the retry path without holding a lock for the production 5 s timeout.
+    #[cfg(test)]
+    pub(crate) fn with_busy_timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.busy_timeout = Some(timeout);
+        self
     }
 
     async fn with_connection<T, F>(&self, operation: F) -> Result<T>
@@ -38,9 +48,14 @@ impl ScrapeJobRepository {
         F: FnOnce(Connection) -> Result<T> + Send + 'static,
     {
         let db_path = self.db_path.clone();
+        let busy_timeout = self.busy_timeout;
         tokio::task::spawn_blocking(move || {
             let conn = open_db_connection(db_path.as_str())
                 .context("failed to open scraper repository connection")?;
+            if let Some(timeout) = busy_timeout {
+                conn.busy_timeout(timeout)
+                    .context("failed to set scraper repository busy timeout")?;
+            }
             operation(conn)
         })
         .await
