@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync } from 'node:fs';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import * as cloak from 'cloakbrowser';
 import type { BinaryInfo } from 'cloakbrowser';
@@ -479,13 +479,16 @@ export function killProcessTree(proc?: ChildProcess, userDataDir?: string): void
             const pid = parseInt(entry, 10);
             if (pidsToKill.has(pid)) continue;
             try {
-              if (userDataDir) {
-                const cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf8').replaceAll('\0', ' ');
-                if (cmdline.includes(userDataDir)) {
-                  pidsToKill.add(pid);
-                  addedNew = true;
-                  continue;
-                }
+              if (
+                userDataDir &&
+                processArgvMatchesProfile(
+                  readFileSync(`/proc/${entry}/cmdline`, 'utf8'),
+                  userDataDir,
+                )
+              ) {
+                pidsToKill.add(pid);
+                addedNew = true;
+                continue;
               }
               const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
               const closeParen = stat.lastIndexOf(')');
@@ -515,6 +518,23 @@ export function killProcessTree(proc?: ChildProcess, userDataDir?: string): void
     }
   } catch (error) {
     console.error('[cloak-runtime] killProcessTree failed', error);
+  }
+}
+
+function processArgvMatchesProfile(rawCmdline: string, userDataDir: string): boolean {
+  const expected = normalizePathForComparison(userDataDir);
+  const prefix = '--user-data-dir=';
+  return rawCmdline.split('\0').some((arg) => {
+    if (!arg.startsWith(prefix)) return false;
+    return normalizePathForComparison(arg.slice(prefix.length)) === expected;
+  });
+}
+
+function normalizePathForComparison(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
   }
 }
 

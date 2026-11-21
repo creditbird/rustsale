@@ -1,5 +1,13 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { classifyGoogleMapsPageState } from './googleMaps';
@@ -7,6 +15,7 @@ import { dispatch, RuntimeFault, type RuntimeAdapter } from './index';
 import {
   CloakRuntime,
   PINNED_CLOAKBROWSER_BINARY_VERSION,
+  killProcessTree,
   persistentLaunchOptions,
   pinnedCloakBrowserBinaryVersion,
   preferredBrowserTransport,
@@ -27,6 +36,25 @@ function runtime(overrides: Partial<RuntimeAdapter> = {}): RuntimeAdapter {
     shutdown: async () => ({ stopped: true }),
     ...overrides,
   };
+}
+
+const linuxTest = process.platform === 'linux' ? test : test.skip;
+
+function linuxProcessCommandLine(pid: number): string {
+  if (process.platform !== 'linux') return '';
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+async function waitForLinuxCommandLine(pid: number, fragment: string): Promise<void> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (linuxProcessCommandLine(pid).includes(fragment)) return;
+    await Bun.sleep(25);
+  }
+  expect(linuxProcessCommandLine(pid)).toContain(fragment);
 }
 
 async function waitForNoLinuxProcess(fragment: string): Promise<void> {
@@ -124,6 +152,28 @@ describe('cloak-runtime protocol', () => {
       ok: true,
       result: { installed: true, version: '146.0.7680.177.5' },
     });
+  });
+});
+
+describe('browser process cleanup', () => {
+  linuxTest('kill_process_tree_ignores_unrelated_process_with_path_in_argv', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rustsale-kill-tree-'));
+    const profileDir = join(root, 'profile');
+    const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)', profileDir], {
+      stdin: 'ignore',
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+    try {
+      await waitForLinuxCommandLine(child.pid, profileDir);
+      killProcessTree(undefined, profileDir);
+      await Bun.sleep(300);
+      expect(linuxProcessCommandLine(child.pid)).toContain(profileDir);
+    } finally {
+      child.kill('SIGKILL');
+      await child.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
