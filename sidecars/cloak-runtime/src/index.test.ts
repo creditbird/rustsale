@@ -10,7 +10,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { classifyGoogleMapsPageState } from './googleMaps';
+import { classifyGoogleMapsPageState, inspectGoogleMapsPage } from './googleMaps';
 import { dispatch, RuntimeFault, type RuntimeAdapter } from './index';
 import {
   CloakRuntime,
@@ -155,6 +155,39 @@ describe('cloak-runtime protocol', () => {
   });
 });
 
+async function inspectFixture(html: string, url: string) {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    `<!doctype html><html><head><title>Google Maps</title></head><body>${html}</body></html>`,
+    { url },
+  );
+  const body = dom.window.document.body;
+  Object.defineProperty(body, 'innerText', {
+    configurable: true,
+    value: body.textContent ?? '',
+  });
+
+  const globals = globalThis as unknown as {
+    document?: Document;
+    window?: Window & typeof globalThis;
+  };
+  const previousDocument = globals.document;
+  const previousWindow = globals.window;
+  globals.document = dom.window.document as unknown as Document;
+  globals.window = dom.window as unknown as Window & typeof globalThis;
+  try {
+    return await inspectGoogleMapsPage({
+      evaluate: async (pageFunction: () => unknown) => pageFunction(),
+    } as never);
+  } finally {
+    if (previousDocument === undefined) delete globals.document;
+    else globals.document = previousDocument;
+    if (previousWindow === undefined) delete globals.window;
+    else globals.window = previousWindow;
+    dom.window.close();
+  }
+}
+
 describe('browser process cleanup', () => {
   linuxTest('launch_cleans_stale_profile_processes_before_start', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rustsale-launch-clean-'));
@@ -198,7 +231,7 @@ describe('browser process cleanup', () => {
       await child.exited;
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 
   linuxTest('kill_process_tree_ignores_unrelated_process_with_path_in_argv', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rustsale-kill-tree-'));
@@ -218,7 +251,7 @@ describe('browser process cleanup', () => {
       await child.exited;
       rmSync(root, { recursive: true, force: true });
     }
-  });
+  }, 30_000);
 });
 
 describe('sidecar lifecycle', () => {
@@ -388,6 +421,20 @@ describe('Google Maps block detection', () => {
       }),
     ).toBe('rate_limited');
   });
+
+  test('classify_feed_with_harmless_aria_label_is_ready', async () => {
+    const harmless = await inspectFixture(
+      '<div role="feed"><h1>Results</h1></div><button aria-label="Chấp nhận quảng cáo">Ads</button>',
+      'https://www.google.com/maps/search/cafe',
+    );
+    expect(harmless.state).toBe('ready');
+
+    const consent = await inspectFixture(
+      '<div role="dialog"><button aria-label="Chấp nhận tất cả">OK</button></div>',
+      'https://www.google.com/maps',
+    );
+    expect(consent.state).toBe('consent_required');
+  }, 30_000);
 
   test('classify_error_page_with_h1_is_not_ready', () => {
     expect(

@@ -139,7 +139,7 @@ export async function inspectGoogleMapsPage(page: Page): Promise<{
       Boolean(document.querySelector('[data-item-id], [role="main"] button')),
     hasConsentDialog: Boolean(
       document.querySelector(
-        'form[action*="consent"], [aria-label*="consent" i], [aria-label*="Đồng ý" i], [aria-label*="Chấp nhận" i]',
+        'form[action*="consent"], [role="dialog"] [aria-label*="consent" i], [role="dialog"] [aria-label*="Đồng ý" i], [role="dialog"] [aria-label*="Chấp nhận" i]',
       ),
     ),
     hasCaptchaChallenge: Boolean(
