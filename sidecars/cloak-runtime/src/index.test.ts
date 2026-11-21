@@ -156,6 +156,50 @@ describe('cloak-runtime protocol', () => {
 });
 
 describe('browser process cleanup', () => {
+  linuxTest('launch_cleans_stale_profile_processes_before_start', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rustsale-launch-clean-'));
+    const profileDir = join(root, 'profile');
+    mkdirSync(profileDir, { recursive: true });
+    const singletonFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+    for (const name of singletonFiles) {
+      await Bun.write(join(profileDir, name), 'stale');
+    }
+    const child = Bun.spawn(
+      [process.execPath, '-e', 'setInterval(() => {}, 1000)', `--user-data-dir=${profileDir}`],
+      { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
+    );
+    const instance = new CloakRuntime({ cacheDir: join(root, 'cache') });
+    let launchStarted = false;
+    let staleProcessAliveAtStart = true;
+    let singletonLockAtStart = true;
+    (instance as unknown as {
+      launchWindowsCdp: () => Promise<never>;
+    }).launchWindowsCdp = async () => {
+      launchStarted = true;
+      staleProcessAliveAtStart = linuxProcessCommandLine(child.pid).length > 0;
+      singletonLockAtStart = existsSync(join(profileDir, 'SingletonLock'));
+      throw new RuntimeFault('browser_startup', 'stop-after-cleanup', false);
+    };
+
+    const originalTransport = process.env.RUSTSALE_BROWSER_TRANSPORT;
+    process.env.RUSTSALE_BROWSER_TRANSPORT = 'cdp-websocket';
+    try {
+      await waitForLinuxCommandLine(child.pid, profileDir);
+      await expect(instance.launch({ profileDir, headless: true })).rejects.toThrow(
+        'stop-after-cleanup',
+      );
+      expect(launchStarted).toBe(true);
+      expect(staleProcessAliveAtStart).toBe(false);
+      expect(singletonLockAtStart).toBe(false);
+    } finally {
+      if (originalTransport) process.env.RUSTSALE_BROWSER_TRANSPORT = originalTransport;
+      else delete process.env.RUSTSALE_BROWSER_TRANSPORT;
+      child.kill('SIGKILL');
+      await child.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   linuxTest('kill_process_tree_ignores_unrelated_process_with_path_in_argv', async () => {
     const root = mkdtempSync(join(tmpdir(), 'rustsale-kill-tree-'));
     const profileDir = join(root, 'profile');
