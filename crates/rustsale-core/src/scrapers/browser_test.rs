@@ -307,6 +307,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_startup_resolve_error_is_not_retried() {
+        let (supervisor, mut reader, mut writer, _) = supervisor_fixture();
+        let sidecar = tokio::spawn(async move {
+            let request = read_request(&mut reader).await;
+            write_response(
+                &mut writer,
+                json!({
+                    "id": request["id"],
+                    "ok": false,
+                    "error": {
+                        "kind": "browser_startup",
+                        "message": "ResolveMessage: Cannot find module '/ci/node_modules/playwright-core/package.json'",
+                        "retryable": true
+                    }
+                }),
+            )
+            .await;
+        });
+
+        let error = supervisor
+            .evaluate("1", Duration::from_secs(1))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, ScrapeErrorKind::RuntimeUnavailable);
+        assert!(
+            !error.retryable,
+            "a broken sidecar bundle will not heal on retry"
+        );
+        sidecar.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn ordinary_browser_startup_error_stays_retryable() {
+        let (supervisor, mut reader, mut writer, _) = supervisor_fixture();
+        let sidecar = tokio::spawn(async move {
+            let request = read_request(&mut reader).await;
+            write_response(
+                &mut writer,
+                json!({
+                    "id": request["id"],
+                    "ok": false,
+                    "error": {
+                        "kind": "browser_startup",
+                        "message": "Chromium exited during startup",
+                        "retryable": true
+                    }
+                }),
+            )
+            .await;
+        });
+
+        let error = supervisor
+            .evaluate("1", Duration::from_secs(1))
+            .await
+            .unwrap_err();
+
+        assert_eq!(error.kind, ScrapeErrorKind::BrowserStartup);
+        assert!(error.retryable);
+        sidecar.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn closed_stdout_fails_all_pending_requests_as_disconnected() {
         let (supervisor, mut reader, writer, _) = supervisor_fixture();
         let sidecar = tokio::spawn(async move {

@@ -830,6 +830,23 @@ async fn response_loop<R>(
     .await;
 }
 
+/// A sidecar bundle that cannot resolve its own modules is a broken installation: retrying
+/// the launch three times cannot fix it, so report it as a non-retryable runtime fault.
+fn classify_sidecar_error(error: RuntimeWireError) -> ScrapeJobError {
+    let broken_bundle = error.kind == ScrapeErrorKind::BrowserStartup
+        && (error.message.contains("ResolveMessage")
+            || error.message.contains("Cannot find module")
+            || error.message.contains("Cannot find package"));
+    if broken_bundle {
+        return scrape_error(
+            ScrapeErrorKind::RuntimeUnavailable,
+            format!("CloakBrowser sidecar bundle is broken: {}", error.message),
+            false,
+        );
+    }
+    scrape_error(error.kind, error.message, error.retryable)
+}
+
 async fn deliver_response(
     pending: &Arc<Mutex<HashMap<String, PendingResponse>>>,
     response: RuntimeWireResponse,
@@ -839,7 +856,7 @@ async fn deliver_response(
         let result = if response.ok {
             Ok(response.result.unwrap_or(Value::Null))
         } else if let Some(error) = response.error {
-            Err(scrape_error(error.kind, error.message, error.retryable))
+            Err(classify_sidecar_error(error))
         } else {
             Err(scrape_error(
                 ScrapeErrorKind::InvalidResponse,
