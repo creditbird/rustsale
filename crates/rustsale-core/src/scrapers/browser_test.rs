@@ -17,6 +17,7 @@ mod tests {
 
     struct FakeProcessControl {
         killed: AtomicBool,
+        terminated: AtomicBool,
         exited: AtomicBool,
         exit_notify: Notify,
     }
@@ -25,6 +26,7 @@ mod tests {
         fn new() -> Self {
             Self {
                 killed: AtomicBool::new(false),
+                terminated: AtomicBool::new(false),
                 exited: AtomicBool::new(false),
                 exit_notify: Notify::new(),
             }
@@ -49,6 +51,11 @@ mod tests {
             Ok(())
         }
 
+        async fn terminate(&self) -> io::Result<()> {
+            self.terminated.store(true, Ordering::SeqCst);
+            Ok(())
+        }
+
         async fn kill(&self) -> io::Result<()> {
             self.killed.store(true, Ordering::SeqCst);
             self.exit();
@@ -62,6 +69,21 @@ mod tests {
         tokio::io::WriteHalf<DuplexStream>,
         Arc<FakeProcessControl>,
     ) {
+        supervisor_fixture_with(SupervisorTimeouts {
+            request: Duration::from_secs(1),
+            shutdown: Duration::from_millis(50),
+            exit_grace: Duration::from_millis(50),
+        })
+    }
+
+    fn supervisor_fixture_with(
+        timeouts: SupervisorTimeouts,
+    ) -> (
+        BrowserSupervisor,
+        BufReader<tokio::io::ReadHalf<DuplexStream>>,
+        tokio::io::WriteHalf<DuplexStream>,
+        Arc<FakeProcessControl>,
+    ) {
         let (client, sidecar) = tokio::io::duplex(16 * 1024);
         let (client_reader, client_writer) = tokio::io::split(client);
         let (sidecar_reader, sidecar_writer) = tokio::io::split(sidecar);
@@ -70,10 +92,7 @@ mod tests {
             BufReader::new(client_reader),
             client_writer,
             control.clone(),
-            SupervisorTimeouts {
-                request: Duration::from_secs(1),
-                shutdown: Duration::from_millis(50),
-            },
+            timeouts,
         );
         (
             supervisor,
@@ -170,6 +189,47 @@ mod tests {
 
         supervisor.shutdown().await.unwrap();
 
+        assert!(control.killed.load(Ordering::SeqCst));
+        sidecar.abort();
+    }
+
+    /// C1: the sidecar needs time after stdin closes to close Chromium and exit.
+    /// A SIGKILL while it is still cleaning up strands the browser and its
+    /// profile lock, so a slow-but-alive sidecar must not be killed.
+    #[tokio::test]
+    async fn kill_after_shutdown_timeout_does_not_leave_browser_orphan() {
+        let (supervisor, mut reader, _writer, control) =
+            supervisor_fixture_with(SupervisorTimeouts {
+                request: Duration::from_secs(1),
+                shutdown: Duration::from_millis(50),
+                exit_grace: Duration::from_millis(600),
+            });
+        let exiting = control.clone();
+        let sidecar = tokio::spawn(async move {
+            let request = read_request(&mut reader).await;
+            assert_eq!(request["command"], "shutdown");
+            // Slower than the shutdown reply timeout, faster than the grace.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+            exiting.exit();
+        });
+
+        supervisor.shutdown().await.unwrap();
+
+        assert!(!control.killed.load(Ordering::SeqCst));
+        sidecar.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn stuck_sidecar_is_terminated_before_it_is_killed() {
+        let (supervisor, mut reader, _writer, control) = supervisor_fixture();
+        let sidecar = tokio::spawn(async move {
+            let _ = read_request(&mut reader).await;
+            tokio::time::sleep(Duration::from_secs(1)).await;
+        });
+
+        supervisor.shutdown().await.unwrap();
+
+        assert!(control.terminated.load(Ordering::SeqCst));
         assert!(control.killed.load(Ordering::SeqCst));
         sidecar.abort();
     }

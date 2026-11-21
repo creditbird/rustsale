@@ -18,7 +18,12 @@ use tokio::task::JoinHandle;
 const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(45);
 const RUNTIME_INSTALL_TIMEOUT: Duration = Duration::from_secs(15 * 60);
 const BROWSER_LAUNCH_TIMEOUT: Duration = Duration::from_secs(120);
-const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(3);
+/// How long the sidecar may take to answer `shutdown` (it closes the browser
+/// context and lets Chromium flush the profile first).
+const DEFAULT_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(25);
+/// How long the sidecar process gets to exit after stdin closes, and again
+/// after SIGTERM, before it is killed (a SIGKILL strands Chromium, C1).
+const DEFAULT_EXIT_GRACE: Duration = Duration::from_secs(5);
 
 type BrowserResult<T> = Result<T, ScrapeJobError>;
 type PendingResponse = oneshot::Sender<BrowserResult<Value>>;
@@ -107,6 +112,7 @@ pub trait BrowserAutomation: Send + Sync {
 pub(crate) struct SupervisorTimeouts {
     pub request: Duration,
     pub shutdown: Duration,
+    pub exit_grace: Duration,
 }
 
 impl Default for SupervisorTimeouts {
@@ -114,6 +120,7 @@ impl Default for SupervisorTimeouts {
         Self {
             request: DEFAULT_REQUEST_TIMEOUT,
             shutdown: DEFAULT_SHUTDOWN_TIMEOUT,
+            exit_grace: DEFAULT_EXIT_GRACE,
         }
     }
 }
@@ -122,6 +129,8 @@ impl Default for SupervisorTimeouts {
 pub(crate) trait ProcessControl: Send + Sync {
     fn pid(&self) -> Option<u32>;
     async fn wait(&self) -> io::Result<()>;
+    /// Asks the process to exit (SIGTERM) so it can run its own cleanup.
+    async fn terminate(&self) -> io::Result<()>;
     async fn kill(&self) -> io::Result<()>;
 }
 
@@ -142,6 +151,23 @@ impl ProcessControl for TokioProcessControl {
             process.wait().await?;
         }
         *child = None;
+        Ok(())
+    }
+
+    async fn terminate(&self) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            let child = self.child.lock().await;
+            if child.is_some() {
+                let pid = i32::try_from(self.pid)
+                    .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "pid out of range"))?;
+                // SAFETY: plain `kill(2)` on the sidecar pid we spawned and
+                // still own (the child handle is held), no memory is touched.
+                if unsafe { libc::kill(pid, libc::SIGTERM) } != 0 {
+                    return Err(io::Error::last_os_error());
+                }
+            }
+        }
         Ok(())
     }
 
@@ -358,8 +384,9 @@ impl BrowserSupervisor {
             .await;
         self.writer.lock().await.take();
 
-        match tokio::time::timeout(self.timeouts.shutdown, self.process.wait()).await {
-            Ok(Ok(())) => {}
+        let exited = match tokio::time::timeout(self.timeouts.exit_grace, self.process.wait()).await
+        {
+            Ok(Ok(())) => true,
             Ok(Err(error)) => {
                 return Err(scrape_error(
                     ScrapeErrorKind::BrowserStartup,
@@ -367,7 +394,19 @@ impl BrowserSupervisor {
                     false,
                 ));
             }
-            Err(_) => {
+            Err(_) => false,
+        };
+        // Give the sidecar a chance to run its own cleanup (it kills the
+        // Chromium process tree on SIGTERM) before resorting to SIGKILL.
+        let exited = exited
+            || (self.process.terminate().await.is_ok()
+                && matches!(
+                    tokio::time::timeout(self.timeouts.exit_grace, self.process.wait()).await,
+                    Ok(Ok(()))
+                ));
+        match exited {
+            true => {}
+            false => {
                 self.process.kill().await.map_err(|error| {
                     scrape_error(
                         ScrapeErrorKind::BrowserStartup,
