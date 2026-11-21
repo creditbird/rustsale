@@ -409,6 +409,11 @@ impl ScrapeJobRunner {
                 {
                     continue;
                 }
+                // `false` also means "cancelled while waiting"; never finalize
+                // (HTTP enrichment + import) for a job the user just stopped.
+                if cancellation.is_cancelled() {
+                    return Ok(());
+                }
                 let outcome = match self.processor.finalize(&job).await {
                     Ok(outcome) => outcome,
                     Err(error) => {
@@ -842,6 +847,7 @@ mod tests {
         gate: Option<Arc<Notify>>,
         gate_used: AtomicBool,
         shutdowns: AtomicUsize,
+        finalize_calls: AtomicUsize,
         shutdown_probe: StdMutex<Option<(Arc<ScrapeJobRepository>, String)>>,
         status_seen_on_shutdown: StdMutex<Option<ScrapeJobStatus>>,
         action_health: StdMutex<VecDeque<Result<GoogleMapsPageHealth, ScrapeJobError>>>,
@@ -861,6 +867,7 @@ mod tests {
                 gate: None,
                 gate_used: AtomicBool::new(false),
                 shutdowns: AtomicUsize::new(0),
+                finalize_calls: AtomicUsize::new(0),
                 shutdown_probe: StdMutex::new(None),
                 status_seen_on_shutdown: StdMutex::new(None),
                 action_health: StdMutex::new(VecDeque::new()),
@@ -961,6 +968,11 @@ mod tests {
                 *self.status_seen_on_relaunch.lock().unwrap() = Some(status);
             }
             Ok(())
+        }
+
+        async fn finalize(&self, _job: &ScrapeJob) -> Result<FinalizeOutcome, ScrapeJobError> {
+            self.finalize_calls.fetch_add(1, Ordering::SeqCst);
+            Ok(FinalizeOutcome::default())
         }
 
         async fn shutdown(&self) -> Result<(), ScrapeJobError> {
@@ -2052,6 +2064,31 @@ mod tests {
             Some("https://www.google.com/sorry/index")
         );
         assert!(processor.calls().is_empty());
+    }
+
+    /// A7: cancelling while the runner waits for a scheduled retry must not
+    /// fall through into finalize (enrichment + import) for a stopped job.
+    #[tokio::test]
+    async fn cancel_while_waiting_for_retry_does_not_finalize() {
+        let repository = repository();
+        let mut waiting = unit("wait-job", "wait-unit", "first", "keyword");
+        waiting.status = ScrapeUnitStatus::RetryScheduled;
+        waiting.next_retry_at =
+            Some((chrono::Utc::now() + chrono::Duration::seconds(30)).to_rfc3339());
+        create_job_with_units(
+            &repository,
+            job("wait-job", ScrapeMode::Keyword),
+            vec![waiting],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![success()]));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("wait-job").await.unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        runner.pause("wait-job").await.unwrap();
+
+        assert_eq!(processor.finalize_calls.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
