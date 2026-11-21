@@ -381,14 +381,25 @@ export class CloakRuntime {
     if (!payload.expression) {
       throw new RuntimeFault('invalid_input', 'expression is required', false);
     }
+    const timeoutMs = payload.timeoutMs ?? 30_000;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       const value = await Promise.race([
         page.evaluate((expression) => globalThis.eval(expression), payload.expression),
-        timeout(payload.timeoutMs ?? 30_000, 'evaluation_timeout'),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new RuntimeFault('evaluation_timeout', 'evaluation timed out', true)),
+            timeoutMs,
+          );
+        }),
       ]);
       return { value };
     } catch (error) {
       throw mapBrowserError(error, 'evaluation_timeout');
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 
@@ -611,12 +622,6 @@ function validateHttpUrl(value: string): string {
     throw new RuntimeFault('invalid_input', 'url must be credential-free HTTP(S)', false);
   }
   return url.toString();
-}
-
-function timeout(timeoutMs: number, kind: 'evaluation_timeout'): Promise<never> {
-  return new Promise((_, reject) => {
-    setTimeout(() => reject(new RuntimeFault(kind, 'evaluation timed out', true)), timeoutMs);
-  });
 }
 
 function mapBrowserError(

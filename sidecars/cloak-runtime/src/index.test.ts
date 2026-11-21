@@ -221,6 +221,69 @@ describe('browser process cleanup', () => {
   });
 });
 
+describe('sidecar lifecycle', () => {
+  test(
+    'evaluate_clears_timeout_timer',
+    async () => {
+      const fixture = join(import.meta.dir, 'test-fixtures', 'evaluate-once-sidecar.ts');
+      const child = Bun.spawn([process.execPath, fixture], {
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const reader = child.stdout.getReader();
+      const decoder = new TextDecoder();
+      let stdout = '';
+      child.stdin.write(
+        `${JSON.stringify({
+          id: 'eval-1',
+          command: 'evaluate',
+          payload: { expression: '1', timeoutMs: 3_000 },
+        })}\n`,
+      );
+      child.stdin.end();
+
+      const responseDeadline = Date.now() + 10_000;
+      while (!stdout.includes('"ok":true') && Date.now() < responseDeadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        stdout += decoder.decode(value, { stream: true });
+      }
+
+      const outcome = await Promise.race([
+        child.exited.then((code) => ({ code })),
+        Bun.sleep(2_000).then(() => ({ code: 'timeout' as const })),
+      ]);
+      if (outcome.code === 'timeout') {
+        child.kill('SIGKILL');
+      }
+      await child.exited;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        stdout += decoder.decode(value, { stream: true });
+      }
+
+      expect(stdout).toContain('"id":"eval-1"');
+      expect(stdout).toContain('"ok":true');
+      expect(outcome.code).toBe(0);
+    },
+    20_000,
+  );
+
+  test('evaluate_reports_evaluation_timeout_when_expression_stalls', async () => {
+    const instance = new CloakRuntime();
+    (instance as unknown as { page: unknown }).page = {
+      isClosed: () => false,
+      evaluate: () => new Promise(() => {}),
+    };
+
+    await expect(
+      instance.evaluate({ expression: 'await new Promise(() => {})', timeoutMs: 25 }),
+    ).rejects.toMatchObject({ kind: 'evaluation_timeout', retryable: true });
+  });
+});
+
 describe('Google Maps block detection', () => {
   test('pins the official CloakBrowser binary released for each supported platform', () => {
     expect(pinnedCloakBrowserBinaryVersion('linux', 'x64')).toBe('146.0.7680.177.5');
