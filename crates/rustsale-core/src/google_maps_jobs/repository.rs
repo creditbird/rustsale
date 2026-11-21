@@ -149,7 +149,8 @@ impl ScrapeJobRepository {
             let now = chrono::Utc::now().to_rfc3339();
             tx.execute(
                 "UPDATE google_maps_scrape_units
-                 SET status='pending', next_retry_at=NULL, updated_at=?1
+                 SET status='pending', next_retry_at=NULL, updated_at=?1,
+                     attempt_count=MAX(attempt_count - 1, 0)
                  WHERE job_id=?2 AND status='running'",
                 params![now, job_id],
             )?;
@@ -453,7 +454,8 @@ impl ScrapeJobRepository {
             let now = chrono::Utc::now().to_rfc3339();
             tx.execute(
                 "UPDATE google_maps_scrape_units
-                 SET status='pending', next_retry_at=NULL, updated_at=?1
+                 SET status='pending', next_retry_at=NULL, updated_at=?1,
+                     attempt_count=MAX(attempt_count - 1, 0)
                  WHERE status='running'
                    AND job_id IN (
                        SELECT id FROM google_maps_scrape_jobs WHERE status='running'
@@ -791,6 +793,7 @@ impl ScrapeJobRepository {
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_units
                  SET status='pending', next_retry_at=NULL, updated_at=?1,
+                     attempt_count=MAX(attempt_count - 1, 0),
                      last_error_kind=?2, last_error_message=?3
                  WHERE id=?4 AND job_id=?5 AND status='running'",
                 params![now, error_kind, error.message, unit_id, job_id],
@@ -1795,6 +1798,105 @@ mod tests {
         let units = context.repository.list_units("job-1").await.unwrap();
         assert_eq!(units[0].status, ScrapeUnitStatus::Pending);
         assert_eq!(units[0].attempt_count, 0);
+    }
+
+    async fn claimed_running_job(context: &TestRepository) {
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Running))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![sample_unit(
+                    "unit-1",
+                    "keyword:coffee",
+                    ScrapeUnitStatus::Pending,
+                )],
+            )
+            .await
+            .unwrap();
+        let claimed = context
+            .repository
+            .claim_next_unit("job-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.attempt_count, 1);
+    }
+
+    async fn reopen_running(context: &TestRepository) {
+        let job = context.repository.get_job("job-1").await.unwrap().unwrap();
+        context
+            .repository
+            .transition_job(
+                "job-1",
+                job.version,
+                ScrapeJobStatus::Running,
+                TransitionCause::System,
+            )
+            .await
+            .unwrap();
+    }
+
+    /// A5: pausing (or hitting a captcha) hands the unit back untouched, so it
+    /// must not burn one of the unit's retry attempts.
+    #[tokio::test]
+    async fn pause_does_not_consume_retry_budget() {
+        let context = TestRepository::new();
+        claimed_running_job(&context).await;
+
+        context.repository.pause_job("job-1").await.unwrap();
+        reopen_running(&context).await;
+        let reclaimed = context
+            .repository
+            .claim_next_unit("job-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reclaimed.attempt_count, 1);
+
+        context
+            .repository
+            .pause_for_action(
+                "job-1",
+                "unit-1",
+                ScrapeJobError {
+                    kind: ScrapeErrorKind::Captcha,
+                    message: "captcha".to_string(),
+                    retryable: false,
+                },
+                "solve".to_string(),
+                None,
+            )
+            .await
+            .unwrap();
+        reopen_running(&context).await;
+        let reclaimed = context
+            .repository
+            .claim_next_unit("job-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reclaimed.attempt_count, 1);
+    }
+
+    #[tokio::test]
+    async fn crash_recovery_does_not_consume_retry_budget() {
+        let context = TestRepository::new();
+        claimed_running_job(&context).await;
+
+        context.repository.recover_interrupted_jobs().await.unwrap();
+        reopen_running(&context).await;
+        let reclaimed = context
+            .repository
+            .claim_next_unit("job-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(reclaimed.attempt_count, 1);
     }
 
     #[tokio::test]
