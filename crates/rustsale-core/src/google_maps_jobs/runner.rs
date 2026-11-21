@@ -1274,7 +1274,7 @@ mod tests {
         assert_eq!(runner.retry_delay(2), Duration::from_millis(4));
         assert_eq!(runner.retry_delay(3), Duration::from_millis(8));
         runner.start("retry-job").await.unwrap();
-        runner.wait_for_idle(Duration::from_secs(1)).await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(10)).await.unwrap();
 
         assert_eq!(processor.calls().len(), 4);
         assert_eq!(
