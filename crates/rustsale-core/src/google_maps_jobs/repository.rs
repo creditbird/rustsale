@@ -386,7 +386,7 @@ impl ScrapeJobRepository {
                        AND last_error_kind IN (
                            'disconnected', 'navigation_timeout', 'evaluation_timeout',
                            'transient_network', 'browser_startup', 'runtime_unavailable',
-                           'selector_changed'
+                           'selector_changed', 'database'
                        )",
                     params![now, job_id],
                 )?;
@@ -878,14 +878,27 @@ impl ScrapeJobRepository {
                 tx.commit()?;
                 return Ok(None);
             }
+            // Failed units mean the job did not cover everything: never report
+            // it as a clean completion (A2).
+            let failed_units: i64 = tx.query_row(
+                "SELECT COUNT(*) FROM google_maps_scrape_units
+                 WHERE job_id=?1 AND status='failed'",
+                params![job_id],
+                |row| row.get(0),
+            )?;
+            let final_status = if failed_units > 0 {
+                "partial"
+            } else {
+                "completed"
+            };
             let now = chrono::Utc::now().to_rfc3339();
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_jobs
-                 SET status='completed', completed_at=?1, updated_at=?1,
+                 SET status=?3, completed_at=?1, updated_at=?1,
                      action_required=NULL, event_sequence=event_sequence + 1,
                      version=version + 1
                  WHERE id=?2 AND status='running'",
-                params![now, job_id],
+                params![now, job_id, final_status],
             )?;
             if changed != 1 {
                 tx.commit()?;
@@ -910,20 +923,30 @@ impl ScrapeJobRepository {
                 return Ok(current);
             }
             let now = chrono::Utc::now().to_rfc3339();
-            tx.execute(
+            let failed_now = tx.execute(
                 "UPDATE google_maps_scrape_units
                  SET status='failed', completed_at=?1, updated_at=?1,
                      last_error_kind=?2, last_error_message=?3
                  WHERE job_id=?4 AND status='running'",
                 params![now, enum_to_text(&error.kind)?, error.message, job_id],
             )?;
+            // Units failed here must be counted, otherwise a later user retry
+            // subtracts from counters that never included them (A2).
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_jobs
                  SET status='failed', completed_at=?1, updated_at=?1,
                      last_error_kind=?2, last_error_message=?3,
+                     processed_units=processed_units + ?5,
+                     failed_units=failed_units + ?5,
                      event_sequence=event_sequence + 1, version=version + 1
                  WHERE id=?4 AND status='running'",
-                params![now, enum_to_text(&error.kind)?, error.message, job_id],
+                params![
+                    now,
+                    enum_to_text(&error.kind)?,
+                    error.message,
+                    job_id,
+                    failed_now as i64
+                ],
             )?;
             if changed != 1 {
                 return Err(anyhow!("failed job transition lost a state race"));
@@ -1632,6 +1655,89 @@ mod tests {
             first_seen_at: "2026-07-26T00:00:00Z".to_string(),
             last_seen_at: "2026-07-26T00:00:00Z".to_string(),
         }
+    }
+
+    /// A2: units failed by `fail_job` must be counted, a user retry must be
+    /// able to reset them (kind `database`), and a job with failed units must
+    /// never be reported as cleanly completed.
+    #[tokio::test]
+    async fn fail_job_counts_failed_units_and_retry_resets_them() {
+        let context = TestRepository::new();
+        let mut job = sample_job(ScrapeJobStatus::Running);
+        job.total_units = 1;
+        context.repository.create_job(job).await.unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![sample_unit(
+                    "unit-1",
+                    "keyword:coffee",
+                    ScrapeUnitStatus::Running,
+                )],
+            )
+            .await
+            .unwrap();
+
+        let failed = context
+            .repository
+            .fail_job(
+                "job-1",
+                ScrapeJobError {
+                    kind: ScrapeErrorKind::Database,
+                    message: "scrape runner failed".to_string(),
+                    retryable: false,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(failed.failed_units, 1);
+        assert_eq!(failed.processed_units, 1);
+
+        let queued = context
+            .repository
+            .transition_job(
+                "job-1",
+                failed.version,
+                ScrapeJobStatus::Queued,
+                TransitionCause::UserRetry,
+            )
+            .await
+            .unwrap();
+        let units = context.repository.list_units("job-1").await.unwrap();
+        assert_eq!(units[0].status, ScrapeUnitStatus::Pending);
+        assert_eq!(queued.failed_units, 0);
+        assert_eq!(queued.processed_units, 0);
+    }
+
+    #[tokio::test]
+    async fn job_with_failed_unit_never_completes() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Running))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![sample_unit(
+                    "unit-1",
+                    "keyword:coffee",
+                    ScrapeUnitStatus::Failed,
+                )],
+            )
+            .await
+            .unwrap();
+
+        let job = context
+            .repository
+            .complete_job_if_exhausted("job-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(job.status, ScrapeJobStatus::Partial);
     }
 
     #[tokio::test]
