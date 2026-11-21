@@ -240,6 +240,7 @@ impl ScrapeJobRunner {
         }
 
         let job_id = current.id.clone();
+        let resumed = current.status != ScrapeJobStatus::Queued;
         let running = self
             .repository
             .transition_job(&job_id, current.version, ScrapeJobStatus::Running, cause)
@@ -254,7 +255,11 @@ impl ScrapeJobRunner {
             Some(&format!("{:?}", running.stage).to_ascii_lowercase()),
             None,
             None,
-            json!({"mode": format!("{:?}", running.mode).to_ascii_lowercase()}),
+            json!({
+                "mode": format!("{:?}", running.mode).to_ascii_lowercase(),
+                "resumed": resumed,
+                "run_generation": running.run_generation,
+            }),
         );
 
         let cancellation = CancellationToken::new();
@@ -355,7 +360,17 @@ impl ScrapeJobRunner {
     }
 
     pub async fn recover_startup(&self) -> Result<usize> {
-        self.repository.recover_interrupted_jobs().await
+        let recovered = self.repository.recover_interrupted_jobs().await?;
+        log_scrape_event(
+            "startup_recovery",
+            None,
+            None,
+            None,
+            None,
+            None,
+            json!({"recovered_jobs": recovered}),
+        );
+        Ok(recovered)
     }
 
     pub fn retry_delay(&self, attempt_count: u32) -> Duration {
