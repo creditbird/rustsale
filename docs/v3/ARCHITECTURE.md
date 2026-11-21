@@ -106,3 +106,17 @@ v2 stays in production and keeps getting fixes. Every fix merged to v2 is ported
 
 Lữ Bố works only on code and synthetic fixtures. It never gets the DB copy, real
 messages, tokens or anything under `~/.local/share/com.rustsale.crm*`.
+
+## Queue after P0b (decided 22/11 by Nakroth)
+
+- P1-S scraper fixes in `rustsale-core` from `docs/v3/scraper-audit.md`, in the audit's
+  order: Elsu fixes the 5 high + 25 medium findings (A/B/C/D) with a regression test each;
+  Lữ Bố does the 20 low findings and fills missing regression tests from Elsu's tests as
+  templates; Toro reviews every diff; Alice QA with a real grid/keyword job on a test
+  profile (never the production app).
+- P1-F Facebook sync: 48,604 repeated error lines in v2 logs 10–21/11 (audit "out of scope").
+  Toro root-causes it in core; the fix is also offered for v2.
+- Legacy commands without UI (`send_zalo_campaign`, `get_campaign_leads`,
+  `start_google_maps_scrape`, `stop_google_maps_scrape`, `verify_all_zalo_sessions`) and the
+  simulated multi-channel campaign delivery are kept as-is in core; not exposed in the TSX
+  UI unless v2 UI uses them (see feature-parity.md notes).
