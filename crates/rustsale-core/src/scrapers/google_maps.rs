@@ -61,6 +61,9 @@ struct ScrollInfo {
     /// The page has no `div[role="feed"]`: the scroll fell back to the window.
     #[serde(default)]
     feed_missing: bool,
+    /// The feed shows a loading indicator, so an unchanged size is not evidence of the end.
+    #[serde(default)]
+    loading: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,7 +354,10 @@ impl GoogleMapsScraper {
                 break;
             }
             let snapshot = (info.height, info.place_count);
-            if last_snapshot == Some(snapshot) {
+            if info.loading {
+                last_snapshot = Some(snapshot);
+                stable_observations = 0;
+            } else if last_snapshot == Some(snapshot) {
                 stable_observations += 1;
                 if stable_observations >= STABLE_FEED_OBSERVATIONS {
                     reached_end = true;
@@ -781,7 +787,8 @@ const SCROLL_FEED_SCRIPT: &str = r#"
         return {
             height: Math.max(0, Math.floor(feed.scrollHeight)),
             is_end: isEnd || placeCount >= 120,
-            place_count: placeCount
+            place_count: placeCount,
+            loading: !!feed.querySelector('[role="progressbar"], [aria-busy="true"]')
         };
     }
     window.scrollBy(0, 1500);
@@ -1183,6 +1190,41 @@ mod typed_tests {
             result.reached_end,
             "a feed whose height and place count stopped changing is exhausted"
         );
+        automation.assert_exhausted();
+    }
+
+    /// A feed that is still loading (spinner shown) and has not grown for a few polls is a slow
+    /// network, not the end of the list.
+    #[tokio::test]
+    async fn slow_feed_load_is_not_reported_as_end() {
+        let loading = json!({"height": 1000, "is_end": false, "place_count": 1, "loading": true});
+        let urls: Vec<String> = (1..=5)
+            .map(|index| format!("https://www.google.com/maps/place/Cafe-{index}"))
+            .collect();
+        let (scraper, automation) = scripted_scraper(vec![
+            Step::Navigate(Ok(())),
+            Step::Health(Ok(GoogleMapsPageState::Ready)),
+            Step::Evaluate(Ok(
+                json!({"height": 1000, "is_end": false, "place_count": 1}),
+            )),
+            Step::Evaluate(Ok(loading.clone())),
+            Step::Evaluate(Ok(loading.clone())),
+            Step::Evaluate(Ok(loading)),
+            Step::Evaluate(Ok(
+                json!({"height": 2400, "is_end": true, "place_count": 5}),
+            )),
+            Step::Evaluate(Ok(json!(urls))),
+        ])
+        .await;
+
+        let result = scraper
+            .collect_search_listing("https://www.google.com/maps/search/cafe")
+            .await
+            .unwrap();
+
+        assert_eq!(result.raw_listing_count, 5);
+        assert_eq!(result.place_urls.len(), 5);
+        assert!(result.reached_end);
         automation.assert_exhausted();
     }
 
