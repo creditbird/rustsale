@@ -1134,7 +1134,8 @@ fn formatted_rtf_text_keeps_its_title_as_plain_text() {
 }
 
 #[test]
-fn empty_description_does_not_hide_title_for_pin_notices() {
+fn pin_notice_text_content_is_unchanged_by_the_rtf_fix() {
+    // Empty `description` shadows `title` exactly as before the rtf fix.
     let message = normalized_content(json!({
         "action": "msginfo.actionlist",
         "description": "",
@@ -1142,10 +1143,62 @@ fn empty_description_does_not_hide_title_for_pin_notices() {
         "params": "{}"
     }));
     assert_eq!(message.content_type, "unsupported");
-    assert_eq!(
-        message.text_content.as_deref(),
-        Some("Vận Tải Quốc Anh đã ghim tin nhắn x")
-    );
+    assert_eq!(message.text_content, None);
+}
+
+#[test]
+fn link_text_content_is_unchanged_by_the_rtf_fix() {
+    let message = normalized_content(json!({
+        "action": "recommened.link", "description": "", "title": "Tiêu đề link", "href": "https://x.test"
+    }));
+    assert_eq!(message.content_type, "unsupported");
+    assert_eq!(message.text_content, None);
+    let message = normalized_content(json!({
+        "action": "recommened.link", "description": "mô tả", "title": "Tiêu đề link"
+    }));
+    assert_eq!(message.text_content.as_deref(), Some("mô tả"));
+}
+
+#[test]
+fn file_with_empty_description_does_not_use_file_name_as_text() {
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new("self-uid", {
+        let mut raw = base_message(
+            "peer-uid",
+            "0",
+            "message-file",
+            json!({ "title": "x.pdf", "description": "", "href": "https://f.test/x.pdf", "params": "{}" }),
+        );
+        raw.msg_type = "share.file".to_string();
+        raw
+    }))));
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = mutations.into_iter().next().unwrap() else {
+        panic!("expected message mutation");
+    };
+    assert_eq!(message.content_type, "file");
+    assert_eq!(message.text_content, None);
+    assert_eq!(message.attachments.len(), 1);
+    assert_eq!(message.attachments[0].file_name.as_deref(), Some("x.pdf"));
+}
+
+#[test]
+fn photo_with_empty_description_keeps_pre_fix_text_content() {
+    let event = ListenerEvent::Message(Box::new(Message::User(UserMessage::new("self-uid", {
+        let mut raw = base_message(
+            "peer-uid",
+            "0",
+            "message-photo",
+            json!({ "title": "caption ảnh", "description": "", "href": "https://i.test/a.jpg" }),
+        );
+        raw.msg_type = "chat.photo".to_string();
+        raw
+    }))));
+    let mutations = normalize_listener_event("imei-a", Some("Sale 01"), event).unwrap();
+    let ZaloMutation::Message(message) = mutations.into_iter().next().unwrap() else {
+        panic!("expected message mutation");
+    };
+    assert_eq!(message.content_type, "image");
+    assert_eq!(message.text_content, None);
 }
 
 #[test]

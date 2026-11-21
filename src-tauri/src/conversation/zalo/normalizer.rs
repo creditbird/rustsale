@@ -151,19 +151,29 @@ fn content_parts(
         _ => "unsupported",
     };
 
-    // First NON-EMPTY candidate: an empty `description` must not hide `title`.
-    let text_content = [
-        "caption",
-        "description",
-        "title",
-        "text",
-        "message",
-        "subTitle",
-    ]
-    .iter()
-    .filter_map(|key| effective_content.get(*key).and_then(Value::as_str))
-    .find(|text| !text.trim().is_empty())
-    .map(str::to_string);
+    let text_content = if is_formatted_text {
+        // Formatted (rtf) text is the customer's own words, kept in `title`.
+        // An empty `description` must not hide it.
+        effective_content
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+    } else {
+        // Every other kind keeps the historical pick: the first key that is
+        // PRESENT wins, then a blank value means no text. (Changing this would
+        // turn file names, link titles and pin notices into `text_content`.)
+        effective_content
+            .get("caption")
+            .or_else(|| effective_content.get("description"))
+            .or_else(|| effective_content.get("title"))
+            .or_else(|| effective_content.get("text"))
+            .or_else(|| effective_content.get("message"))
+            .or_else(|| effective_content.get("subTitle"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string())
+    };
 
     let mut attachments = Vec::new();
     match content_type {

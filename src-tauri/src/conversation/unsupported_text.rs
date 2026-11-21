@@ -107,7 +107,7 @@ pub fn describe(content: &Value) -> Described {
             None => Described::Label("[tin định dạng không có chữ]".to_string()),
         },
         "msginfo.actionlist" => labelled("[thông báo]", title),
-        "recommened.link" => labelled("[link]", title),
+        "recommened.link" => labelled("[link]", title.or(description)),
         "recommened.misscall" => Described::Label("[cuộc gọi nhỡ]".to_string()),
         "recommened.calltime" => Described::Label("[cuộc gọi]".to_string()),
         "recommened.user" | "show.profile" => labelled("[danh thiếp]", title),
@@ -247,6 +247,17 @@ mod tests {
         for (content, expected) in cases {
             assert_eq!(label(content.clone()), expected, "{content}");
         }
+    }
+
+    #[test]
+    fn link_label_uses_title_then_description() {
+        let content =
+            json!({"action":"recommened.link","title":"","description":"★★★★☆ · Quán cà phê"});
+        assert_eq!(label(content), "[link] ★★★★☆ · Quán cà phê");
+        let content = json!({"action":"recommened.link","title":"Tiêu đề","description":"mô tả"});
+        assert_eq!(label(content), "[link] Tiêu đề");
+        let content = json!({"action":"recommened.link","title":" ","description":" "});
+        assert_eq!(label(content), "[link]");
     }
 
     #[test]
