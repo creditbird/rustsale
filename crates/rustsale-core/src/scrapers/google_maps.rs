@@ -830,11 +830,14 @@ const EXTRACT_PLACE_SCRIPT: &str = r#"
     let phone = phoneItem?.getAttribute('data-item-id')?.replace('phone:tel:', '').trim() ||
         telLink?.getAttribute('href')?.replace('tel:', '').trim() || '';
     if (!phone) {
-        const elements = Array.from(document.querySelectorAll('button, a, div, span'));
-        for (const element of elements) {
-            const candidate = text(element);
-            const cleaned = candidate.replace(/[\s.-]/g, '');
-            if (/^(?:\+84|0)\d{9,10}$/.test(cleaned)) {
+        // Only buttons/links of the info panel that announce themselves as the phone
+        // action. Free text elsewhere on the page (related places, reviews) is ignored.
+        for (const element of Array.from(document.querySelectorAll('button[aria-label], a[aria-label]'))) {
+            const label = (element.getAttribute('aria-label') || '').trim();
+            const labelMatch = label.match(/^(?:phone|điện thoại)\s*:\s*(.+)$/i);
+            if (!labelMatch) continue;
+            const candidate = labelMatch[1].trim();
+            if (/^(?:\+84|0)\d{9,10}$/.test(candidate.replace(/[\s.-]/g, ''))) {
                 phone = candidate;
                 break;
             }
@@ -1683,6 +1686,7 @@ const matches = (el, sel) => sel.split(',').some((raw) => {{
   if ((m = s.match(/^\[data-item-id\^="(.+)"\]$/))) return (el.attrs['data-item-id'] || '').startsWith(m[1]);
   if ((m = s.match(/^a\[href\^="(.+)"\]$/))) return el.tag === 'a' && (el.attrs.href || '').startsWith(m[1]);
   if (s === 'a[href]') return el.tag === 'a' && el.attrs.href !== undefined;
+  if ((m = s.match(/^(\w+)\[aria-label\]$/))) return el.tag === m[1] && el.attrs['aria-label'] !== undefined;
   if (s.startsWith('.')) return false;
   return el.tag === s;
 }});
@@ -1737,6 +1741,27 @@ console.log(JSON.stringify({script}));
         ]));
         assert_eq!(result["name"], "Cafe Fixture");
         assert_eq!(result["website"], Value::Null);
+    }
+
+    #[test]
+    fn phone_fallback_ignores_numbers_outside_info_panel() {
+        // A suggestion card for another place shows its own number as plain text.
+        let result = run_extract(json!([
+            {"tag": "h1", "attrs": {}, "text": "Cafe Fixture"},
+            {"tag": "div", "attrs": {}, "text": "0912 345 678"},
+            {"tag": "span", "attrs": {}, "text": "0987654321"}
+        ]));
+        assert_eq!(result["phone"], Value::Null);
+    }
+
+    #[test]
+    fn phone_fallback_reads_the_labelled_phone_button() {
+        let result = run_extract(json!([
+            {"tag": "h1", "attrs": {}, "text": "Cafe Fixture"},
+            {"tag": "div", "attrs": {}, "text": "0912 345 678"},
+            {"tag": "button", "attrs": {"aria-label": "Phone: 0901 234 567"}, "text": "0901 234 567"}
+        ]));
+        assert_eq!(result["phone"], "0901 234 567");
     }
 
     #[test]
