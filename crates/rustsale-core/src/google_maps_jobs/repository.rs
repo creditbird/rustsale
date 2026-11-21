@@ -587,6 +587,10 @@ impl ScrapeJobRepository {
                 .query_row(
                     "SELECT id FROM google_maps_scrape_units
                      WHERE job_id=?1
+                       AND EXISTS (
+                           SELECT 1 FROM google_maps_scrape_jobs
+                           WHERE id=?1 AND status='running'
+                       )
                        AND (
                            status='pending'
                            OR (status='retry_scheduled' AND (next_retry_at IS NULL OR next_retry_at <= ?2))
@@ -1759,6 +1763,38 @@ mod tests {
         let units = context.repository.list_units("job-1").await.unwrap();
         assert_eq!(units[0].status, ScrapeUnitStatus::Pending);
         assert_eq!(queued.failed_units, 0);
+    }
+
+    /// A4: a pause that lands between the runner's status check and its claim
+    /// must not let the claim flip a unit to `running` under a paused job.
+    #[tokio::test]
+    async fn claim_next_unit_returns_none_for_paused_job() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Running))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![sample_unit(
+                    "unit-1",
+                    "keyword:coffee",
+                    ScrapeUnitStatus::Pending,
+                )],
+            )
+            .await
+            .unwrap();
+        context.repository.pause_job("job-1").await.unwrap();
+
+        let claimed = context.repository.claim_next_unit("job-1").await.unwrap();
+
+        assert!(claimed.is_none());
+        let units = context.repository.list_units("job-1").await.unwrap();
+        assert_eq!(units[0].status, ScrapeUnitStatus::Pending);
+        assert_eq!(units[0].attempt_count, 0);
     }
 
     #[tokio::test]
