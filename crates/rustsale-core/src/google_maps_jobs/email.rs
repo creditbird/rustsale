@@ -65,6 +65,15 @@ impl RawHttpResponse {
         }
     }
 
+    fn status(status: u16, content_type: &str) -> Self {
+        Self {
+            status,
+            content_type: Some(content_type.to_string()),
+            location: None,
+            body: Vec::new(),
+        }
+    }
+
     fn redirect(location: &str) -> Self {
         Self {
             status: 302,
@@ -466,16 +475,28 @@ impl EmailEnricher {
             &homepage_response.body,
             MAX_HTML_PAGES - 1,
         );
+        let mut retryable_failure = None;
         for link in links {
             if !robots.allows(&link) {
                 continue;
             }
-            let response = self.client.fetch_html(link).await?;
-            if let Some(email) = extract_primary_email(&response.body) {
-                return Ok(Some(email));
+            // A dead or odd sub-page (404, wrong type) must not discard the
+            // pages still to visit; only a retryable failure is reported, and
+            // only when nothing was found (B4).
+            match self.client.fetch_html(link).await {
+                Ok(response) => {
+                    if let Some(email) = extract_primary_email(&response.body) {
+                        return Ok(Some(email));
+                    }
+                }
+                Err(error) if error.retryable => retryable_failure = Some(error),
+                Err(_) => {}
             }
         }
-        Ok(None)
+        match retryable_failure {
+            Some(error) => Err(error),
+            None => Ok(None),
+        }
     }
 }
 
@@ -1323,6 +1344,69 @@ mod tests {
 
     /// B2: asset file names, tracking/placeholder domains and no-reply
     /// addresses are not contact emails; a plain contact address still is.
+    /// B4: a dead sub-page must not discard the remaining pages.
+    #[tokio::test]
+    async fn find_email_continues_after_dead_subpage() {
+        let resolver = Arc::new(FakeResolver::public());
+        let transport = Arc::new(FakeTransport::new());
+        transport.respond(
+            "https://company.test/robots.txt",
+            RawHttpResponse::status(404, "text/plain"),
+        );
+        transport.respond(
+            "https://company.test/",
+            RawHttpResponse::html(
+                r#"<html><body><a href="/lien-he">Liên hệ</a><a href="/about">About</a></body></html>"#,
+            ),
+        );
+        transport.respond(
+            "https://company.test/lien-he",
+            RawHttpResponse::status(404, "text/html"),
+        );
+        transport.respond(
+            "https://company.test/about",
+            RawHttpResponse::html(
+                r#"<html><body><a href="mailto:sales@company.test">Email</a></body></html>"#,
+            ),
+        );
+        let enricher = EmailEnricher::new(client(resolver, transport));
+
+        assert_eq!(
+            enricher
+                .find_email(url("https://company.test/"))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("sales@company.test")
+        );
+    }
+
+    /// B4: a retryable sub-page failure still surfaces when nothing is found.
+    #[tokio::test]
+    async fn find_email_reports_retryable_subpage_failure_when_nothing_found() {
+        let resolver = Arc::new(FakeResolver::public());
+        let transport = Arc::new(FakeTransport::new());
+        transport.respond(
+            "https://company.test/robots.txt",
+            RawHttpResponse::status(404, "text/plain"),
+        );
+        transport.respond(
+            "https://company.test/",
+            RawHttpResponse::html(r#"<html><body><a href="/contact">Contact</a></body></html>"#),
+        );
+        transport.respond(
+            "https://company.test/contact",
+            RawHttpResponse::status(503, "text/html"),
+        );
+        let enricher = EmailEnricher::new(client(resolver, transport));
+
+        let error = enricher
+            .find_email(url("https://company.test/"))
+            .await
+            .unwrap_err();
+        assert!(error.retryable);
+    }
+
     #[test]
     fn email_extraction_rejects_asset_names_and_placeholder_domains() {
         for candidate in [
