@@ -43,6 +43,9 @@ impl Default for GridLimits {
     }
 }
 
+/// Finest zoom `radius_to_zoom` returns; splitting a cell already at it adds no detail.
+const MAX_GRID_ZOOM: u8 = 18;
+
 pub fn radius_to_zoom(radius_m: f64) -> u8 {
     if radius_m >= 10000.0 {
         12
@@ -203,10 +206,11 @@ pub fn should_subdivide(
     if low_yield_levels >= 2 {
         return false;
     }
-    let children = subdivide_cell(cell, new_unique_ratio);
-    children
-        .first()
-        .is_some_and(|child| radius_to_zoom(child.radius_m) > radius_to_zoom(cell.radius_m))
+    // The zoom steps are not exact halves, so requiring the child to reach a
+    // higher zoom left saturated cells in some radius bands unsplit (B7). A cell
+    // may split until it is already viewed at the finest zoom Maps offers.
+    radius_to_zoom(cell.radius_m) < MAX_GRID_ZOOM
+        && !subdivide_cell(cell, new_unique_ratio).is_empty()
 }
 
 /// Reports a cell that satisfies every subdivision condition except the
@@ -643,6 +647,41 @@ mod tests {
                 max_initial_cells: 10,
                 max_total_cells: 100,
             },
+        ));
+    }
+
+    /// B7: zoom thresholds are not exact halves, so a saturated cell with radius
+    /// 2450 m used to have a child on the same zoom and never split.
+    #[test]
+    fn saturated_cell_with_radius_2450_subdivides() {
+        // A square cell near the equator with radius = side / sqrt(2).
+        let side_deg = 2450.0 * std::f64::consts::SQRT_2 / 111_000.0;
+        let cell = grid_cell_from_bbox(
+            BoundingBox {
+                lat_min: 0.0,
+                lat_max: side_deg,
+                lng_min: 100.0,
+                lng_max: 100.0 + side_deg,
+            },
+            0,
+            None,
+            0,
+        );
+        assert_eq!(radius_to_zoom(cell.radius_m), 15);
+        assert_eq!(
+            radius_to_zoom(subdivide_cell(&cell, 1.0)[0].radius_m),
+            15,
+            "fixture must hit the zoom plateau"
+        );
+
+        assert!(should_subdivide(
+            &cell,
+            120,
+            55,
+            false,
+            1.0,
+            1,
+            GridLimits::default(),
         ));
     }
 
