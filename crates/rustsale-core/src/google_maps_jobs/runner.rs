@@ -186,11 +186,21 @@ impl ScrapeJobRunner {
             ));
         }
 
-        let health = self
-            .processor
-            .action_health(&current)
-            .await
-            .map_err(|error| anyhow!(error))?;
+        let health = match self.processor.action_health(&current).await {
+            Ok(health) => health,
+            // After an app restart (or a failed relaunch) no browser exists, so
+            // the page cannot be probed. Reopen the action browser instead of
+            // leaving the job permanently unresumable (A3); the next confirm
+            // probes the page normally.
+            Err(error) if error.kind == ScrapeErrorKind::BrowserStartup => {
+                self.processor
+                    .relaunch_for_action(&current)
+                    .await
+                    .map_err(|error| anyhow!(error))?;
+                return Ok(current);
+            }
+            Err(error) => return Err(anyhow!(error)),
+        };
         if !matches!(
             health.state,
             GoogleMapsPageState::Ready | GoogleMapsPageState::EmptyResults
@@ -2005,6 +2015,41 @@ mod tests {
                 .unwrap()
                 .status,
             ScrapeJobStatus::PausedRequiresAction
+        );
+        assert!(processor.calls().is_empty());
+    }
+
+    /// A3: after an app restart no browser exists, so the health probe fails
+    /// with `BrowserStartup`. Confirming must reopen the action browser rather
+    /// than leave the job impossible to resume.
+    #[tokio::test]
+    async fn resume_after_restart_reopens_action_browser() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("restart-job", ScrapeMode::Keyword),
+            vec![unit("restart-job", "restart-unit", "first", "keyword")],
+        )
+        .await;
+        pause_first_unit(&repository, "restart-job").await;
+        let processor =
+            Arc::new(
+                FakeProcessor::new(vec![success()]).with_action_health(vec![Err(ScrapeJobError {
+                    kind: ScrapeErrorKind::BrowserStartup,
+                    message: "browser is not started".to_string(),
+                    retryable: true,
+                })]),
+            );
+        let runner = runner(repository.clone(), processor.clone());
+
+        let confirmed = runner.confirm_action("restart-job").await.unwrap();
+
+        assert_eq!(confirmed.status, ScrapeJobStatus::PausedRequiresAction);
+        let relaunched = processor.relaunched_profiles.lock().unwrap().clone();
+        assert_eq!(relaunched.len(), 1);
+        assert_eq!(
+            relaunched[0].1.as_deref(),
+            Some("https://www.google.com/sorry/index")
         );
         assert!(processor.calls().is_empty());
     }
