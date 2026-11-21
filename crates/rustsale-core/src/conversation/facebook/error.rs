@@ -5,7 +5,7 @@ use std::fmt;
 pub enum MetaErrorKind {
     /// OAuth token expired, invalid session, revoked permissions (code 190, 102, 401 Unauthorized)
     AuthFailure,
-    /// Rate limit reached (code 4, 17, 32, 613)
+    /// Rate limit reached (HTTP 429, code 4, 17, 32, 613)
     RateLimited,
     /// Transient / temporary server error (code 2, 500, 502, 503, 504, is_transient: true)
     Transient,
@@ -66,7 +66,12 @@ impl MetaGraphError {
             || http_status == 504
         {
             MetaErrorKind::Transient
-        } else if code == Some(4) || code == Some(17) || code == Some(32) || code == Some(613) {
+        } else if http_status == 429
+            || code == Some(4)
+            || code == Some(17)
+            || code == Some(32)
+            || code == Some(613)
+        {
             MetaErrorKind::RateLimited
         } else if code == Some(10) || code == Some(2018278) || message.contains("24 hours") {
             MetaErrorKind::PolicyViolation
@@ -110,3 +115,29 @@ impl fmt::Display for MetaGraphError {
 }
 
 impl std::error::Error for MetaGraphError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn http_429_without_a_code_is_rate_limited() {
+        // Seen in the v2 production log: status 429 with no error code in the body.
+        let body = serde_json::json!({
+            "error": { "message": "An error has occurred. No further information is available." }
+        });
+        let err = MetaGraphError::parse(429, &body);
+        assert_eq!(err.kind, MetaErrorKind::RateLimited);
+        assert!(!err.is_auth_failure());
+    }
+
+    #[test]
+    fn auth_failure_still_wins_over_rate_limit_classification() {
+        let body =
+            serde_json::json!({ "error": { "message": "Session has expired", "code": 190 } });
+        assert_eq!(
+            MetaGraphError::parse(400, &body).kind,
+            MetaErrorKind::AuthFailure
+        );
+    }
+}

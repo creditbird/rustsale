@@ -486,3 +486,121 @@ fn test_facebook_normalizer_delta_fault_injection_rolls_back_atomically() {
         .unwrap();
     assert_eq!(delta_count, 0);
 }
+
+// ---- Regression: repeated "UNIQUE constraint failed: message_attachments.message_id,
+// message_attachments.provider_attachment_id" (v2 production log, 10-21/11/2026).
+// Facebook's CDN URLs are signed and change between polls, so re-ingesting an
+// already stored message used to miss the `(message_id, remote_url)` conflict target
+// and trip the `(message_id, provider_attachment_id)` unique index instead. The
+// error aborted the whole batch transaction, so the poll failed identically forever.
+
+fn attachment_node(id: &str, url: &str) -> FacebookAttachmentNode {
+    FacebookAttachmentNode {
+        id: Some(id.to_string()),
+        mime_type: Some("image/jpeg".to_string()),
+        name: Some("photo.jpg".to_string()),
+        size: Some(1024),
+        file_url: Some(url.to_string()),
+        image_data: Some(FacebookImageData {
+            url: Some(url.to_string()),
+            preview_url: Some(format!("{url}&thumb=1")),
+            max_width: Some(800),
+            max_height: Some(600),
+        }),
+        video_data: None,
+    }
+}
+
+fn thread_with_attachments(atts: Vec<FacebookAttachmentNode>) -> Vec<FacebookConversationThread> {
+    vec![FacebookConversationThread {
+        id: "t_att".to_string(),
+        updated_time: "2026-11-20T02:00:00+0000".to_string(),
+        participants: Some(FacebookParticipantsContainer {
+            data: vec![
+                FacebookParticipantNode {
+                    id: "page_123".to_string(),
+                    name: Some("My Fanpage".to_string()),
+                    email: None,
+                },
+                FacebookParticipantNode {
+                    id: "psid_att".to_string(),
+                    name: Some("Khach".to_string()),
+                    email: None,
+                },
+            ],
+        }),
+        messages: Some(FacebookMessagesContainer {
+            data: vec![FacebookMessageNode {
+                id: "m_att".to_string(),
+                created_time: "2026-11-20T01:50:00+0000".to_string(),
+                from: Some(FacebookParticipantNode {
+                    id: "psid_att".to_string(),
+                    name: Some("Khach".to_string()),
+                    email: None,
+                }),
+                to: None,
+                message: None,
+                attachments: Some(FacebookAttachmentsContainer { data: atts }),
+            }],
+            paging: None,
+        }),
+    }]
+}
+
+fn attachment_count(conn: &Connection) -> i64 {
+    conn.query_row("SELECT count(*) FROM message_attachments", [], |r| r.get(0))
+        .unwrap()
+}
+
+#[test]
+fn test_resync_with_rotated_attachment_url_is_idempotent() {
+    let mut conn = create_test_db();
+
+    let first = thread_with_attachments(vec![attachment_node(
+        "att_1",
+        "https://cdn.example/a.jpg?oh=aaa&oe=1",
+    )]);
+    FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &first)
+        .unwrap();
+    assert_eq!(attachment_count(&conn), 1);
+
+    // Same message and attachment id, new signed URL on the next poll.
+    let second = thread_with_attachments(vec![attachment_node(
+        "att_1",
+        "https://cdn.example/a.jpg?oh=bbb&oe=2",
+    )]);
+    let summary =
+        FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &second)
+            .expect("re-polling a stored message must not fail");
+
+    assert_eq!(summary.new_messages_count, 0);
+    assert_eq!(attachment_count(&conn), 1);
+}
+
+#[test]
+fn test_same_attachment_id_repeated_in_one_message_is_stored_once() {
+    let mut conn = create_test_db();
+
+    let threads = thread_with_attachments(vec![
+        attachment_node("att_dup", "https://cdn.example/x.jpg?oh=1"),
+        attachment_node("att_dup", "https://cdn.example/x.jpg?oh=2"),
+    ]);
+    FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &threads)
+        .expect("duplicate attachment ids inside one message must not abort the batch");
+
+    assert_eq!(attachment_count(&conn), 1);
+}
+
+#[test]
+fn test_distinct_attachments_in_one_message_are_all_stored() {
+    let mut conn = create_test_db();
+
+    let threads = thread_with_attachments(vec![
+        attachment_node("att_a", "https://cdn.example/a.jpg"),
+        attachment_node("att_b", "https://cdn.example/b.jpg"),
+    ]);
+    FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &threads)
+        .unwrap();
+
+    assert_eq!(attachment_count(&conn), 2);
+}

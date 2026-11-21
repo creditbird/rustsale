@@ -418,3 +418,39 @@ TSX must never receive a whole large list. Sorting/filtering stays in Rust.
 See the report to Nakroth: `cargo fmt --check`, `cargo clippy --workspace -- -D warnings`,
 `cargo test --workspace` (1021 + 4 + 1 passed, 4 ignored: same test set as v2), `cargo tree -p
 rustsale-core | grep -i tauri` empty.
+
+## 12. Dev identity and cutover checklist (RS P0c)
+
+v3 must never share state with the production v2 app while both exist on one machine. Until
+cutover the build identifies itself as a separate app:
+
+| Item | v3 dev value | Revert at cutover |
+| --- | --- | --- |
+| `tauri.conf.json` `identifier` | `com.rustsale.crm.v3-dev` (data dir, D-Bus name, single-instance lock) | `com.rustsale.crm` |
+| `productName` | `RustSale CRM v3 dev` (autostart `.desktop`, bundle names) | `RustSale CRM` |
+| `plugins.updater.endpoints` | `https://updates.v3-dev.invalid/latest.json` (never resolves; a dev build cannot self-update to a production release) | the real `latest.json` URL |
+| OS keyring service and vault lock dir (`facebook/vault.rs`) | `rustsale-v3-dev` | `rustsale`, so migrated Facebook tokens still decrypt |
+| Zalo webhook allowlist default | `<data_dir>/zalo-webhook-allowlist.csv` only; no `HOME` fallback, so no data dir means nobody is reported | unchanged |
+
+Test-only helpers that open a database refuse any path under `~/.local/share/com.rustsale.crm`
+(kept on purpose: it is a guard, not a default).
+
+Cutover blockers that live outside the core:
+
+- `scrapers/browser.rs` still looks for the `cloak-runtime` sidecar in `../../src-tauri/binaries`.
+  That path must change **before** `src-tauri` is deleted at cutover, or the scraper loses its
+  browser.
+- The Linux self-update installer in `commands.rs` writes `~/.local/bin/rustsale-crm`. The bin name
+  is still the production one; rename it together with the identifier if v3 dev is ever installed
+  as a package.
+- `MockWhatsAppClient` is `#[cfg(test)]` only (module `whatsapp::client::mock_client`).
+
+## 13. Facebook Messenger sync: retry pacing
+
+`facebook/backoff.rs` paces polls per channel account: first retry after 30 s, doubling to a 15 min
+cap; throttled pages (HTTP 429 or Graph codes 4/17/32/613) wait at least 5 min. Auth failures still
+mark the account `invalid` (it leaves the connected list until reconnected). The UI gets an
+`AccountStatus` invalidation once when an account turns unhealthy and once when it recovers;
+`channel_accounts.last_error` holds the text, including storage failures. The "sync now" command
+bypasses the pacing. Only the first failure of a streak, a changed error, or every 20th repeat is
+logged at `error`; the rest are `debug`.

@@ -289,12 +289,18 @@ impl FacebookMessengerNormalizer {
                             serde_json::to_string(att).unwrap_or_else(|_| "{}".to_string());
 
                         if let Some(url) = remote_url {
+                            // No conflict target on purpose: the table has two unique
+                            // indexes, (message_id, remote_url) and (message_id,
+                            // provider_attachment_id). Facebook re-signs CDN URLs on every
+                            // poll, so a re-ingested attachment usually conflicts only on
+                            // the provider id; naming one index let the other abort the
+                            // whole batch and the poll then failed identically forever.
                             tx.execute(
                                 "INSERT INTO message_attachments (
                                     message_id, provider_attachment_id, attachment_type, file_name,
                                     mime_type, size_bytes, remote_url, thumbnail_url, metadata_json, created_at
                                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                                ON CONFLICT(message_id, remote_url) WHERE remote_url IS NOT NULL DO NOTHING",
+                                ON CONFLICT DO NOTHING",
                                 params![
                                     message_id,
                                     att.id,
@@ -571,7 +577,7 @@ impl FacebookMessengerNormalizer {
                                         message_id, provider_attachment_id, attachment_type, file_name,
                                         mime_type, size_bytes, remote_url, thumbnail_url, metadata_json, created_at
                                     ) VALUES (?1, NULL, ?2, NULL, NULL, NULL, ?3, NULL, ?4, ?5)
-                                    ON CONFLICT(message_id, remote_url) WHERE remote_url IS NOT NULL DO NOTHING",
+                                    ON CONFLICT DO NOTHING",
                                     params![message_id, att_type, url, att_json, now_str],
                                 )?;
                             }

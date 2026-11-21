@@ -1,9 +1,7 @@
 use anyhow::{Context as _, Result};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use whatsapp_rust::wacore_binary::JidExt;
 
 use super::normalizer::RawWhatsAppQuote;
@@ -530,333 +528,346 @@ impl WhatsAppClient for RealWhatsAppClient {
     }
 }
 
-/// Recorded payload for sent text message in `MockWhatsAppClient`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MockSentTextMessage {
-    pub recipient_jid: String,
-    pub text: String,
-    pub quote: Option<RawWhatsAppQuote>,
-}
+/// Test-only doubles. Compiled solely under `cfg(test)` so a production binary never
+/// contains a mock WhatsApp client.
+#[cfg(test)]
+mod mock_client {
+    use super::*;
+    use std::collections::VecDeque;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Mutex;
 
-/// Recorded payload for sent media message in `MockWhatsAppClient`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MockSentMediaMessage {
-    pub recipient_jid: String,
-    pub media_type: String,
-    pub media_data_or_url: String,
-    pub caption: Option<String>,
-    pub quote: Option<RawWhatsAppQuote>,
-    pub file_name: Option<String>,
-    pub mime_type: Option<String>,
-}
-
-/// Recorded payload for sent reaction in `MockWhatsAppClient`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MockSentReaction {
-    pub chat_jid: String,
-    pub target_message_id: String,
-    pub target_sender_jid: Option<String>,
-    pub emoji: String,
-    pub is_from_me: bool,
-}
-
-/// Deterministic mock implementation of `WhatsAppClient` for testing.
-#[derive(Clone)]
-pub struct MockWhatsAppClient {
-    pub sent_messages: Arc<Mutex<Vec<MockSentTextMessage>>>,
-    pub sent_media: Arc<Mutex<Vec<MockSentMediaMessage>>>,
-    pub sent_reactions: Arc<Mutex<Vec<MockSentReaction>>>,
-    pub next_send_result: Arc<Mutex<Option<Result<WhatsAppSendResponse>>>>,
-    pub next_reaction_result: Arc<Mutex<Option<Result<()>>>>,
-    pub download_results: Arc<Mutex<VecDeque<Result<Vec<u8>>>>>,
-    pub media_reupload_requests: Arc<Mutex<Vec<WhatsAppMediaReuploadRequest>>>,
-    pub next_media_reupload_result: Arc<Mutex<Option<Result<WhatsAppMediaReuploadResult>>>>,
-    pub next_group_info_result: Arc<Mutex<Option<Result<whatsapp_rust::GroupMetadata>>>>,
-    pub group_info_results:
-        Arc<Mutex<std::collections::HashMap<String, Result<whatsapp_rust::GroupMetadata>>>>,
-    pub connected: Arc<AtomicBool>,
-}
-
-impl Default for MockWhatsAppClient {
-    fn default() -> Self {
-        Self::new()
+    /// Recorded payload for sent text message in `MockWhatsAppClient`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct MockSentTextMessage {
+        pub recipient_jid: String,
+        pub text: String,
+        pub quote: Option<RawWhatsAppQuote>,
     }
-}
 
-impl MockWhatsAppClient {
-    pub fn new() -> Self {
-        Self {
-            sent_messages: Arc::new(Mutex::new(Vec::new())),
-            sent_media: Arc::new(Mutex::new(Vec::new())),
-            sent_reactions: Arc::new(Mutex::new(Vec::new())),
-            next_send_result: Arc::new(Mutex::new(None)),
-            next_reaction_result: Arc::new(Mutex::new(None)),
-            download_results: Arc::new(Mutex::new(VecDeque::new())),
-            media_reupload_requests: Arc::new(Mutex::new(Vec::new())),
-            next_media_reupload_result: Arc::new(Mutex::new(None)),
-            next_group_info_result: Arc::new(Mutex::new(None)),
-            group_info_results: Arc::new(Mutex::new(std::collections::HashMap::new())),
-            connected: Arc::new(AtomicBool::new(true)),
+    /// Recorded payload for sent media message in `MockWhatsAppClient`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct MockSentMediaMessage {
+        pub recipient_jid: String,
+        pub media_type: String,
+        pub media_data_or_url: String,
+        pub caption: Option<String>,
+        pub quote: Option<RawWhatsAppQuote>,
+        pub file_name: Option<String>,
+        pub mime_type: Option<String>,
+    }
+
+    /// Recorded payload for sent reaction in `MockWhatsAppClient`.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct MockSentReaction {
+        pub chat_jid: String,
+        pub target_message_id: String,
+        pub target_sender_jid: Option<String>,
+        pub emoji: String,
+        pub is_from_me: bool,
+    }
+
+    /// Deterministic mock implementation of `WhatsAppClient` for testing.
+    #[derive(Clone)]
+    pub struct MockWhatsAppClient {
+        pub sent_messages: Arc<Mutex<Vec<MockSentTextMessage>>>,
+        pub sent_media: Arc<Mutex<Vec<MockSentMediaMessage>>>,
+        pub sent_reactions: Arc<Mutex<Vec<MockSentReaction>>>,
+        pub next_send_result: Arc<Mutex<Option<Result<WhatsAppSendResponse>>>>,
+        pub next_reaction_result: Arc<Mutex<Option<Result<()>>>>,
+        pub download_results: Arc<Mutex<VecDeque<Result<Vec<u8>>>>>,
+        pub media_reupload_requests: Arc<Mutex<Vec<WhatsAppMediaReuploadRequest>>>,
+        pub next_media_reupload_result: Arc<Mutex<Option<Result<WhatsAppMediaReuploadResult>>>>,
+        pub next_group_info_result: Arc<Mutex<Option<Result<whatsapp_rust::GroupMetadata>>>>,
+        pub group_info_results:
+            Arc<Mutex<std::collections::HashMap<String, Result<whatsapp_rust::GroupMetadata>>>>,
+        pub connected: Arc<AtomicBool>,
+    }
+
+    impl Default for MockWhatsAppClient {
+        fn default() -> Self {
+            Self::new()
         }
     }
 
-    pub fn set_next_send_result(&self, res: Result<WhatsAppSendResponse>) {
-        *self.next_send_result.lock().unwrap() = Some(res);
-    }
+    impl MockWhatsAppClient {
+        pub fn new() -> Self {
+            Self {
+                sent_messages: Arc::new(Mutex::new(Vec::new())),
+                sent_media: Arc::new(Mutex::new(Vec::new())),
+                sent_reactions: Arc::new(Mutex::new(Vec::new())),
+                next_send_result: Arc::new(Mutex::new(None)),
+                next_reaction_result: Arc::new(Mutex::new(None)),
+                download_results: Arc::new(Mutex::new(VecDeque::new())),
+                media_reupload_requests: Arc::new(Mutex::new(Vec::new())),
+                next_media_reupload_result: Arc::new(Mutex::new(None)),
+                next_group_info_result: Arc::new(Mutex::new(None)),
+                group_info_results: Arc::new(Mutex::new(std::collections::HashMap::new())),
+                connected: Arc::new(AtomicBool::new(true)),
+            }
+        }
 
-    pub fn set_next_send_error(&self, kind: WhatsAppErrorKind, message: impl Into<String>) {
-        let err = WhatsAppError {
-            kind,
-            message: message.into(),
-            retry_after_secs: None,
-        };
-        *self.next_send_result.lock().unwrap() = Some(Err(anyhow::anyhow!(err)));
-    }
+        pub fn set_next_send_result(&self, res: Result<WhatsAppSendResponse>) {
+            *self.next_send_result.lock().unwrap() = Some(res);
+        }
 
-    pub fn set_next_reaction_result(&self, res: Result<()>) {
-        *self.next_reaction_result.lock().unwrap() = Some(res);
-    }
+        pub fn set_next_send_error(&self, kind: WhatsAppErrorKind, message: impl Into<String>) {
+            let err = WhatsAppError {
+                kind,
+                message: message.into(),
+                retry_after_secs: None,
+            };
+            *self.next_send_result.lock().unwrap() = Some(Err(anyhow::anyhow!(err)));
+        }
 
-    pub fn set_download_results(&self, results: Vec<Result<Vec<u8>>>) {
-        *self.download_results.lock().unwrap() = results.into();
-    }
+        pub fn set_next_reaction_result(&self, res: Result<()>) {
+            *self.next_reaction_result.lock().unwrap() = Some(res);
+        }
 
-    pub fn set_next_media_reupload_result(&self, result: Result<WhatsAppMediaReuploadResult>) {
-        *self.next_media_reupload_result.lock().unwrap() = Some(result);
-    }
+        pub fn set_download_results(&self, results: Vec<Result<Vec<u8>>>) {
+            *self.download_results.lock().unwrap() = results.into();
+        }
 
-    pub fn set_next_group_info_result(&self, res: Result<whatsapp_rust::GroupMetadata>) {
-        *self.next_group_info_result.lock().unwrap() = Some(res);
-    }
+        pub fn set_next_media_reupload_result(&self, result: Result<WhatsAppMediaReuploadResult>) {
+            *self.next_media_reupload_result.lock().unwrap() = Some(result);
+        }
 
-    pub fn set_group_info(
-        &self,
-        jid: impl Into<String>,
-        res: Result<whatsapp_rust::GroupMetadata>,
-    ) {
-        self.group_info_results
-            .lock()
-            .unwrap()
-            .insert(jid.into(), res);
-    }
+        pub fn set_next_group_info_result(&self, res: Result<whatsapp_rust::GroupMetadata>) {
+            *self.next_group_info_result.lock().unwrap() = Some(res);
+        }
 
-    pub fn get_media_reupload_requests(&self) -> Vec<WhatsAppMediaReuploadRequest> {
-        self.media_reupload_requests.lock().unwrap().clone()
-    }
+        pub fn set_group_info(
+            &self,
+            jid: impl Into<String>,
+            res: Result<whatsapp_rust::GroupMetadata>,
+        ) {
+            self.group_info_results
+                .lock()
+                .unwrap()
+                .insert(jid.into(), res);
+        }
 
-    pub fn set_connected(&self, connected: bool) {
-        self.connected.store(connected, Ordering::SeqCst);
-    }
+        pub fn get_media_reupload_requests(&self) -> Vec<WhatsAppMediaReuploadRequest> {
+            self.media_reupload_requests.lock().unwrap().clone()
+        }
 
-    pub fn get_sent_messages(&self) -> Vec<MockSentTextMessage> {
-        self.sent_messages.lock().unwrap().clone()
-    }
+        pub fn set_connected(&self, connected: bool) {
+            self.connected.store(connected, Ordering::SeqCst);
+        }
 
-    pub fn get_sent_media(&self) -> Vec<MockSentMediaMessage> {
-        self.sent_media.lock().unwrap().clone()
-    }
+        pub fn get_sent_messages(&self) -> Vec<MockSentTextMessage> {
+            self.sent_messages.lock().unwrap().clone()
+        }
 
-    pub fn get_sent_reactions(&self) -> Vec<MockSentReaction> {
-        self.sent_reactions.lock().unwrap().clone()
-    }
+        pub fn get_sent_media(&self) -> Vec<MockSentMediaMessage> {
+            self.sent_media.lock().unwrap().clone()
+        }
 
-    pub fn clear(&self) {
-        self.sent_messages.lock().unwrap().clear();
-        self.sent_media.lock().unwrap().clear();
-        self.sent_reactions.lock().unwrap().clear();
-        self.download_results.lock().unwrap().clear();
-        self.media_reupload_requests.lock().unwrap().clear();
-        *self.next_send_result.lock().unwrap() = None;
-        *self.next_reaction_result.lock().unwrap() = None;
-        *self.next_media_reupload_result.lock().unwrap() = None;
-        *self.next_group_info_result.lock().unwrap() = None;
-        self.group_info_results.lock().unwrap().clear();
-    }
-}
+        pub fn get_sent_reactions(&self) -> Vec<MockSentReaction> {
+            self.sent_reactions.lock().unwrap().clone()
+        }
 
-#[async_trait]
-impl WhatsAppClient for MockWhatsAppClient {
-    async fn send_text_message(
-        &self,
-        recipient_jid: &str,
-        text: &str,
-        quote: Option<&RawWhatsAppQuote>,
-    ) -> Result<WhatsAppSendResponse> {
-        self.sent_messages
-            .lock()
-            .unwrap()
-            .push(MockSentTextMessage {
-                recipient_jid: recipient_jid.to_string(),
-                text: text.to_string(),
-                quote: quote.cloned(),
-            });
-
-        if let Some(res) = self.next_send_result.lock().unwrap().take() {
-            res
-        } else {
-            Ok(WhatsAppSendResponse {
-                provider_message_id: format!("wa_msg_{:016x}", rand::random::<u64>()),
-                timestamp: Some(chrono::Utc::now().to_rfc3339()),
-                media_metadata: None,
-            })
+        pub fn clear(&self) {
+            self.sent_messages.lock().unwrap().clear();
+            self.sent_media.lock().unwrap().clear();
+            self.sent_reactions.lock().unwrap().clear();
+            self.download_results.lock().unwrap().clear();
+            self.media_reupload_requests.lock().unwrap().clear();
+            *self.next_send_result.lock().unwrap() = None;
+            *self.next_reaction_result.lock().unwrap() = None;
+            *self.next_media_reupload_result.lock().unwrap() = None;
+            *self.next_group_info_result.lock().unwrap() = None;
+            self.group_info_results.lock().unwrap().clear();
         }
     }
 
-    async fn send_media_message(
-        &self,
-        recipient_jid: &str,
-        media_type: &str,
-        media_data_or_url: &str,
-        caption: Option<&str>,
-        quote: Option<&RawWhatsAppQuote>,
-        file_name: Option<&str>,
-        mime_type: Option<&str>,
-    ) -> Result<WhatsAppSendResponse> {
-        self.sent_media.lock().unwrap().push(MockSentMediaMessage {
-            recipient_jid: recipient_jid.to_string(),
-            media_type: media_type.to_string(),
-            media_data_or_url: media_data_or_url.to_string(),
-            caption: caption.map(str::to_string),
-            quote: quote.cloned(),
-            file_name: file_name.map(str::to_string),
-            mime_type: mime_type.map(str::to_string),
-        });
+    #[async_trait]
+    impl WhatsAppClient for MockWhatsAppClient {
+        async fn send_text_message(
+            &self,
+            recipient_jid: &str,
+            text: &str,
+            quote: Option<&RawWhatsAppQuote>,
+        ) -> Result<WhatsAppSendResponse> {
+            self.sent_messages
+                .lock()
+                .unwrap()
+                .push(MockSentTextMessage {
+                    recipient_jid: recipient_jid.to_string(),
+                    text: text.to_string(),
+                    quote: quote.cloned(),
+                });
 
-        if let Some(res) = self.next_send_result.lock().unwrap().take() {
-            res
-        } else {
-            Ok(WhatsAppSendResponse {
-                provider_message_id: format!("wa_media_{:016x}", rand::random::<u64>()),
-                timestamp: Some(chrono::Utc::now().to_rfc3339()),
-                media_metadata: Some(WhatsAppMediaUploadMetadata {
-                    url: "https://mmg.whatsapp.net/mock/direct_path".to_string(),
-                    direct_path: "/mock/direct_path".to_string(),
-                    media_key: "bW9ja19tZWRpYV9rZXlfMzJieXRlc19mb3JfdGVzdA==".to_string(),
-                    file_sha256: "bW9ja19zaGEyNTY=".to_string(),
-                    file_enc_sha256: "bW9ja19lbmNfc2hhMjU2".to_string(),
-                    file_length: 1024,
-                }),
-            })
-        }
-    }
-
-    async fn send_reaction(
-        &self,
-        chat_jid: &str,
-        target_message_id: &str,
-        target_sender_jid: Option<&str>,
-        emoji: &str,
-        is_from_me: bool,
-    ) -> Result<()> {
-        let normalized_chat_jid = if chat_jid.contains('@') {
-            chat_jid.to_string()
-        } else {
-            super::phone::phone_to_direct_jid(chat_jid)
-        };
-
-        let chat: whatsapp_rust::Jid = normalized_chat_jid
-            .parse()
-            .map_err(|e| anyhow::anyhow!("Invalid chat JID '{}': {}", normalized_chat_jid, e))?;
-
-        let is_group = chat.is_group();
-        let normalized_participant = if is_group {
-            if is_from_me {
-                None
+            if let Some(res) = self.next_send_result.lock().unwrap().take() {
+                res
             } else {
-                target_sender_jid.map(|s| {
-                    if s.contains('@') {
-                        s.to_string()
-                    } else {
-                        super::phone::phone_to_direct_jid(s)
-                    }
+                Ok(WhatsAppSendResponse {
+                    provider_message_id: format!("wa_msg_{:016x}", rand::random::<u64>()),
+                    timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                    media_metadata: None,
                 })
             }
-        } else {
-            None
-        };
-
-        if let Some(ref p) = normalized_participant {
-            p.as_str()
-                .parse::<whatsapp_rust::Jid>()
-                .map_err(|e| anyhow::anyhow!("Invalid participant JID '{}': {}", p, e))?;
         }
 
-        self.sent_reactions.lock().unwrap().push(MockSentReaction {
-            chat_jid: chat.to_string(),
-            target_message_id: target_message_id.to_string(),
-            target_sender_jid: normalized_participant,
-            emoji: emoji.to_string(),
-            is_from_me,
-        });
+        async fn send_media_message(
+            &self,
+            recipient_jid: &str,
+            media_type: &str,
+            media_data_or_url: &str,
+            caption: Option<&str>,
+            quote: Option<&RawWhatsAppQuote>,
+            file_name: Option<&str>,
+            mime_type: Option<&str>,
+        ) -> Result<WhatsAppSendResponse> {
+            self.sent_media.lock().unwrap().push(MockSentMediaMessage {
+                recipient_jid: recipient_jid.to_string(),
+                media_type: media_type.to_string(),
+                media_data_or_url: media_data_or_url.to_string(),
+                caption: caption.map(str::to_string),
+                quote: quote.cloned(),
+                file_name: file_name.map(str::to_string),
+                mime_type: mime_type.map(str::to_string),
+            });
 
-        if let Some(res) = self.next_reaction_result.lock().unwrap().take() {
-            res
-        } else {
+            if let Some(res) = self.next_send_result.lock().unwrap().take() {
+                res
+            } else {
+                Ok(WhatsAppSendResponse {
+                    provider_message_id: format!("wa_media_{:016x}", rand::random::<u64>()),
+                    timestamp: Some(chrono::Utc::now().to_rfc3339()),
+                    media_metadata: Some(WhatsAppMediaUploadMetadata {
+                        url: "https://mmg.whatsapp.net/mock/direct_path".to_string(),
+                        direct_path: "/mock/direct_path".to_string(),
+                        media_key: "bW9ja19tZWRpYV9rZXlfMzJieXRlc19mb3JfdGVzdA==".to_string(),
+                        file_sha256: "bW9ja19zaGEyNTY=".to_string(),
+                        file_enc_sha256: "bW9ja19lbmNfc2hhMjU2".to_string(),
+                        file_length: 1024,
+                    }),
+                })
+            }
+        }
+
+        async fn send_reaction(
+            &self,
+            chat_jid: &str,
+            target_message_id: &str,
+            target_sender_jid: Option<&str>,
+            emoji: &str,
+            is_from_me: bool,
+        ) -> Result<()> {
+            let normalized_chat_jid = if chat_jid.contains('@') {
+                chat_jid.to_string()
+            } else {
+                super::super::phone::phone_to_direct_jid(chat_jid)
+            };
+
+            let chat: whatsapp_rust::Jid = normalized_chat_jid.parse().map_err(|e| {
+                anyhow::anyhow!("Invalid chat JID '{}': {}", normalized_chat_jid, e)
+            })?;
+
+            let is_group = chat.is_group();
+            let normalized_participant = if is_group {
+                if is_from_me {
+                    None
+                } else {
+                    target_sender_jid.map(|s| {
+                        if s.contains('@') {
+                            s.to_string()
+                        } else {
+                            super::super::phone::phone_to_direct_jid(s)
+                        }
+                    })
+                }
+            } else {
+                None
+            };
+
+            if let Some(ref p) = normalized_participant {
+                p.as_str()
+                    .parse::<whatsapp_rust::Jid>()
+                    .map_err(|e| anyhow::anyhow!("Invalid participant JID '{}': {}", p, e))?;
+            }
+
+            self.sent_reactions.lock().unwrap().push(MockSentReaction {
+                chat_jid: chat.to_string(),
+                target_message_id: target_message_id.to_string(),
+                target_sender_jid: normalized_participant,
+                emoji: emoji.to_string(),
+                is_from_me,
+            });
+
+            if let Some(res) = self.next_reaction_result.lock().unwrap().take() {
+                res
+            } else {
+                Ok(())
+            }
+        }
+
+        async fn download_media(
+            &self,
+            _params: &whatsapp_rust::download::DownloadParams,
+        ) -> Result<Vec<u8>> {
+            if let Some(result) = self.download_results.lock().unwrap().pop_front() {
+                return result;
+            }
+            // Deterministic dummy valid 1x1 PNG bytes for testing
+            Ok(vec![
+                0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
+                0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
+                0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
+                0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
+                0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
+            ])
+        }
+
+        async fn request_media_reupload(
+            &self,
+            request: &WhatsAppMediaReuploadRequest,
+        ) -> Result<WhatsAppMediaReuploadResult> {
+            self.media_reupload_requests
+                .lock()
+                .unwrap()
+                .push(request.clone());
+            if let Some(result) = self.next_media_reupload_result.lock().unwrap().take() {
+                result
+            } else {
+                Ok(WhatsAppMediaReuploadResult::Success {
+                    direct_path: "/mock/refreshed-media.enc".to_string(),
+                })
+            }
+        }
+
+        async fn get_group_info(&self, group_jid: &str) -> Result<whatsapp_rust::GroupMetadata> {
+            if let Some(res) = self.next_group_info_result.lock().unwrap().take() {
+                return res;
+            }
+            if let Some(res) = self.group_info_results.lock().unwrap().get(group_jid) {
+                return match res {
+                    Ok(meta) => Ok(meta.clone()),
+                    Err(e) => Err(anyhow::anyhow!("{}", e)),
+                };
+            }
+            let jid: whatsapp_rust::Jid = group_jid
+                .parse()
+                .unwrap_or_else(|_| whatsapp_rust::Jid::group("120363000000000000"));
+            Ok(whatsapp_rust::GroupMetadata {
+                id: jid,
+                subject: "Mock WhatsApp Group".to_string(),
+                participants: vec![],
+                ..Default::default()
+            })
+        }
+
+        async fn is_connected(&self) -> bool {
+            self.connected.load(Ordering::SeqCst)
+        }
+
+        async fn disconnect(&self) -> Result<()> {
+            self.connected.store(false, Ordering::SeqCst);
             Ok(())
         }
     }
-
-    async fn download_media(
-        &self,
-        _params: &whatsapp_rust::download::DownloadParams,
-    ) -> Result<Vec<u8>> {
-        if let Some(result) = self.download_results.lock().unwrap().pop_front() {
-            return result;
-        }
-        // Deterministic dummy valid 1x1 PNG bytes for testing
-        Ok(vec![
-            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48,
-            0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x06, 0x00, 0x00,
-            0x00, 0x1F, 0x15, 0xC4, 0x89, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x44, 0x41, 0x54, 0x78,
-            0x9C, 0x63, 0x00, 0x01, 0x00, 0x00, 0x05, 0x00, 0x01, 0x0D, 0x0A, 0x2D, 0xB4, 0x00,
-            0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
-        ])
-    }
-
-    async fn request_media_reupload(
-        &self,
-        request: &WhatsAppMediaReuploadRequest,
-    ) -> Result<WhatsAppMediaReuploadResult> {
-        self.media_reupload_requests
-            .lock()
-            .unwrap()
-            .push(request.clone());
-        if let Some(result) = self.next_media_reupload_result.lock().unwrap().take() {
-            result
-        } else {
-            Ok(WhatsAppMediaReuploadResult::Success {
-                direct_path: "/mock/refreshed-media.enc".to_string(),
-            })
-        }
-    }
-
-    async fn get_group_info(&self, group_jid: &str) -> Result<whatsapp_rust::GroupMetadata> {
-        if let Some(res) = self.next_group_info_result.lock().unwrap().take() {
-            return res;
-        }
-        if let Some(res) = self.group_info_results.lock().unwrap().get(group_jid) {
-            return match res {
-                Ok(meta) => Ok(meta.clone()),
-                Err(e) => Err(anyhow::anyhow!("{}", e)),
-            };
-        }
-        let jid: whatsapp_rust::Jid = group_jid
-            .parse()
-            .unwrap_or_else(|_| whatsapp_rust::Jid::group("120363000000000000"));
-        Ok(whatsapp_rust::GroupMetadata {
-            id: jid,
-            subject: "Mock WhatsApp Group".to_string(),
-            participants: vec![],
-            ..Default::default()
-        })
-    }
-
-    async fn is_connected(&self) -> bool {
-        self.connected.load(Ordering::SeqCst)
-    }
-
-    async fn disconnect(&self) -> Result<()> {
-        self.connected.store(false, Ordering::SeqCst);
-        Ok(())
-    }
 }
+
+#[cfg(test)]
+pub use mock_client::*;

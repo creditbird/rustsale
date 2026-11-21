@@ -26,7 +26,9 @@ use std::fs::{File, OpenOptions};
 use std::sync::OnceLock;
 
 #[cfg(not(test))]
-const KEYRING_SERVICE: &str = "rustsale";
+/// Scoped to the v3 dev identifier so a dev build never reads or creates the
+/// production master key. Revert together with `tauri.conf.json` at cutover.
+const KEYRING_SERVICE: &str = "rustsale-v3-dev";
 #[cfg(not(test))]
 const KEYRING_USER: &str = "facebook_vault_key";
 
@@ -85,14 +87,14 @@ impl FacebookTokenVault {
     /// before any generation so the first creator wins deterministically.
     ///
     /// The lock lives under the user's local data directory (e.g.
-    /// ~/.local/share/rustsale on Linux), never in the shared /tmp namespace:
+    /// ~/.local/share/rustsale-v3-dev on Linux), never in the shared /tmp namespace:
     /// unrelated OS users can neither reach nor pre-create/symlink-replace it,
     /// closing the insecure-temporary-file class of issues.
     #[cfg(not(test))]
     fn vault_lock_path() -> Result<std::path::PathBuf> {
         let base = dirs::data_local_dir()
             .ok_or_else(|| anyhow!("Could not resolve the user's local data directory"))?;
-        let dir = base.join("rustsale");
+        let dir = base.join("rustsale-v3-dev");
         std::fs::create_dir_all(&dir)
             .map_err(|e| anyhow!("Failed to create vault directory {}: {}", dir.display(), e))?;
         Ok(dir.join("facebook-vault.lock"))
