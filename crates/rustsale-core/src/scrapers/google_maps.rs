@@ -770,7 +770,12 @@ pub fn place_id_from_url(url: &str) -> Option<String> {
 
 fn clean_optional(value: Option<String>) -> Option<String> {
     value.and_then(|value| {
-        let trimmed = value.trim().to_string();
+        // Icon glyphs of Maps buttons live in the Unicode private-use area.
+        let without_glyphs: String = value
+            .chars()
+            .filter(|ch| !('\u{E000}'..='\u{F8FF}').contains(ch))
+            .collect();
+        let trimmed = without_glyphs.trim().to_string();
         (!trimmed.is_empty()).then_some(trimmed)
     })
 }
@@ -843,8 +848,13 @@ const EXTRACT_PLACE_SCRIPT: &str = r#"
             }
         }
     }
-    const address = text(document.querySelector('[data-item-id="address"]')) ||
-        text(document.querySelector('.rogA2c'));
+    // Prefer the button's aria-label ("Address: ..."): textContent also carries the icon
+    // glyph. The obfuscated Google class names are not used because they change per deploy.
+    const addressItem = document.querySelector('[data-item-id="address"]');
+    const addressLabel = (addressItem?.getAttribute('aria-label') || '')
+        .replace(/^\s*(?:address|địa chỉ)\s*:\s*/i, '').trim();
+    const address = addressLabel ||
+        text(addressItem).replace(/[\uE000-\uF8FF]/g, '').trim();
     const authority = document.querySelector('[data-item-id="authority"]');
     // Only the official-website button counts: any other external link on a
     // place page (booking, ads, reviews) is not the business's own site.
@@ -1686,6 +1696,7 @@ const matches = (el, sel) => sel.split(',').some((raw) => {{
   if ((m = s.match(/^\[data-item-id\^="(.+)"\]$/))) return (el.attrs['data-item-id'] || '').startsWith(m[1]);
   if ((m = s.match(/^a\[href\^="(.+)"\]$/))) return el.tag === 'a' && (el.attrs.href || '').startsWith(m[1]);
   if (s === 'a[href]') return el.tag === 'a' && el.attrs.href !== undefined;
+  if ((m = s.match(/^\[data-item-id="(.+)"\]\[aria-label\]$/))) return el.attrs['data-item-id'] === m[1] && el.attrs['aria-label'] !== undefined;
   if ((m = s.match(/^(\w+)\[aria-label\]$/))) return el.tag === m[1] && el.attrs['aria-label'] !== undefined;
   if (s.startsWith('.')) return false;
   return el.tag === s;
@@ -1762,6 +1773,33 @@ console.log(JSON.stringify({script}));
             {"tag": "button", "attrs": {"aria-label": "Phone: 0901 234 567"}, "text": "0901 234 567"}
         ]));
         assert_eq!(result["phone"], "0901 234 567");
+    }
+
+    #[test]
+    fn clean_optional_strips_private_use_glyphs() {
+        assert_eq!(
+            super::clean_optional(Some("\u{e0c8} 12 Le Loi\u{f8ff} ".to_string())),
+            Some("12 Le Loi".to_string())
+        );
+        assert_eq!(super::clean_optional(Some("\u{e0c8}".to_string())), None);
+    }
+
+    #[test]
+    fn address_prefers_aria_label_without_icon_glyph() {
+        let result = run_extract(json!([
+            {"tag": "h1", "attrs": {}, "text": "Cafe Fixture"},
+            {"tag": "button", "attrs": {"data-item-id": "address", "aria-label": "Address: 12 Le Loi, District 1"}, "text": "\u{e0c8}\n12 Le Loi, District 1"}
+        ]));
+        assert_eq!(result["address"], "12 Le Loi, District 1");
+    }
+
+    #[test]
+    fn address_aria_label_prefix_is_removed_in_vietnamese_too() {
+        let result = run_extract(json!([
+            {"tag": "h1", "attrs": {}, "text": "Cafe Fixture"},
+            {"tag": "button", "attrs": {"data-item-id": "address", "aria-label": "Địa chỉ: 12 Lê Lợi, Quận 1"}, "text": "12 Lê Lợi, Quận 1"}
+        ]));
+        assert_eq!(result["address"], "12 Lê Lợi, Quận 1");
     }
 
     #[test]
