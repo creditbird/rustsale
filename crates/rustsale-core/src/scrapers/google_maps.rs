@@ -92,6 +92,8 @@ pub struct GoogleMapsScraper {
     pub max_delay_ms: u64,
     ready_attempts: usize,
     ready_delay_ms: u64,
+    /// Extra readiness polls granted to a non-empty page that is not ready yet (slow render).
+    slow_render_extra_attempts: usize,
     max_scroll_attempts: usize,
     scroll_delay_ms: u64,
 }
@@ -105,6 +107,7 @@ impl GoogleMapsScraper {
             max_delay_ms: 15000,
             ready_attempts: 20,
             ready_delay_ms: 500,
+            slow_render_extra_attempts: 20,
             max_scroll_attempts: 30,
             scroll_delay_ms: 800,
         }
@@ -118,6 +121,7 @@ impl GoogleMapsScraper {
             max_delay_ms: 50,
             ready_attempts: 1,
             ready_delay_ms: 0,
+            slow_render_extra_attempts: 0,
             max_scroll_attempts: 5,
             scroll_delay_ms: 5,
         }
@@ -282,7 +286,12 @@ impl GoogleMapsScraper {
     }
 
     async fn wait_for_page_health(&self) -> Result<GoogleMapsPageHealth, ScrapeJobError> {
-        for attempt in 0..self.ready_attempts.max(1) {
+        let blank_limit = self.ready_attempts.max(1);
+        // A blank page is retried by the runner after `blank_limit` polls. A non-empty page
+        // that still shows no known selector may just be rendering slowly, so it gets a
+        // longer window before it is reported as `SelectorChanged`.
+        let total_attempts = blank_limit.saturating_add(self.slow_render_extra_attempts);
+        for attempt in 0..total_attempts {
             let health = self.session.health_snapshot().await?;
             if !matches!(
                 health.state,
@@ -290,7 +299,11 @@ impl GoogleMapsScraper {
             ) {
                 return Ok(health);
             }
-            if attempt + 1 == self.ready_attempts.max(1) {
+            let limit = match health.state {
+                GoogleMapsPageState::BlankPage => blank_limit,
+                _ => total_attempts,
+            };
+            if attempt + 1 >= limit {
                 return Err(match health.state {
                     GoogleMapsPageState::BlankPage => scrape_error(
                         ScrapeErrorKind::TransientNetwork,
@@ -1190,6 +1203,26 @@ mod typed_tests {
             result.reached_end,
             "a feed whose height and place count stopped changing is exhausted"
         );
+        automation.assert_exhausted();
+    }
+
+    /// A non-empty page that needs longer than the base readiness window to render its feed
+    /// must not be reported as `SelectorChanged` (non-retryable, stops the job).
+    #[tokio::test]
+    async fn slow_render_is_retried_before_selector_changed() {
+        let (mut scraper, automation) = scripted_scraper(vec![
+            Step::Health(Ok(GoogleMapsPageState::SelectorChanged)),
+            Step::Health(Ok(GoogleMapsPageState::SelectorChanged)),
+            Step::Health(Ok(GoogleMapsPageState::SelectorChanged)),
+            Step::Health(Ok(GoogleMapsPageState::Ready)),
+        ])
+        .await;
+        scraper.ready_attempts = 2;
+        scraper.slow_render_extra_attempts = 4;
+
+        let state = scraper.wait_for_page_state().await.unwrap();
+
+        assert_eq!(state, GoogleMapsPageState::Ready);
         automation.assert_exhausted();
     }
 
