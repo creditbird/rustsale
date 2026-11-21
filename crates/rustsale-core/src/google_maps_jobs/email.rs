@@ -239,7 +239,9 @@ impl SafeHttpClient {
         let response = self
             .fetch_resource(robots_url, ResourceKind::Robots)
             .await?;
-        if response.status == 404 {
+        // RFC 9309: any 4xx on robots.txt means "no rules"; 5xx already
+        // surfaced above as a retryable error (B5).
+        if (400..500).contains(&response.status) {
             return Ok(RobotsRules::default());
         }
         Ok(RobotsRules::parse(&String::from_utf8_lossy(&response.body)))
@@ -302,7 +304,10 @@ impl SafeHttpClient {
                 continue;
             }
 
-            if resource_kind == ResourceKind::Robots && response.status == 404 {
+            if resource_kind == ResourceKind::Robots
+                && (400..500).contains(&response.status)
+                && response.status != 429
+            {
                 return Ok(ValidatedResponse {
                     final_url: current_url,
                     status: response.status,
@@ -321,7 +326,9 @@ impl SafeHttpClient {
                     retryable,
                 ));
             }
-            validate_content_type(response.content_type.as_deref(), resource_kind)?;
+            if resource_kind == ResourceKind::Html {
+                validate_html_content_type(response.content_type.as_deref(), &response.body)?;
+            }
             if response.body.len() > self.max_body_bytes {
                 return Err(enrichment_error(
                     ScrapeErrorKind::InvalidResponse,
@@ -778,6 +785,33 @@ fn registrable_site(url: &Url) -> Result<String, ScrapeJobError> {
         .unwrap_or(host)
         .trim_end_matches('.')
         .to_ascii_lowercase())
+}
+
+/// Real sites often serve HTML as `text/plain`, `application/octet-stream` or
+/// with no type at all; accept those when the body itself looks like HTML (B5).
+fn validate_html_content_type(
+    content_type: Option<&str>,
+    body: &[u8],
+) -> Result<(), ScrapeJobError> {
+    let media_type = content_type
+        .and_then(|value| value.split(';').next())
+        .map(str::trim)
+        .map(str::to_ascii_lowercase);
+    let sniffable = match media_type.as_deref() {
+        None | Some("") | Some("text/plain") | Some("application/octet-stream") => true,
+        Some(_) => false,
+    };
+    if sniffable && body_looks_like_html(body) {
+        return Ok(());
+    }
+    validate_content_type(content_type, ResourceKind::Html)
+}
+
+fn body_looks_like_html(body: &[u8]) -> bool {
+    let head = &body[..body.len().min(1024)];
+    let head = String::from_utf8_lossy(head).to_ascii_lowercase();
+    let head = head.trim_start();
+    head.starts_with("<!doctype html") || head.starts_with("<html") || head.contains("<body")
 }
 
 fn validate_content_type(
@@ -1405,6 +1439,63 @@ mod tests {
             .await
             .unwrap_err();
         assert!(error.retryable);
+    }
+
+    /// B5: robots.txt answering 401/403 means "no rules" (RFC 9309), not an
+    /// enrichment failure.
+    #[tokio::test]
+    async fn robots_403_is_treated_as_allow_all() {
+        let resolver = Arc::new(FakeResolver::public());
+        let transport = Arc::new(FakeTransport::new());
+        transport.respond(
+            "https://company.test/robots.txt",
+            RawHttpResponse::status(403, "text/html"),
+        );
+        transport.respond(
+            "https://company.test/",
+            RawHttpResponse::html(
+                r#"<html><body><a href="mailto:sales@company.test">Email</a></body></html>"#,
+            ),
+        );
+        let enricher = EmailEnricher::new(client(resolver, transport));
+
+        assert_eq!(
+            enricher
+                .find_email(url("https://company.test/"))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("sales@company.test")
+        );
+    }
+
+    /// B5: a site serving its HTML as text/plain or octet-stream is still read.
+    #[tokio::test]
+    async fn html_served_with_wrong_content_type_is_still_read() {
+        let resolver = Arc::new(FakeResolver::public());
+        let transport = Arc::new(FakeTransport::new());
+        transport.respond(
+            "https://company.test/robots.txt",
+            RawHttpResponse::status(404, "text/plain"),
+        );
+        transport.respond(
+            "https://company.test/",
+            RawHttpResponse::with_content_type(
+                "application/octet-stream",
+                br#"<!DOCTYPE html><html><body><a href="mailto:sales@company.test">Email</a></body></html>"#
+                    .to_vec(),
+            ),
+        );
+        let enricher = EmailEnricher::new(client(resolver, transport));
+
+        assert_eq!(
+            enricher
+                .find_email(url("https://company.test/"))
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("sales@company.test")
+        );
     }
 
     #[test]
