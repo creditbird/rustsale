@@ -13,9 +13,13 @@ production until v3 passes full QA and the cutover. Tech lead: Nakroth.
 
 ## Target architecture
 
-NSH **Rust mode** (`nsh.json` with `"rust"` + `"root"`), no QuickJS, no WebView.
-On Linux the native GTK 4 backend is the default; GPUI stays an optional feature, not the
-default. Targets: Linux (primary), Windows, macOS — same as v2's release matrix.
+**Owner decision 22/11 02:27: UI in TSX.** NSH **mixed mode** (Rust with TSX):
+`nsh.json` has `"rust"`, no `"root"`, and a TSX entry (`App.tsx`). All logic, data and heavy
+work stay in Rust (`rustsale-core`), exported to TSX through the app crate's
+`#[native_module("rustsale/native")]` (modules, classes, Rust components for hot paths).
+TSX only describes UI and handles events (QuickJS). Read the nsh skill `mixed.md` + `tsx.md`.
+No WebView. On Linux the native GTK 4 backend is the default; GPUI optional, not default.
+Targets: Linux (primary), Windows, macOS — same as v2's release matrix.
 
 ```
 Cargo workspace (RustSale_v3/)
@@ -25,12 +29,14 @@ Cargo workspace (RustSale_v3/)
 │     local_api (axum 127.0.0.1), notification port, events port
 ├── crates/zca-rs/            # moved from src-tauri/vendor/zca-rs, unchanged
 ├── sidecars/cloak-runtime/   # Google Maps browser sidecar, unchanged
-├── src/                      # NSH app crate (root component "App")
-│     ui/        design system: theme tokens + styled wrappers of nsh_base
-│     store/     app stores (signals private, methods public)
-│     screens/   one module per v2 screen
-│     bridge/    the only place UI calls core: async calls off the UI thread,
-│                core events -> signals
+├── native/ (app crate, Rust)  # #[native_module("rustsale/native")]: the ONLY bridge
+│     async calls into core off the UI thread, core events -> subscriptions,
+│     Rust components only where TSX is too slow (measured)
+├── app/ (TSX)
+│     App.tsx    entry (mount)
+│     ui/        design system: theme tokens + styled wrappers of nsh/base
+│     stores/    app stores (signals private, methods public)
+│     screens/   one file/folder per v2 screen
 ├── src-tauri/ + src/ (Svelte)  # v2 code: kept read-only as the parity reference,
 │                                 deleted only at cutover
 └── docs/v3/                  # this file, feature-parity.md, perf.md
@@ -46,7 +52,15 @@ Rules
 - Rust quality: no `unwrap`/`expect` in production paths, typed errors (`thiserror`),
   `cargo fmt`, `cargo clippy --workspace -- -D warnings`, `cargo test --workspace` green.
   RustSale is single-user desktop: no tenant_id.
-- Theme: semantic tokens only (`theme()`); no raw colors in screens.
+- Theme: semantic tokens only (token classes / `token()` in TSX); no raw colors in screens.
+- Collections that can grow use NSH `List` (virtualized) in TSX; sorting/filtering of
+  large data happens in Rust, TSX receives the page/window it shows.
+
+## Google Maps scraper (owner priority)
+
+Keep every v2 scraper capability (grid crawl, failed-job recovery, profiles, cloak-runtime
+sidecar, place/lead import, administrative areas) and fix the bugs found in the v2 audit
+(`docs/v3/scraper-audit.md`). Each fixed bug gets a regression test in core.
 
 ## Running v3 next to production v2 (mandatory)
 
@@ -77,8 +91,9 @@ Rules
 |---|---|---|---|
 | P0a | Feature-parity inventory of v2 (`docs/v3/feature-parity.md`) | Lữ Bố, reviewed by Nakroth | complete list |
 | P0b | Extract `rustsale-core` + `zca-rs` crates, Tauri-free, v2 tests green | Toro | Alice QA |
-| P0c | NSH version decision, design system, app shell, perf spike (conversation + leads) | Ishar | perf targets met, else stop and report |
-| P1 | Port screens onto core via `bridge/`; repetitive CRUD screens + bulk tests to Lữ Bố | Ishar, Toro, Lữ Bố | per-screen review + Alice |
+| P0c | NSH version decision, mixed-mode app, TSX design system, app shell, perf spike (conversation + leads) | Ishar | perf targets met, else stop and report |
+| P0d | Google Maps scraper audit of v2: bugs with repro + fix proposals | Elsu | reviewed by Nakroth |
+| P1 | native module over core (Toro); TSX screens: Ishar builds the template screens, Lữ Bố ports the repetitive ones + bulk tests from those templates | Toro, Ishar, Lữ Bố | Toro/Ishar review + Alice |
 | P2 | Desktop features (tray, autostart, updater, notifications), local API, webhook, packaging 3 OS | Toro, Ishar | Alice full-parity QA |
 | P3 | Cutover: backup, switch production to v3, v2 kept for rollback | Nakroth | owner approval |
 
