@@ -479,6 +479,15 @@ impl ScrapeJobRepository {
                    )",
                 params![now],
             )?;
+            tx.execute(
+                "UPDATE google_maps_scrape_results
+                 SET enrichment_status='pending'
+                 WHERE enrichment_status='running'
+                   AND job_id IN (
+                       SELECT id FROM google_maps_scrape_jobs WHERE status='running'
+                   )",
+                [],
+            )?;
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_jobs
                  SET status='interrupted', updated_at=?1, completed_at=NULL,
@@ -2923,6 +2932,40 @@ mod tests {
             .await
             .unwrap()
             .is_none());
+    }
+
+    /// B3: an enrichment claim orphaned by a crash must be claimable again
+    /// after startup recovery.
+    #[tokio::test]
+    async fn recover_interrupted_jobs_resets_running_enrichment() {
+        let context = TestRepository::new();
+        claimed_running_job(&context).await;
+        let mut result = sample_result();
+        result.phone = None;
+        result.normalized_phone = None;
+        result.website = Some("https://company.test".to_string());
+        result.enrichment_status = EnrichmentStatus::Pending.as_str().to_string();
+        context
+            .repository
+            .upsert_results("job-1", vec![result])
+            .await
+            .unwrap();
+        let claimed = context
+            .repository
+            .claim_next_result_for_enrichment("job-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.enrichment_status, "running");
+
+        context.repository.recover_interrupted_jobs().await.unwrap();
+
+        let reclaimed = context
+            .repository
+            .claim_next_result_for_enrichment("job-1")
+            .await
+            .unwrap();
+        assert_eq!(reclaimed.map(|result| result.id), Some(claimed.id));
     }
 
     #[tokio::test]
