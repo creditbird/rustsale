@@ -18,6 +18,7 @@
 | Màn hình và dialog chính | 48 | bảng `UI` |
 | Tác vụ nền và tích hợp | 16 | bảng `BG` |
 | API endpoint và webhook | 8 | bảng `API` |
+| SCRAPE chi tiết (không phải command) | 58 | bảng 2A |
 | Tính năng desktop không phải command | 10 | bảng `DSK` |
 | Cài đặt người dùng | 8 nhóm | bảng `SET-20..27` |
 | Ngôn ngữ | 2 | `en`, `vi`, 724 key mỗi ngôn ngữ |
@@ -287,6 +288,133 @@
 
 **Đối chiếu:** tổng 22 + 47 + 25 + 22 + 5 + 16 + 5 + 5 + 19 + 8 + 3 = **177**.
 
+## 2A. SCRAPE chi tiết — Google Maps (58 dòng, không phải command)
+
+> Bảng này mô tả chức năng, tùy chọn, trạng thái, giao thức sidecar và dữ liệu place. Đây **không phải** danh sách Tauri command: 22 command vẫn nằm ở mục 2.4 và tổng command toàn tài liệu vẫn là 177. ID `SCRAPE-23..80` chỉ dùng cho bảng chi tiết này.
+
+| ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
+|---|---|---|---|---|---|---|
+| SCRAPE-23 | SCRAPE | Chọn chế độ cào keyword hoặc grid | GoogleMapsScraper.svelte | src-tauri/src/google_maps_jobs/types.rs:ScrapeMode, CreateScrapeJobRequest.mode | Keyword tìm theo chuỗi, grid chia ô bbox | |
+| SCRAPE-24 | SCRAPE | Từ khóa bắt buộc, trim và tối đa 200 ký tự | GoogleMapsScraper.svelte | src-tauri/src/google_maps_jobs/commands.rs:create_job | Rỗng hoặc quá dài bị từ chối trước khi tạo job | |
+| SCRAPE-25 | SCRAPE | Location tự do cho keyword mode, ghép thành "keyword location" | GoogleMapsScraper.svelte | src-tauri/src/scrapers/google_maps.rs:search_url | URL dùng `hl=en`; location rỗng thì chỉ tìm keyword | |
+| SCRAPE-26 | SCRAPE | Deep scan theo quốc gia và khu vực hành chính | GoogleMapsScraper.svelte | src-tauri/src/google_maps_jobs/commands.rs:plan_initial_units | Location = tên quốc gia, districts = canonical_path từng area; mỗi district một unit; tối đa 500; dedupe lowercase | |
+| SCRAPE-27 | SCRAPE | Grid mode bắt buộc bbox và kiểm tra hợp lệ | GoogleMapsScraper.svelte | src-tauri/src/google_maps_jobs/validation.rs:validate_bbox | Finite, đúng khoảng lat/lng, min nhỏ hơn max | |
+| SCRAPE-28 | SCRAPE | Grid mode bắt buộc step_km dương | GoogleMapsScraper.svelte | src-tauri/src/google_maps_jobs/validation.rs:validate_and_estimate_grid | UI mặc định 2.0 km | |
+| SCRAPE-29 | SCRAPE | Ước lượng số ô trước khi chạy và gợi ý step tối thiểu | GoogleMapsScraper.svelte | src-tauri/src/google_maps_jobs/validation.rs:GridEstimate | Nếu vượt 10.000 ô thì trả recommended_min_step_km | |
+| SCRAPE-30 | SCRAPE | Giới hạn an toàn và điều kiện chia ô của lưới | GoogleMapsScraper.svelte | src-tauri/src/scrapers/grid.rs:GridLimits, should_subdivide, grid_budget_exhausted | Tối đa 10.000 ô ban đầu, 25.000 ô tổng, depth 6, ô nhỏ nhất 250 m; chia ô khi feed chưa kết thúc hoặc số listing thô từ 55 trở lên, còn depth, kích thước ô và zoom cho phép; dừng khi tỉ lệ mới dưới 5% hai lần liên tiếp; cạn budget thì paused_limit_reached, coverage_truncated, resume là chấp nhận thiếu coverage và job kết thúc partial | |
+| SCRAPE-31 | SCRAPE | Headless bật mặc định, có thể tắt để xem trình duyệt | GoogleMapsScraper.svelte | src-tauri/src/google_maps_jobs/types.rs:ScrapeJob.headless | Truyền xuống sidecar qua launch payload | |
+| SCRAPE-32 | SCRAPE | Profile trình duyệt tự sinh theo job và giữ nguyên khi resume | Không có | src-tauri/src/google_maps_jobs/commands.rs:create_job | `<app_data>/google-maps-profiles/<job_id>/profile`; không cho chọn trong UI; xóa sau 7 ngày | |
+| SCRAPE-33 | SCRAPE | Sinh job id và metadata ban đầu | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:create_job | `gmaps-<epoch_ms>-<16 hex>`; status queued, stage scraping, event_sequence 1, version 0, run_generation 0 | |
+| SCRAPE-34 | SCRAPE | Chuẩn bị runtime CloakBrowser trước khi tạo job | GoogleMapsRuntimePanel.svelte | src-tauri/src/scrapers/browser.rs:prepare_runtime | UI chặn start nếu runtime chưa installed | |
+| SCRAPE-35 | SCRAPE | Chọn vùng grid theo khu vực hành chính hoặc geocode tay | GoogleMapsScraper.svelte, AdministrativeAreaSelector.svelte | SCRAPE-10, SCRAPE-11 | Administrative lấy bounds từ GeoNames; manual geocode chuỗi thành bbox | |
+| SCRAPE-36 | SCRAPE | Chọn quốc gia, tỉnh/thành preset, step, headless và deep scan trên form | GoogleMapsScraper.svelte | SCRAPE-03, SCRAPE-04, SCRAPE-05..11 | 63 tỉnh/thành Việt Nam hard-code trong backend | |
+| SCRAPE-37 | SCRAPE | Mười trạng thái job | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/types.rs:ScrapeJobStatus | queued, running, paused, paused_requires_action, paused_limit_reached, interrupted, partial, completed, failed, cancelled | |
+| SCRAPE-38 | SCRAPE | Ma trận chuyển trạng thái hợp lệ | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/repository.rs:is_valid_transition | Partial hoặc failed chỉ về queued khi UserRetry; terminal không quay lại running | |
+| SCRAPE-39 | SCRAPE | Sáu stage của job | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/types.rs:ScrapeStage | planning, installing_browser_runtime, scraping, email_enrichment, importing, cleanup; code hiện dùng scraping, email_enrichment, importing | |
+| SCRAPE-40 | SCRAPE | Sáu trạng thái unit | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/types.rs:ScrapeUnitStatus | pending, running, retry_scheduled, completed, failed, cancelled | |
+| SCRAPE-41 | SCRAPE | Mười bốn loại lỗi job | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/types.rs:ScrapeErrorKind | disconnected, navigation_timeout, evaluation_timeout, transient_network, captcha, consent_required, rate_limited, selector_changed, invalid_response, browser_startup, runtime_unavailable, invalid_input, database, cancelled | |
+| SCRAPE-42 | SCRAPE | Retry policy cho unit lỗi tạm thời | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/runner.rs:RetryPolicy | Tối đa 3 retry, delay 2s, 4s, 8s; tổng 4 lần chạy mỗi unit; chỉ lỗi retryable | |
+| SCRAPE-43 | SCRAPE | Phân biệt lỗi lẻ và lỗi hệ thống | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/runner.rs:FailureTolerance | Place unit được bỏ qua nếu lỗi lẻ; search/grid unit không; 5 lỗi liên tiếp, 50 lỗi tổng hoặc hơn 50% sau 20 unit là systemic | |
+| SCRAPE-44 | SCRAPE | Tạm dừng chờ người dùng khi gặp CAPTCHA, consent hoặc rate limit | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/runner.rs:action_required | status paused_requires_action; lưu action_required và blocked_url; mở lại trình duyệt visible cùng profile | |
+| SCRAPE-45 | SCRAPE | Resume job chờ thao tác chỉ khi trang đã sẵn sàng | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/runner.rs:confirm_action | health_check phải ready hoặc empty_results; nếu vẫn bị chặn thì giữ nguyên paused | |
+| SCRAPE-46 | SCRAPE | Pause, resume, cancel và delete đúng trạng thái | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/repository.rs | Pause chỉ từ running; cancel từ mọi trạng thái chưa terminal; delete chỉ terminal; resume từ paused, interrupted, paused_limit_reached | |
+| SCRAPE-47 | SCRAPE | Khôi phục job sau khi app tắt đột ngột | GoogleMapsJobHistory.svelte | src-tauri/src/google_maps_jobs/repository.rs:recover_interrupted_jobs | Lúc khởi động: job running thành interrupted, unit running thành pending; người dùng resume | |
+| SCRAPE-48 | SCRAPE | Retry các unit lỗi của job partial hoặc failed | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:retry_failed_units | Import kết quả sẵn sàng trước; reset unit failed có last_error_kind trong danh sách retry: disconnected, navigation_timeout, evaluation_timeout, transient_network, browser_startup, runtime_unavailable, selector_changed; queued rồi start; run_generation tăng 1 | |
+| SCRAPE-49 | SCRAPE | Retry riêng bước tìm email | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/runner.rs:retry_email_enrichment | Chỉ job partial; reset enrichment retry_wait hoặc failed về pending; stage email_enrichment | |
+| SCRAPE-50 | SCRAPE | Dọn dẹp theo thời hạn | GoogleMapsJobHistory.svelte | src-tauri/src/google_maps_jobs/commands.rs:cleanup_retention | Profile quá 7 ngày và job terminal quá 30 ngày bị xóa; chạy lúc khởi động và khi job terminal | |
+| SCRAPE-51 | SCRAPE | Hợp đồng event tiến độ job | GoogleMapsScraper.svelte, GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/events.rs:ScrapeEventPublisher | Event `google-maps-scrape-job-event`; có sequence, status, stage, units, businesses, leads, percentage, message, error, action_required | |
+| SCRAPE-52 | SCRAPE | Frontend bỏ qua event cũ hoặc event của job khác | GoogleMapsScraper.svelte | src/lib/services/googleMapsScraperService.ts:reduceGoogleMapsJobEvent | So sequence, chỉ nhận cùng jobId, dừng khi terminal | |
+| SCRAPE-53 | SCRAPE | Chụp screenshot và URL chẩn đoán khi bị chặn | Không có | src-tauri/src/google_maps_jobs/processor.rs:capture_scrape_diagnostics | Lưu PNG theo unit, attempt, error kind trong thư mục diagnostics; gắn diagnostic_url vào message | |
+| SCRAPE-54 | SCRAPE | Khung truyền tin JSON line giữa Rust và sidecar | Không có | sidecars/cloak-runtime/src/protocol.ts:RuntimeRequest | Mỗi dòng một JSON; request có id, command, payload; response có id, ok, result hoặc error | |
+| SCRAPE-55 | SCRAPE | Lệnh runtime_status | GoogleMapsRuntimePanel.svelte | sidecars/cloak-runtime/src/protocol.ts:RuntimeCommand | Trả binary info và wrapperVersion; không tải gì | |
+| SCRAPE-56 | SCRAPE | Lệnh ensure_runtime | GoogleMapsRuntimePanel.svelte | sidecars/cloak-runtime/src/runtime.ts:ensureRuntime | Tải hoặc xác nhận binary CloakBrowser đúng phiên bản; timeout 15 phút | |
+| SCRAPE-57 | SCRAPE | Lệnh launch | Không có | sidecars/cloak-runtime/src/runtime.ts:launch | Payload profileDir, headless, startUrl tùy chọn; đóng browser cũ trước; trả launched và url | |
+| SCRAPE-58 | SCRAPE | Lệnh navigate | Không có | sidecars/cloak-runtime/src/runtime.ts:navigate | Chỉ http/https; waitUntil domcontentloaded; timeoutMs; trả url và title | |
+| SCRAPE-59 | SCRAPE | Lệnh evaluate | Không có | sidecars/cloak-runtime/src/runtime.ts:evaluate | Chạy expression trong page, race với timeout; trả value | |
+| SCRAPE-60 | SCRAPE | Lệnh screenshot | Không có | sidecars/cloak-runtime/src/runtime.ts:screenshot | Payload path và fullPage; trả path | |
+| SCRAPE-61 | SCRAPE | Lệnh health_check và bảy trạng thái trang | GoogleMapsJobPanel.svelte | sidecars/cloak-runtime/src/googleMaps.ts:inspectGoogleMapsPage | Trả state, url, title; state gồm ready, empty_results, captcha, consent_required, rate_limited, blank_page, selector_changed; phát hiện bằng cấu trúc feed, consent dialog, recaptcha và text tiếng Anh hoặc Việt | |
+| SCRAPE-62 | SCRAPE | Lệnh shutdown | Không có | sidecars/cloak-runtime/src/runtime.ts:shutdown | Đóng context, browser và kill process tree theo profile; trả stopped | |
+| SCRAPE-63 | SCRAPE | Mười ba loại lỗi sidecar và cờ retryable | Không có | sidecars/cloak-runtime/src/protocol.ts:RuntimeErrorKind | disconnected, navigation_timeout, evaluation_timeout, transient_network, captcha, consent_required, rate_limited, selector_changed, invalid_response, browser_startup, runtime_unavailable, invalid_input, cancelled | |
+| SCRAPE-64 | SCRAPE | Chuẩn hóa lỗi và loại bỏ chuỗi điều khiển terminal | Không có | sidecars/cloak-runtime/src/protocol.ts:runtimeError | Timeout thành transient_network; closed hoặc disconnected thành disconnected; xóa ANSI escape khỏi message | |
+| SCRAPE-65 | SCRAPE | Ghim phiên bản CloakBrowser và chọn transport | Không có | sidecars/cloak-runtime/src/runtime.ts | Wrapper 0.5.1; binary theo platform; playwright-pipe mặc định, Windows dùng CDP websocket; DevTools chỉ loopback | |
+| SCRAPE-66 | SCRAPE | Timeout và vòng đời sidecar | GoogleMapsRuntimePanel.svelte | src-tauri/src/scrapers/browser.rs:BrowserSupervisor | Request thường 45s, ensure 15 phút, launch 120s, navigate/evaluate 30s cộng 2s, shutdown 3s; một request một lúc; stderr gắn tiền tố `[cloak-runtime]` | |
+| SCRAPE-67 | SCRAPE | Wrapper Rust điều khiển sidecar | GoogleMapsScraper.svelte | src-tauri/src/scrapers/browser.rs:BrowserManager | start, runtime_status, prepare_runtime, relaunch_for_action, navigate, evaluate, screenshot, health_check, shutdown; semaphore 1 phiên | |
+| SCRAPE-68 | SCRAPE | Đọc trang kết quả tìm kiếm và thu URL place | Không có | src-tauri/src/scrapers/google_maps.rs:collect_search_listing | Navigate, chờ health, scroll feed đến khi ổn định, dedupe URL, ghi raw_listing_count và reached_end | |
+| SCRAPE-69 | SCRAPE | Các trường lấy từ một place | Không có | src-tauri/src/scrapers/google_maps.rs:PlaceCandidate | place_id, canonical_url, name, phone, address, website, facebook, zalo, latitude, longitude | |
+| SCRAPE-70 | SCRAPE | Các trường lưu trong kết quả cào | Không có | src-tauri/src/google_maps_jobs/types.rs:ScrapeResult | Xem bảng trường place bên dưới | |
+| SCRAPE-71 | SCRAPE | Khóa chống trùng của place | Không có | src-tauri/src/google_maps_jobs/processor.rs:candidate_dedup_key | Ưu tiên place_id, rồi canonical URL, rồi số điện thoại chuẩn hóa, cuối cùng name và address | |
+| SCRAPE-72 | SCRAPE | Alias nhận diện cùng một place | Không có | src-tauri/src/scrapers/google_maps.rs:place_identity_aliases | place id, geo kèm slug, URL bỏ viewport; dùng để không lên lịch trùng | |
+| SCRAPE-73 | SCRAPE | Kiểm tra place có nằm trong vùng yêu cầu | Không có | src-tauri/src/scrapers/google_maps.rs:candidate_matches_requested_area | Có tọa độ thì so bbox; không có thì so token địa chỉ với location; ngoài vùng bị skipped_outside_area | |
+| SCRAPE-74 | SCRAPE | Điều kiện tối thiểu để thành lead | Không có | src-tauri/src/google_maps_jobs/importer.rs:qualifies_for_lead | Số di động Việt Nam 10 số đầu 03, 05, 07, 08, 09 hoặc email hợp lệ; còn lại rejected | |
+| SCRAPE-75 | SCRAPE | Khi nào chạy tìm email | Không có | src-tauri/src/google_maps_jobs/processor.rs:candidate_to_result | Chỉ khi không có số điện thoại chuẩn hóa và có website; ngược lại enrichment not_found | |
+| SCRAPE-76 | SCRAPE | Quy tắc HTTP an toàn khi tìm email | Không có | src-tauri/src/google_maps_jobs/email.rs:SafeHttpClient | Chỉ http/https, không credentials, chặn IP private, loopback, link-local, multicast, metadata; cùng registrable domain; 3 redirect; 5s kết nối, 15s request; 2 MB; chỉ HTML hoặc text | |
+| SCRAPE-77 | SCRAPE | Tôn trọng robots.txt và crawl trang liên hệ | Không có | src-tauri/src/google_maps_jobs/email.rs:find_email | Đọc robots.txt; tối đa 5 trang gồm homepage; ưu tiên contact, about, support; lấy mailto, HTML hiển thị, regex; chuẩn hóa và loại email example | |
+| SCRAPE-78 | SCRAPE | Trạng thái tìm email | Không có | src-tauri/src/google_maps_jobs/email.rs:EnrichmentStatus | pending, running, found, not_found, retry_wait, failed; lỗi retryable thành retry_wait | |
+| SCRAPE-79 | SCRAPE | Map place thành lead | LeadsList.svelte | src-tauri/src/google_maps_jobs/importer.rs:import_results | Chỉ result pending và inside_requested_area; import ngay sau mỗi unit có kết quả đã sẵn sàng, và lần cuối ở finalize; xem bảng map bên dưới | |
+| SCRAPE-80 | SCRAPE | Chống trùng lead và cập nhật bộ đếm | LeadsList.svelte | src-tauri/src/google_maps_jobs/importer.rs:import_results | Trùng số chuẩn hóa hoặc email lowercase thì duplicate; businesses_qualified tăng created cộng duplicates; leads_created tăng created | |
+
+### 2A.1 Trường của một place và kết quả cào
+
+| Trường | Nguồn | Ghi chú |
+|---|---|---|
+| `place_id` | URL Google Maps | Feature id; có thể null |
+| `canonical_url` | URL place | Bỏ viewport, chuẩn hóa |
+| `name` | Tên doanh nghiệp | Dùng làm tên lead và company |
+| `phone` | Số hiển thị | Giữ nguyên bản gốc |
+| `normalized_phone` | Chuẩn hóa Việt Nam | 10 số, đầu 03, 05, 07, 08, 09; nhận 0084 và 84 |
+| `email` | Enrichment | Chỉ có sau bước tìm email |
+| `normalized_email` | Chuẩn hóa email | Lowercase, validate cú pháp, loại example.com |
+| `address` | Địa chỉ place | Dùng cho lead và kiểm tra vùng |
+| `website` | Website doanh nghiệp | Đầu vào enrichment |
+| `facebook` | Link Facebook | Lưu trong result |
+| `zalo` | Link hoặc số Zalo | Lưu trong result |
+| `latitude`, `longitude` | Tọa độ place | Dùng kiểm tra inside_requested_area |
+| `dedup_key` | Sinh khi lưu result | place_id, canonical URL, phone hoặc name cộng address |
+| `inside_requested_area` | So bbox hoặc địa chỉ | false thì skipped_outside_area |
+| `detail_status` | Runner | completed khi lấy chi tiết xong |
+| `enrichment_status` | Bước email | pending, found, not_found, retry_wait, failed, skipped_outside_area |
+| `import_status` | Bước import | pending, imported, duplicate, rejected, skipped_outside_area |
+| `last_error_kind`, `last_error_message` | Lỗi gần nhất | Từ unit hoặc enrichment |
+| `first_seen_at`, `last_seen_at` | Thời điểm | RFC3339 |
+
+### 2A.2 Map place thành lead
+
+| Trường lead | Giá trị khi import |
+|---|---|
+| `name` | Tên place, rỗng thì `Google Maps Lead` |
+| `company` | Cùng giá trị với `name` |
+| `status` | `New` |
+| `value` | `0` |
+| `last_activity` | Thời điểm import, RFC3339 |
+| `owner` | `Google Maps` |
+| `email` | Email đã chuẩn hóa, có thể rỗng |
+| `phone` | Số đã chuẩn hóa, có thể rỗng |
+| `address` | Địa chỉ place |
+
+- Chỉ import result có `inside_requested_area = 1` và `import_status = 'pending'`.
+- `qualifies_for_lead` quyết định tạo lead hay `rejected`.
+- Trùng số điện thoại chuẩn hóa hoặc email lowercase với lead có sẵn, hoặc trùng trong cùng batch, thì `duplicate`.
+- `businesses_qualified` tăng bằng `created + duplicates`; `leads_created` tăng bằng `created`.
+- `businesses_discovered` luôn bằng số result hiện có của job.
+
+### 2A.3 Ví dụ message Rust và sidecar
+
+```json
+// Rust gửi sidecar qua stdin, mỗi dòng một JSON
+{"id":"17","command":"navigate","payload":{"url":"https://www.google.com/maps/search/cafe/@10.75,106.65,15z?hl=en","timeoutMs":30000}}
+
+// Sidecar trả qua stdout, mỗi dòng một JSON
+{"id":"17","ok":true,"result":{"url":"https://www.google.com/maps/search/cafe/@10.75,106.65,15z?hl=en","title":"cafe - Google Maps"}}
+
+// Lỗi có kind và retryable
+{"id":"18","ok":false,"error":{"kind":"captcha","message":"unusual traffic","retryable":false}}
+```
+
+- Request hợp lệ bắt buộc có `id` khác rỗng, `command` khác rỗng và `payload` là object.
+- Response thành công có `ok: true` và `result`; thất bại có `ok: false` và `error`.
+- Log chẩn đoán của sidecar đi qua stderr, Rust gắn tiền tố `[cloak-runtime]`; stdout chỉ dành cho response JSON.
+
+
 ---
 
 ## 3. Event backend → frontend (26 tên)
@@ -553,6 +681,7 @@ rg -n 'generate_handler' -A220 src-tauri/src/lib.rs
 - `src/routes`: 3 file (`+layout.svelte`, `+layout.ts`, `+page.svelte`), 1 trang thực.
 - 15 tab trong Sidebar, 48 màn hình và dialog chính.
 - 8 mục API: 5 endpoint REST, 1 MCP, 1 webhook Zalo, 1 webhook Facebook.
+- 58 dòng SCRAPE chi tiết ở mục 2A, không tính vào 177 command.
 - i18n: 2 locale, 724 key mỗi locale, không thiếu key chéo.
 
 ---
