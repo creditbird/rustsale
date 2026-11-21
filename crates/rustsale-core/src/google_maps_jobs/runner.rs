@@ -581,12 +581,26 @@ impl ScrapeJobRunner {
                         Some(&error_kind),
                         json!({"message": error.message.clone()}),
                     );
-                    let health = self
-                        .processor
-                        .action_health(&job)
-                        .await
-                        .map_err(|error| anyhow!(error))?;
-                    let blocked_url = (!health.url.trim().is_empty()).then_some(health.url);
+                    // The health probe needs a live browser, but a retryable
+                    // error (e.g. a place-level rate limit) has already closed
+                    // it. A failed probe must not turn "user action needed"
+                    // into a failed job: fall back to the URL captured in the
+                    // error diagnostics, and let relaunch use a default page.
+                    let blocked_url = match self.processor.action_health(&job).await {
+                        Ok(health) => (!health.url.trim().is_empty()).then_some(health.url),
+                        Err(probe_error) => {
+                            log_scrape_event(
+                                "action_health_unavailable",
+                                Some(job_id),
+                                Some(&unit.id),
+                                Some(&format!("{:?}", job.stage).to_ascii_lowercase()),
+                                Some(unit.attempt_count),
+                                Some(&format!("{:?}", probe_error.kind).to_ascii_lowercase()),
+                                json!({"message": probe_error.message}),
+                            );
+                            diagnostic_url(&error.message)
+                        }
+                    };
                     let paused = self
                         .repository
                         .pause_for_action(
@@ -601,14 +615,15 @@ impl ScrapeJobRunner {
                     self.events
                         .publish_job(&paused, "Scrape job requires user action")
                         .await;
-                    self.processor
-                        .shutdown()
-                        .await
-                        .map_err(|error| anyhow!(error))?;
-                    self.processor
-                        .relaunch_for_action(&paused)
-                        .await
-                        .map_err(|error| anyhow!(error))?;
+                    // The job is already committed as paused; a browser that
+                    // cannot be (re)opened now is retried by `confirm_action`,
+                    // so it must not fail the job.
+                    if let Err(shutdown_error) = self.processor.shutdown().await {
+                        tracing::warn!(job_id, error = %shutdown_error.message, "shutdown before action relaunch failed");
+                    }
+                    if let Err(relaunch_error) = self.processor.relaunch_for_action(&paused).await {
+                        tracing::warn!(job_id, error = %relaunch_error.message, "browser relaunch for user action failed");
+                    }
                     return Ok(());
                 }
                 Err(error) => {
@@ -758,6 +773,13 @@ impl ScrapeJobRunner {
             active.take();
         }
     }
+}
+
+/// Extracts the `diagnostic_url=` value the processor appends to scrape errors.
+fn diagnostic_url(message: &str) -> Option<String> {
+    let rest = message.split("diagnostic_url=").nth(1)?;
+    let url = rest.split(';').next()?.trim();
+    (!url.is_empty()).then(|| url.to_string())
 }
 
 fn action_required(kind: ScrapeErrorKind) -> bool {
@@ -1642,6 +1664,60 @@ mod tests {
                 .status,
             ScrapeJobStatus::Completed
         );
+    }
+
+    /// A1: a place-level rate limit closes the browser (retryable errors do),
+    /// so once retries run out the health probe cannot reach a browser. That
+    /// probe failure used to bubble up as a runner failure and mark the job
+    /// `Failed` (kind `database`) instead of asking the user for action.
+    #[tokio::test]
+    async fn place_rate_limit_after_retries_pauses_for_action_instead_of_failing() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("place-limit-job", ScrapeMode::Keyword),
+            vec![unit(
+                "place-limit-job",
+                "place-limit-unit",
+                "first",
+                "keyword",
+            )],
+        )
+        .await;
+        let mut blocked = error_value(ScrapeErrorKind::RateLimited, true);
+        blocked.message =
+            "RateLimited; diagnostic_url=https://www.google.com/sorry/index?continue=x".to_string();
+        let processor = Arc::new(
+            FakeProcessor::new(vec![
+                Err(blocked.clone()),
+                Err(blocked.clone()),
+                Err(blocked.clone()),
+                Err(blocked),
+            ])
+            .with_action_health(vec![Err(ScrapeJobError {
+                kind: ScrapeErrorKind::BrowserStartup,
+                message: "browser is not started".to_string(),
+                retryable: true,
+            })]),
+        );
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("place-limit-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        let stored = repository
+            .get_job("place-limit-job")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ScrapeJobStatus::PausedRequiresAction);
+        assert_eq!(stored.last_error_kind, Some(ScrapeErrorKind::RateLimited));
+        assert!(stored.action_required.is_some());
+        assert_eq!(
+            stored.blocked_url.as_deref(),
+            Some("https://www.google.com/sorry/index?continue=x")
+        );
+        assert_eq!(processor.calls().len(), 4);
     }
 
     /// Spec §11.3: exhausting a safety budget pauses the job so the operator can

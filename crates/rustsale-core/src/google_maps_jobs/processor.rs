@@ -337,10 +337,9 @@ impl ScrapeUnitProcessor for GoogleMapsUnitProcessor {
     }
 
     async fn relaunch_for_action(&self, job: &ScrapeJob) -> Result<(), ScrapeJobError> {
-        let blocked_url = job
-            .blocked_url
-            .as_deref()
-            .ok_or_else(|| invalid_response("action-required job omitted blocked URL"))?;
+        // The URL can be missing when the page could not be probed before the
+        // browser closed (A1); reopen Maps so the user can still resolve it.
+        let blocked_url = job.blocked_url.as_deref().unwrap_or(DEFAULT_ACTION_URL);
         self.browser_for(job)
             .await?
             .relaunch_for_action(blocked_url)
@@ -358,6 +357,8 @@ impl ScrapeUnitProcessor for GoogleMapsUnitProcessor {
         self.finalize_job(job).await
     }
 }
+
+const DEFAULT_ACTION_URL: &str = "https://www.google.com/maps";
 
 async fn capture_scrape_diagnostics(
     session: &BrowserSession,
