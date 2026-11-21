@@ -99,6 +99,7 @@ fn zalo_webhook_message(
             .unwrap_or_else(|| message.ingested_at.clone()),
         is_group,
         attachments,
+        project_code: None,
     }
 }
 
@@ -119,12 +120,15 @@ impl ConversationService {
     ) -> Self {
         let stager = ConversationAttachmentStager::new(spool_root, repository.clone());
         let quick_templates = QuickTemplateRepository::new(repository.db_path());
+        // The webhook allowlist file lives next to the database.
+        let zalo_webhook =
+            ZaloWebhook::from_env(std::path::Path::new(repository.db_path()).parent());
         Self {
             repository,
             events,
             stager,
             quick_templates,
-            zalo_webhook: ZaloWebhook::from_env(),
+            zalo_webhook,
         }
     }
 

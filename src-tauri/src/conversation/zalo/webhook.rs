@@ -6,6 +6,21 @@
 //!   feature. The URL may carry a secret and is never logged.
 //! * `RUSTSALE_ZALO_WEBHOOK_INCLUDE_GROUPS`: `1` also reports group messages.
 //!   Anything else (the default) reports direct messages only.
+//! * `RUSTSALE_ZALO_WEBHOOK_ALLOWLIST_FILE`: path of the customer allowlist
+//!   (default: `zalo-webhook-allowlist.csv` next to the database, normally
+//!   `~/.local/share/com.rustsale.crm/`).
+//!
+//! # Customer allowlist file
+//!
+//! One customer per line: `PROJECT_CODE,senderUid,conversationId`. Blank lines
+//! and lines starting with `#` are ignored; senderUid or conversationId may be
+//! empty (not both). A message is reported only if its sender UID or its
+//! conversation id matches some line, and the payload then carries that line's
+//! `projectCode`. The file is re-read when its mtime or size changes (checked
+//! at most every 30 s), so adding a customer needs no restart. It fails
+//! closed: a missing, unreadable or rule-less file means nothing is sent. The
+//! filter lives only here; messages are always stored in the database. See
+//! `docs/zalo-webhook-allowlist.example.csv`.
 //!
 //! # Design
 //!
@@ -27,8 +42,9 @@
 //! and dropped; it can never block or break Zalo sync.
 
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use serde::Serialize;
 use tokio::sync::{mpsc, Semaphore};
@@ -38,6 +54,22 @@ use tokio::time::Instant;
 pub const WEBHOOK_URL_ENV: &str = "RUSTSALE_ZALO_WEBHOOK_URL";
 /// Environment variable that opts group messages in when set to `1`.
 pub const WEBHOOK_INCLUDE_GROUPS_ENV: &str = "RUSTSALE_ZALO_WEBHOOK_INCLUDE_GROUPS";
+/// Environment variable holding the allowlist file path.
+pub const WEBHOOK_ALLOWLIST_FILE_ENV: &str = "RUSTSALE_ZALO_WEBHOOK_ALLOWLIST_FILE";
+/// File name of the allowlist inside the app data directory.
+pub const WEBHOOK_ALLOWLIST_FILE_NAME: &str = "zalo-webhook-allowlist.csv";
+/// Longest accepted sender UID; anything longer is treated as invalid.
+const MAX_ALLOWED_UID_CHARS: usize = 64;
+/// Longest accepted project code.
+const MAX_PROJECT_CODE_CHARS: usize = 32;
+/// Allowlist files larger than this are refused (fail closed).
+const MAX_ALLOWLIST_BYTES: u64 = 256 * 1024;
+/// Rules kept from one allowlist file.
+const MAX_ALLOWLIST_RULES: usize = 2000;
+/// Invalid line numbers named in one warning.
+const MAX_REPORTED_BAD_LINES: usize = 20;
+/// Minimum time between two `stat` calls on the allowlist file.
+const ALLOWLIST_RECHECK: Duration = Duration::from_secs(30);
 
 /// Quiet time after the last message before a batch is sent.
 const QUIET_PERIOD: Duration = Duration::from_secs(120);
@@ -100,6 +132,9 @@ pub struct ZaloWebhookMessage {
     pub is_group: bool,
     /// Stored attachments of this message (ids only; never provider URLs).
     pub attachments: Vec<WebhookAttachment>,
+    /// Project code of the allowlist line that matched; set by
+    /// [`ZaloWebhook::notify`], so listeners leave it `None`.
+    pub project_code: Option<String>,
 }
 
 /// Reference to a stored attachment, readable through the local API `read_attachment`.
@@ -131,6 +166,207 @@ pub struct ZaloWebhookPayload {
     pub attachments: Vec<WebhookAttachment>,
     /// Always `false`; reserved so receivers can tell real sends from probes.
     pub test: bool,
+    /// Project code of the matching allowlist line; omitted when no allowlist
+    /// is in use.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_code: Option<String>,
+}
+
+/// One allowlist line: a customer, identified by sender UID and/or conversation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AllowRule {
+    project_code: String,
+    sender_uid: Option<String>,
+    conversation_id: Option<i64>,
+}
+
+impl AllowRule {
+    fn matches(&self, message: &ZaloWebhookMessage) -> bool {
+        self.conversation_id == Some(message.conversation_id)
+            || match (&self.sender_uid, message.sender_uid.as_deref()) {
+                (Some(rule_uid), Some(uid)) => rule_uid == uid.trim(),
+                _ => false,
+            }
+    }
+}
+
+/// Parses the allowlist text. Returns the valid rules and the 1-based numbers
+/// of the lines that were skipped as malformed.
+fn parse_allowlist(text: &str) -> (Vec<AllowRule>, Vec<usize>) {
+    let mut rules = Vec::new();
+    let mut bad_lines = Vec::new();
+    let text = text.strip_prefix('\u{feff}').unwrap_or(text);
+    for (index, raw) in text.lines().enumerate() {
+        let line = raw.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        match parse_rule(line) {
+            Some(rule) if rules.len() < MAX_ALLOWLIST_RULES => rules.push(rule),
+            Some(_) | None => bad_lines.push(index + 1),
+        }
+    }
+    (rules, bad_lines)
+}
+
+fn parse_rule(line: &str) -> Option<AllowRule> {
+    let mut columns = line.split(',').map(str::trim);
+    let (code, uid, conversation) = (columns.next()?, columns.next()?, columns.next()?);
+    if columns.next().is_some() {
+        return None;
+    }
+    let project_code_ok = !code.is_empty()
+        && code.chars().count() <= MAX_PROJECT_CODE_CHARS
+        && code
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-');
+    if !project_code_ok {
+        return None;
+    }
+    let sender_uid = if uid.is_empty() {
+        None
+    } else if uid.chars().count() <= MAX_ALLOWED_UID_CHARS
+        && uid.chars().all(|c| c.is_ascii_graphic())
+    {
+        Some(uid.to_string())
+    } else {
+        return None;
+    };
+    let conversation_id = if conversation.is_empty() {
+        None
+    } else {
+        Some(conversation.parse::<i64>().ok()?)
+    };
+    if sender_uid.is_none() && conversation_id.is_none() {
+        return None;
+    }
+    Some(AllowRule {
+        project_code: code.to_string(),
+        sender_uid,
+        conversation_id,
+    })
+}
+
+/// Which messages may be reported.
+#[derive(Debug)]
+pub enum WebhookAllowlist {
+    /// No filtering (tests and explicit wiring only).
+    Open,
+    /// Customer file; fails closed.
+    File(FileAllowlist),
+}
+
+impl WebhookAllowlist {
+    /// Allowlist backed by the file at `path`, re-checked at most every `recheck`.
+    pub fn file(path: PathBuf, recheck: Duration) -> Self {
+        Self::File(FileAllowlist {
+            path,
+            recheck,
+            state: Mutex::new(FileState::default()),
+        })
+    }
+
+    /// Project code of the matching line, or `None` when the message must not
+    /// be reported. [`WebhookAllowlist::Open`] reports everything without a code.
+    fn decide(&self, message: &ZaloWebhookMessage) -> Option<Option<String>> {
+        match self {
+            Self::Open => Some(None),
+            Self::File(file) => file.lookup(message).map(Some),
+        }
+    }
+}
+
+/// Allowlist file plus its cached rules.
+#[derive(Debug)]
+pub struct FileAllowlist {
+    path: PathBuf,
+    recheck: Duration,
+    state: Mutex<FileState>,
+}
+
+#[derive(Debug, Default)]
+struct FileState {
+    rules: Vec<AllowRule>,
+    /// `(mtime, size)` of the file the rules were read from.
+    stamp: Option<(Option<SystemTime>, u64)>,
+    checked_at: Option<std::time::Instant>,
+    /// Whether the last load attempt failed; used to warn once per failure.
+    failed: bool,
+}
+
+impl FileAllowlist {
+    fn lookup(&self, message: &ZaloWebhookMessage) -> Option<String> {
+        let mut state = match self.state.lock() {
+            Ok(guard) => guard,
+            // Plain data; a poisoned lock is still consistent enough to use.
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        self.refresh(&mut state);
+        state
+            .rules
+            .iter()
+            .find(|rule| rule.matches(message))
+            .map(|rule| rule.project_code.clone())
+    }
+
+    /// Re-reads the file when it changed. Blocking, but it is one `stat` per
+    /// `recheck` and a read of at most [`MAX_ALLOWLIST_BYTES`] on change.
+    fn refresh(&self, state: &mut FileState) {
+        if state
+            .checked_at
+            .is_some_and(|checked| checked.elapsed() < self.recheck)
+        {
+            return;
+        }
+        state.checked_at = Some(std::time::Instant::now());
+        let metadata = match std::fs::metadata(&self.path) {
+            Ok(metadata) if metadata.is_file() && metadata.len() <= MAX_ALLOWLIST_BYTES => metadata,
+            Ok(_) => return Self::fail(state, "not a regular file or too large"),
+            Err(error) => return Self::fail(state, &format!("stat: {:?}", error.kind())),
+        };
+        let stamp = (metadata.modified().ok(), metadata.len());
+        if state.stamp == Some(stamp) {
+            return;
+        }
+        let text = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(error) => return Self::fail(state, &format!("read: {:?}", error.kind())),
+        };
+        let (rules, bad_lines) = parse_allowlist(&text);
+        if !bad_lines.is_empty() {
+            let shown: Vec<usize> = bad_lines
+                .iter()
+                .copied()
+                .take(MAX_REPORTED_BAD_LINES)
+                .collect();
+            tracing::warn!(
+                invalid_lines = ?shown,
+                invalid_total = bad_lines.len(),
+                "zalo.webhook.allowlist.invalid_lines_skipped"
+            );
+        }
+        if rules.is_empty() {
+            tracing::warn!("zalo.webhook.allowlist.no_valid_rules: nothing will be sent");
+        } else {
+            tracing::info!(rules = rules.len(), "zalo.webhook.allowlist.loaded");
+        }
+        state.rules = rules;
+        state.stamp = Some(stamp);
+        state.failed = false;
+    }
+
+    /// Fail closed: forget the rules and warn once until the file loads again.
+    fn fail(state: &mut FileState, reason: &str) {
+        state.rules.clear();
+        state.stamp = None;
+        if !state.failed {
+            tracing::warn!(
+                reason,
+                "zalo.webhook.allowlist.unavailable: nothing will be sent"
+            );
+        }
+        state.failed = true;
+    }
 }
 
 /// Sender of webhook notifications. Cheap to clone; clones share one worker.
@@ -142,6 +378,7 @@ pub struct ZaloWebhook {
 struct Inner {
     url: String,
     include_groups: bool,
+    allowlist: WebhookAllowlist,
     tuning: WebhookTuning,
     /// Sender of the running worker; recreated if the worker ever stops.
     worker: Mutex<Option<mpsc::Sender<ZaloWebhookMessage>>>,
@@ -156,20 +393,46 @@ impl std::fmt::Debug for ZaloWebhook {
     }
 }
 
+/// Default allowlist location: next to the database. An empty path (no data
+/// directory and no `HOME`) can never be read, so the filter fails closed.
+fn default_allowlist_path(data_dir: Option<&Path>) -> PathBuf {
+    if let Some(dir) = data_dir.filter(|dir| !dir.as_os_str().is_empty()) {
+        return dir.join(WEBHOOK_ALLOWLIST_FILE_NAME);
+    }
+    std::env::var_os("HOME")
+        .map(|home| {
+            PathBuf::from(home)
+                .join(".local/share/com.rustsale.crm")
+                .join(WEBHOOK_ALLOWLIST_FILE_NAME)
+        })
+        .unwrap_or_default()
+}
+
 impl ZaloWebhook {
     /// A webhook that never sends anything.
     pub fn disabled() -> Self {
         Self { inner: None }
     }
 
-    /// Reads the two environment variables; disabled when the URL is unset or blank.
-    pub fn from_env() -> Self {
+    /// Reads the environment variables; disabled when the URL is unset or blank.
+    ///
+    /// The allowlist file is `RUSTSALE_ZALO_WEBHOOK_ALLOWLIST_FILE`, else
+    /// `zalo-webhook-allowlist.csv` inside `data_dir` (the app data directory,
+    /// where the database lives), else inside the default Linux data directory.
+    pub fn from_env(data_dir: Option<&Path>) -> Self {
         let include_groups = std::env::var(WEBHOOK_INCLUDE_GROUPS_ENV)
             .map(|value| value.trim() == "1")
             .unwrap_or(false);
-        Self::new(
+        let explicit = std::env::var(WEBHOOK_ALLOWLIST_FILE_ENV)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let path = explicit.unwrap_or_else(|| default_allowlist_path(data_dir));
+        Self::new_with_allowlist(
             std::env::var(WEBHOOK_URL_ENV).ok().as_deref(),
             include_groups,
+            WebhookAllowlist::file(path, ALLOWLIST_RECHECK),
             WebhookTuning::default(),
         )
     }
@@ -177,6 +440,17 @@ impl ZaloWebhook {
     /// Builds a webhook for `url`; `None`, a blank value or a non-http(s)
     /// scheme disables it.
     pub fn new(url: Option<&str>, include_groups: bool, tuning: WebhookTuning) -> Self {
+        Self::new_with_allowlist(url, include_groups, WebhookAllowlist::Open, tuning)
+    }
+
+    /// Like [`ZaloWebhook::new`], with an allowlist applied after the group rule.
+    /// [`ZaloWebhook::new`] itself reports everything.
+    pub fn new_with_allowlist(
+        url: Option<&str>,
+        include_groups: bool,
+        allowlist: WebhookAllowlist,
+        tuning: WebhookTuning,
+    ) -> Self {
         let Some(url) = url.map(str::trim).filter(|value| !value.is_empty()) else {
             return Self::disabled();
         };
@@ -188,6 +462,7 @@ impl ZaloWebhook {
             inner: Some(Arc::new(Inner {
                 url: url.to_string(),
                 include_groups,
+                allowlist,
                 tuning,
                 worker: Mutex::new(None),
             })),
@@ -200,17 +475,27 @@ impl ZaloWebhook {
 
     /// Queues `message` for batching. Never blocks and never fails the caller.
     ///
-    /// Group messages are ignored unless groups were enabled. Does nothing
+    /// Group messages are ignored unless groups were enabled, and when an
+    /// allowlist is configured only listed senders/conversations pass. Does nothing
     /// when the webhook is disabled or when no Tokio runtime is available to
     /// host the worker. When the queue is full the message is dropped and a
     /// `warn` is logged.
-    pub fn notify(&self, message: ZaloWebhookMessage) {
+    pub fn notify(&self, mut message: ZaloWebhookMessage) {
         let Some(inner) = &self.inner else {
             return;
         };
         if message.is_group && !inner.include_groups {
             return;
         }
+        // Filter on the webhook only: the message is already stored by now.
+        let Some(project_code) = inner.allowlist.decide(&message) else {
+            tracing::debug!(
+                conversation_id = message.conversation_id,
+                "zalo.webhook.skipped: not on allowlist"
+            );
+            return;
+        };
+        message.project_code = project_code;
         let Some(sender) = inner.sender() else {
             tracing::debug!("zalo.webhook.skipped: no tokio runtime");
             return;
@@ -404,6 +689,7 @@ pub(crate) fn build_payload(
     let sender_name = last.sender_name.clone();
     let ts = last.ts.clone();
     let is_group = last.is_group;
+    let project_code = last.project_code.clone();
     let attachments = messages
         .iter()
         .flat_map(|message| message.attachments.iter().cloned())
@@ -424,6 +710,7 @@ pub(crate) fn build_payload(
         message_count,
         attachments,
         test: false,
+        project_code,
     })
 }
 
@@ -547,6 +834,7 @@ mod tests {
             ts: "2026-11-18T10:00:00+00:00".into(),
             is_group: false,
             attachments: Vec::new(),
+            project_code: None,
         }
     }
 
@@ -627,6 +915,186 @@ mod tests {
             WebhookTuning::default(),
         );
         assert!(!format!("{webhook:?}").contains("secret-token-123"));
+    }
+
+    fn allow_message(conversation_id: i64, uid: Option<&str>) -> ZaloWebhookMessage {
+        let mut value = message("text", Some("hi"));
+        value.conversation_id = conversation_id;
+        value.sender_uid = uid.map(str::to_string);
+        value
+    }
+
+    fn rules_of(text: &str) -> Vec<AllowRule> {
+        parse_allowlist(text).0
+    }
+
+    fn matching_code(rules: &[AllowRule], message: &ZaloWebhookMessage) -> Option<String> {
+        rules
+            .iter()
+            .find(|rule| rule.matches(message))
+            .map(|rule| rule.project_code.clone())
+    }
+
+    #[test]
+    fn parses_comments_blanks_and_the_example_line() {
+        let (rules, bad) = parse_allowlist(
+            "\u{feff}# mã dự án, uid, conversation\n\nVTQA,7359857892895854028,2250596\r\n  # note\n",
+        );
+        assert!(bad.is_empty());
+        assert_eq!(
+            rules,
+            vec![AllowRule {
+                project_code: "VTQA".into(),
+                sender_uid: Some("7359857892895854028".into()),
+                conversation_id: Some(2_250_596),
+            }]
+        );
+    }
+
+    #[test]
+    fn one_of_uid_or_conversation_may_be_empty_but_not_both() {
+        let (rules, bad) = parse_allowlist("A,111,\nB,,22\nC,,\nD, ,  \n");
+        assert_eq!(rules.len(), 2);
+        assert_eq!(bad, vec![3, 4]);
+    }
+
+    #[test]
+    fn malformed_lines_are_skipped_with_their_numbers() {
+        let text = "VTQA,1,2\nonly-two,3\nA,1,2,4\nbad code!,1,2\nX,not number,abc\nY,bad uid,5\n,1,2\nOK,9,\n";
+        let (rules, bad) = parse_allowlist(text);
+        assert_eq!(rules.len(), 2);
+        assert_eq!(bad, vec![2, 3, 4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn overlong_uid_and_code_are_rejected() {
+        let long_uid = "1".repeat(MAX_ALLOWED_UID_CHARS + 1);
+        let long_code = "A".repeat(MAX_PROJECT_CODE_CHARS + 1);
+        let (rules, bad) = parse_allowlist(&format!("A,{long_uid},\n{long_code},1,\n"));
+        assert!(rules.is_empty());
+        assert_eq!(bad, vec![1, 2]);
+    }
+
+    #[test]
+    fn rule_count_is_capped() {
+        let text: String = (0..MAX_ALLOWLIST_RULES + 5)
+            .map(|index| format!("P,{index},\n"))
+            .collect();
+        let (rules, bad) = parse_allowlist(&text);
+        assert_eq!(rules.len(), MAX_ALLOWLIST_RULES);
+        assert_eq!(bad.len(), 5);
+    }
+
+    #[test]
+    fn matching_is_uid_or_conversation_and_first_line_wins() {
+        let rules = rules_of("VTQA,111,5\nOTHER,111,\nTHIRD,,7\n");
+        assert_eq!(
+            matching_code(&rules, &allow_message(99, Some("111"))).as_deref(),
+            Some("VTQA")
+        );
+        assert_eq!(
+            matching_code(&rules, &allow_message(5, Some("zzz"))).as_deref(),
+            Some("VTQA")
+        );
+        assert_eq!(
+            matching_code(&rules, &allow_message(5, None)).as_deref(),
+            Some("VTQA")
+        );
+        assert_eq!(
+            matching_code(&rules, &allow_message(7, None)).as_deref(),
+            Some("THIRD")
+        );
+        assert_eq!(
+            matching_code(&rules, &allow_message(101_629, Some("other"))),
+            None
+        );
+        assert_eq!(matching_code(&rules, &allow_message(101_629, None)), None);
+    }
+
+    #[test]
+    fn empty_uid_column_never_matches_a_message_without_uid() {
+        let rules = rules_of("A,,5\n");
+        assert_eq!(matching_code(&rules, &allow_message(6, None)), None);
+        assert_eq!(matching_code(&rules, &allow_message(6, Some(""))), None);
+    }
+
+    #[test]
+    fn file_allowlist_fails_closed_and_reloads_on_change() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("allow.csv");
+        let allowlist = WebhookAllowlist::file(path.clone(), Duration::ZERO);
+        let probe = allow_message(1, Some("111"));
+
+        // Missing file: nothing passes.
+        assert_eq!(allowlist.decide(&probe), None);
+        // Only junk: still nothing.
+        std::fs::write(&path, "garbage\n# c\n").expect("write");
+        assert_eq!(allowlist.decide(&probe), None);
+        // A valid line appears: reloaded without recreating the allowlist.
+        std::fs::write(&path, "VTQA,111,\n").expect("write");
+        assert_eq!(allowlist.decide(&probe), Some(Some("VTQA".to_string())));
+        // Another customer is added.
+        std::fs::write(&path, "VTQA,111,\nACME,,42\n").expect("write");
+        assert_eq!(
+            allowlist.decide(&allow_message(42, None)),
+            Some(Some("ACME".to_string()))
+        );
+        // The file disappears again: fail closed.
+        std::fs::remove_file(&path).expect("remove");
+        assert_eq!(allowlist.decide(&probe), None);
+    }
+
+    #[test]
+    fn file_is_not_re_read_inside_the_recheck_window() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("allow.csv");
+        std::fs::write(&path, "VTQA,111,\n").expect("write");
+        let allowlist = WebhookAllowlist::file(path.clone(), Duration::from_secs(3600));
+        let probe = allow_message(1, Some("111"));
+        assert!(allowlist.decide(&probe).is_some());
+        std::fs::remove_file(&path).expect("remove");
+        // Still served from the cache until the window passes.
+        assert!(allowlist.decide(&probe).is_some());
+    }
+
+    #[test]
+    fn oversized_file_fails_closed() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("allow.csv");
+        let filler = "#".repeat(usize::try_from(MAX_ALLOWLIST_BYTES).unwrap_or(0) + 1);
+        std::fs::write(&path, format!("{filler}\nVTQA,111,\n")).expect("write");
+        let allowlist = WebhookAllowlist::file(path, Duration::ZERO);
+        assert_eq!(allowlist.decide(&allow_message(1, Some("111"))), None);
+    }
+
+    #[test]
+    fn default_path_is_next_to_the_database() {
+        let path = default_allowlist_path(Some(Path::new("/data/app")));
+        assert_eq!(path, Path::new("/data/app/zalo-webhook-allowlist.csv"));
+    }
+
+    #[test]
+    fn open_allowlist_reports_everything_without_a_code() {
+        assert_eq!(
+            WebhookAllowlist::Open.decide(&allow_message(1, None)),
+            Some(None)
+        );
+    }
+
+    #[test]
+    fn payload_carries_project_code_only_when_set() {
+        let mut matched = message("text", Some("hi"));
+        matched.project_code = Some("VTQA".into());
+        let with = build_payload(7, vec![matched]).expect("non-empty");
+        assert_eq!(
+            serde_json::to_value(&with).expect("json")["projectCode"],
+            "VTQA"
+        );
+        let without = build_payload(7, vec![message("text", Some("hi"))]).expect("non-empty");
+        assert!(serde_json::to_value(&without)
+            .expect("json")
+            .get("projectCode")
+            .is_none());
     }
 
     #[test]

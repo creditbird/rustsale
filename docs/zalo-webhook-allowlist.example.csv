@@ -1,0 +1,12 @@
+# Zalo webhook allowlist: one customer per line.
+# Format: PROJECT_CODE,senderUid,conversationId
+#   - senderUid or conversationId may be empty, but not both.
+#   - A message is reported when its sender UID OR its conversation id matches a line.
+#   - Blank lines and lines starting with # are ignored; malformed lines are skipped (warn).
+#   - Re-read automatically when the file changes (within ~30 s); no restart needed.
+#   - Missing/unreadable/no valid line => NO webhook is sent (fail closed).
+# Install as: ~/.local/share/com.rustsale.crm/zalo-webhook-allowlist.csv
+# (or set RUSTSALE_ZALO_WEBHOOK_ALLOWLIST_FILE to another path).
+#
+# mã dự án, zalo senderUid, conversationId RustSale
+VTQA,7359857892895854028,2250596

@@ -19,7 +19,7 @@ use crate::conversation::types::{
 };
 use crate::conversation::zalo::client::{NormalizedProfile, ZaloClient};
 use crate::conversation::zalo::normalizer::NormalizedGroupSnapshot;
-use crate::conversation::zalo::webhook::{WebhookTuning, ZaloWebhook};
+use crate::conversation::zalo::webhook::{WebhookAllowlist, WebhookTuning, ZaloWebhook};
 use crate::db::open_db_connection;
 
 fn direct_message_event(message_id: &str) -> ListenerEvent {
@@ -4596,6 +4596,137 @@ mod zalo_webhook_tests {
         let bodies = receiver.bodies.lock().unwrap();
         assert_eq!(bodies.len(), 1);
         assert_eq!(bodies[0]["isGroup"], true);
+    }
+
+    /// Messages stored over all conversations of the harness DB (ids are small
+    /// and sequential in a fresh database).
+    fn stored_message_count(harness: &ServiceHarness) -> usize {
+        (1..=8)
+            .filter_map(|id| {
+                harness
+                    .repository
+                    .get_conversation_timeline(id, None, 50)
+                    .ok()
+            })
+            .map(|page| page.items.len())
+            .sum()
+    }
+
+    fn webhook_with_file(url: &str, path: &std::path::Path) -> ZaloWebhook {
+        ZaloWebhook::new_with_allowlist(
+            Some(url),
+            false,
+            WebhookAllowlist::file(path.to_path_buf(), Duration::ZERO),
+            fast_tuning(),
+        )
+    }
+
+    #[tokio::test]
+    async fn listed_sender_is_reported_with_project_code_and_others_are_dropped_but_stored() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("allow.csv");
+        std::fs::write(&file, "# demo\nVTQA,peer-a,\n").unwrap();
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook_with_file(&url, &file));
+        // "Chị Việt" is peer-a; peer-b stands for the other customer (101629).
+        ingest(&harness, user_event("s1", "peer-b", "[cuộc gọi nhỡ]"));
+        ingest(&harness, user_event("s2", "peer-a", "khách VTQA"));
+        wait_for_posts(&receiver, 1).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        {
+            let bodies = receiver.bodies.lock().unwrap();
+            assert_eq!(bodies.len(), 1, "{bodies:?}");
+            assert_eq!(bodies[0]["senderUid"], "peer-a");
+            assert_eq!(bodies[0]["projectCode"], "VTQA");
+        }
+        // The filter is webhook-only: both messages are stored.
+        assert_eq!(stored_message_count(&harness), 2);
+    }
+
+    #[tokio::test]
+    async fn listed_conversation_is_reported_with_project_code() {
+        // Learn the conversation id of peer-a from an unfiltered run first.
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook(&url, false));
+        ingest(&harness, user_event("c0", "peer-a", "thăm dò"));
+        wait_for_posts(&receiver, 1).await;
+        let conversation_id = receiver.bodies.lock().unwrap()[0]["conversationId"]
+            .as_i64()
+            .unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("allow.csv");
+        std::fs::write(&file, format!("VTQA,,{conversation_id}\n")).unwrap();
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook_with_file(&url, &file));
+        ingest(&harness, user_event("c1", "peer-a", "đúng cuộc"));
+        ingest(&harness, user_event("c2", "peer-b", "cuộc khác"));
+        wait_for_posts(&receiver, 1).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert_eq!(bodies[0]["conversationId"], conversation_id);
+        assert_eq!(bodies[0]["projectCode"], "VTQA");
+    }
+
+    #[tokio::test]
+    async fn missing_allowlist_file_sends_nothing_but_still_stores() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("does-not-exist.csv");
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook_with_file(&url, &file));
+        ingest(&harness, user_event("m1", "peer-a", "không file"));
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(receiver.bodies.lock().unwrap().is_empty());
+        assert_eq!(stored_message_count(&harness), 1);
+    }
+
+    #[tokio::test]
+    async fn garbage_lines_are_skipped_and_valid_ones_still_work() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("allow.csv");
+        std::fs::write(&file, "rác\nX,a b,zz\nVTQA,peer-a,\n,,\n").unwrap();
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook_with_file(&url, &file));
+        ingest(&harness, user_event("g1", "peer-a", "hợp lệ"));
+        ingest(&harness, user_event("g2", "peer-b", "bị lọc"));
+        wait_for_posts(&receiver, 1).await;
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert_eq!(bodies[0]["senderUid"], "peer-a");
+    }
+
+    #[tokio::test]
+    async fn editing_the_file_takes_effect_without_restart() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("allow.csv");
+        std::fs::write(&file, "VTQA,peer-a,\n").unwrap();
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook_with_file(&url, &file));
+        ingest(&harness, user_event("e1", "peer-b", "chưa có trong file"));
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(receiver.bodies.lock().unwrap().is_empty());
+
+        std::fs::write(&file, "VTQA,peer-a,\nACME,peer-b,\n").unwrap();
+        ingest(&harness, user_event("e2", "peer-b", "đã thêm khách"));
+        wait_for_posts(&receiver, 1).await;
+        let bodies = receiver.bodies.lock().unwrap();
+        assert_eq!(bodies.len(), 1, "{bodies:?}");
+        assert_eq!(bodies[0]["projectCode"], "ACME");
+    }
+
+    #[tokio::test]
+    async fn allowlist_runs_after_the_group_rule() {
+        let dir = tempfile::tempdir().unwrap();
+        let file = dir.path().join("allow.csv");
+        std::fs::write(&file, "VTQA,peer-uid,\n").unwrap();
+        let (url, receiver) = start_receiver(&[]).await;
+        let harness = ServiceHarness::new_with_webhook(webhook_with_file(&url, &file));
+        // peer-uid is listed, but groups are still off.
+        ingest(&harness, group_event("gr1", "tin nhóm"));
+        tokio::time::sleep(Duration::from_millis(700)).await;
+        assert!(receiver.bodies.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

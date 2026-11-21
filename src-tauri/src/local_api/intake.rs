@@ -438,6 +438,7 @@ mod db_copy_check {
                 ts: message.occurred_at.clone(),
                 is_group: false,
                 attachments: Vec::new(),
+                project_code: None,
             };
             let webhook_text = build_payload(conversation_id, vec![webhook])
                 .map(|p| p.text)
