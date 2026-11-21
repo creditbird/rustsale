@@ -58,6 +58,9 @@ struct ScrollInfo {
     height: u64,
     is_end: bool,
     place_count: usize,
+    /// The page has no `div[role="feed"]`: the scroll fell back to the window.
+    #[serde(default)]
+    feed_missing: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -335,6 +338,13 @@ impl GoogleMapsScraper {
                     false,
                 )
             })?;
+            if info.feed_missing {
+                return Err(scrape_error(
+                    ScrapeErrorKind::SelectorChanged,
+                    "Google Maps result feed is missing after the page reported ready",
+                    false,
+                ));
+            }
             observed_count = observed_count.max(info.place_count);
             if info.is_end {
                 reached_end = true;
@@ -778,7 +788,8 @@ const SCROLL_FEED_SCRIPT: &str = r#"
     return {
         height: Math.max(0, Math.floor(document.body?.scrollHeight || 0)),
         is_end: false,
-        place_count: document.querySelectorAll('a[href*="/maps/place/"]').length
+        place_count: document.querySelectorAll('a[href*="/maps/place/"]').length,
+        feed_missing: true
     };
 })()
 "#;
@@ -1173,6 +1184,28 @@ mod typed_tests {
             "a feed whose height and place count stopped changing is exhausted"
         );
         automation.assert_exhausted();
+    }
+
+    /// A page that passed the readiness probe but has no result feed is not an exhausted
+    /// list: reporting `reached_end` with zero places silently completes the unit empty.
+    #[tokio::test]
+    async fn missing_feed_after_ready_is_selector_changed_not_exhausted() {
+        let no_feed =
+            json!({"height": 900, "is_end": false, "place_count": 0, "feed_missing": true});
+        let (scraper, _automation) = scripted_scraper(vec![
+            Step::Navigate(Ok(())),
+            Step::Health(Ok(GoogleMapsPageState::Ready)),
+            Step::Evaluate(Ok(no_feed.clone())),
+            Step::Evaluate(Ok(no_feed.clone())),
+            Step::Evaluate(Ok(no_feed.clone())),
+            Step::Evaluate(Ok(no_feed)),
+            Step::Evaluate(Ok(json!([]))),
+        ])
+        .await;
+
+        let error = scraper.search_page("cafe", None).await.unwrap_err();
+
+        assert_eq!(error.kind, ScrapeErrorKind::SelectorChanged);
     }
 
     /// Collecting a search page must stop at the listing. Visiting details in
