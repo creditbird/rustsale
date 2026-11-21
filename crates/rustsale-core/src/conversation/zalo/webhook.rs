@@ -7,8 +7,8 @@
 //! * `RUSTSALE_ZALO_WEBHOOK_INCLUDE_GROUPS`: `1` also reports group messages.
 //!   Anything else (the default) reports direct messages only.
 //! * `RUSTSALE_ZALO_WEBHOOK_ALLOWLIST_FILE`: path of the customer allowlist
-//!   (default: `zalo-webhook-allowlist.csv` next to the database, normally
-//!   `~/.local/share/com.rustsale.crm/`).
+//!   (default: `zalo-webhook-allowlist.csv` inside the app data directory, next
+//!   to the database; no data directory means no list and nobody is reported).
 //!
 //! # Customer allowlist file
 //!
@@ -393,18 +393,14 @@ impl std::fmt::Debug for ZaloWebhook {
     }
 }
 
-/// Default allowlist location: next to the database. An empty path (no data
-/// directory and no `HOME`) can never be read, so the filter fails closed.
+/// Default allowlist location: next to the database. With no data directory
+/// the path is empty, which can never be read, so the filter fails closed.
+/// There is deliberately no fallback to a fixed per-user directory: a build
+/// with a different app identifier must never read another install's list.
 fn default_allowlist_path(data_dir: Option<&Path>) -> PathBuf {
-    if let Some(dir) = data_dir.filter(|dir| !dir.as_os_str().is_empty()) {
-        return dir.join(WEBHOOK_ALLOWLIST_FILE_NAME);
-    }
-    std::env::var_os("HOME")
-        .map(|home| {
-            PathBuf::from(home)
-                .join(".local/share/com.rustsale.crm")
-                .join(WEBHOOK_ALLOWLIST_FILE_NAME)
-        })
+    data_dir
+        .filter(|dir| !dir.as_os_str().is_empty())
+        .map(|dir| dir.join(WEBHOOK_ALLOWLIST_FILE_NAME))
         .unwrap_or_default()
 }
 
@@ -418,7 +414,7 @@ impl ZaloWebhook {
     ///
     /// The allowlist file is `RUSTSALE_ZALO_WEBHOOK_ALLOWLIST_FILE`, else
     /// `zalo-webhook-allowlist.csv` inside `data_dir` (the app data directory,
-    /// where the database lives), else inside the default Linux data directory.
+    /// where the database lives), else nothing (fails closed).
     pub fn from_env(data_dir: Option<&Path>) -> Self {
         let include_groups = std::env::var(WEBHOOK_INCLUDE_GROUPS_ENV)
             .map(|value| value.trim() == "1")
@@ -1071,6 +1067,16 @@ mod tests {
     fn default_path_is_next_to_the_database() {
         let path = default_allowlist_path(Some(Path::new("/data/app")));
         assert_eq!(path, Path::new("/data/app/zalo-webhook-allowlist.csv"));
+    }
+
+    #[test]
+    fn default_path_never_falls_back_to_a_fixed_home_directory() {
+        for dir in [None, Some(Path::new(""))] {
+            let path = default_allowlist_path(dir);
+            assert!(path.as_os_str().is_empty(), "got {path:?}");
+            let allowlist = WebhookAllowlist::file(path, Duration::ZERO);
+            assert_eq!(allowlist.decide(&allow_message(1, Some("111"))), None);
+        }
     }
 
     #[test]

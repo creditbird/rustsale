@@ -620,3 +620,316 @@ async fn test_supervisor_ingest_webhook_events_rejects_unregistered_or_disabled_
         .unwrap();
     assert_eq!(count_unregistered, 0);
 }
+
+// ---- Retry pacing and one-shot status reporting (v2 logged ~4,000 identical
+// "Failed to sync Facebook Messenger page" errors a day, one every poll tick).
+
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+struct ScriptedGraphClient {
+    calls: AtomicUsize,
+    failing: AtomicBool,
+    error_message: String,
+}
+
+impl ScriptedGraphClient {
+    fn new(error_message: &str) -> Arc<Self> {
+        Arc::new(Self {
+            calls: AtomicUsize::new(0),
+            failing: AtomicBool::new(true),
+            error_message: error_message.to_string(),
+        })
+    }
+}
+
+#[async_trait]
+impl FacebookGraphClient for ScriptedGraphClient {
+    async fn fetch_page_conversations(
+        &self,
+        _page_id: &str,
+        _page_token: &str,
+        _limit: usize,
+        _after: Option<&str>,
+    ) -> anyhow::Result<FacebookConversationsPage> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        if self.failing.load(Ordering::SeqCst) {
+            return Err(anyhow::anyhow!("{}", self.error_message));
+        }
+        Ok(FacebookConversationsPage {
+            data: vec![],
+            paging: None,
+        })
+    }
+
+    async fn fetch_thread_messages(
+        &self,
+        _thread_id: &str,
+        _page_token: &str,
+        _limit: usize,
+        _after: Option<&str>,
+    ) -> anyhow::Result<FacebookMessagesPage> {
+        Ok(FacebookMessagesPage {
+            data: vec![],
+            paging: None,
+        })
+    }
+
+    async fn send_messenger_message(
+        &self,
+        _page_id: &str,
+        _page_token: &str,
+        recipient_psid: &str,
+        _text: &str,
+        _message_tag: Option<&str>,
+    ) -> anyhow::Result<SendFacebookMessageResponse> {
+        Ok(SendFacebookMessageResponse {
+            recipient_id: recipient_psid.to_string(),
+            message_id: "m_mid_scripted".to_string(),
+        })
+    }
+}
+
+fn paced_supervisor(
+    client: Arc<ScriptedGraphClient>,
+) -> (
+    tempfile::TempDir,
+    FacebookMessengerSupervisor,
+    tokio::sync::broadcast::Receiver<crate::conversation::events::ConversationInvalidatedEvent>,
+    String,
+) {
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir
+        .path()
+        .join("paced.db")
+        .to_str()
+        .unwrap()
+        .to_string();
+    create_supervisor_test_db(&db_path);
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (1, 'messenger', 'page_paced', 'Paced Fanpage', 'connected', datetime('now'), datetime('now'))",
+        [],
+    )
+    .unwrap();
+    crate::facebook::vault::FacebookTokenVault::encrypt_and_upsert_page_token(
+        &conn,
+        1,
+        "page_paced",
+        "mock_valid_token_value",
+        &["pages_messaging".to_string()],
+    )
+    .unwrap();
+    let events = Arc::new(ConversationEventPublisher::new(64));
+    let rx = events.subscribe();
+    let supervisor = FacebookMessengerSupervisor::new(db_path.clone(), events, client);
+    (temp_dir, supervisor, rx, db_path)
+}
+
+fn drain_account_status(
+    rx: &mut tokio::sync::broadcast::Receiver<
+        crate::conversation::events::ConversationInvalidatedEvent,
+    >,
+) -> usize {
+    let mut n = 0;
+    while let Ok(event) = rx.try_recv() {
+        if event.reason
+            == crate::conversation::events::ConversationInvalidationReason::AccountStatus
+        {
+            n += 1;
+        }
+    }
+    n
+}
+
+#[tokio::test]
+async fn test_failing_page_is_not_retried_on_every_tick() {
+    let client = ScriptedGraphClient::new("Meta Graph API error (code 2): temporary outage");
+    let (_dir, supervisor, mut rx, _db) = paced_supervisor(client.clone());
+
+    for _ in 0..10 {
+        let _ = supervisor.sync_all().await;
+    }
+
+    assert_eq!(
+        client.calls.load(Ordering::SeqCst),
+        1,
+        "ten back-to-back poll ticks must hit the Graph API once while backing off"
+    );
+    assert_eq!(
+        drain_account_status(&mut rx),
+        1,
+        "the UI is told about the failing channel exactly once"
+    );
+}
+
+#[tokio::test]
+async fn test_rate_limited_page_backs_off_and_marks_error_once() {
+    let client = ScriptedGraphClient::new(
+        "Meta Graph API error (status 429): An error has occurred. No further information is available.",
+    );
+    let (_dir, supervisor, mut rx, db_path) = paced_supervisor(client.clone());
+
+    for _ in 0..5 {
+        let _ = supervisor.sync_all().await;
+    }
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(drain_account_status(&mut rx), 1);
+
+    let conn = Connection::open(&db_path).unwrap();
+    let (status, last_error): (String, Option<String>) = conn
+        .query_row(
+            "SELECT connection_status, last_error FROM channel_accounts WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "connected",
+        "a throttled page is not a dead connection"
+    );
+    assert!(last_error.unwrap_or_default().contains("429"));
+}
+
+#[tokio::test]
+async fn test_manual_sync_bypasses_backoff_and_recovery_is_reported_once() {
+    let client = ScriptedGraphClient::new("Meta Graph API error (code 2): temporary outage");
+    let (_dir, supervisor, mut rx, db_path) = paced_supervisor(client.clone());
+
+    let _ = supervisor.sync_all().await;
+    assert_eq!(drain_account_status(&mut rx), 1);
+
+    // The outage ends; the user presses "sync now" while the loop is still backing off.
+    client.failing.store(false, Ordering::SeqCst);
+    supervisor
+        .sync_page("page_paced")
+        .await
+        .expect("manual sync is not subject to the pacing");
+    assert_eq!(
+        drain_account_status(&mut rx),
+        1,
+        "recovery is reported once"
+    );
+
+    // Healthy again: the loop polls on every tick and stays quiet.
+    let _ = supervisor.sync_all().await;
+    let _ = supervisor.sync_all().await;
+    assert_eq!(client.calls.load(Ordering::SeqCst), 4);
+    assert_eq!(drain_account_status(&mut rx), 0);
+
+    let conn = Connection::open(&db_path).unwrap();
+    let last_error: Option<String> = conn
+        .query_row(
+            "SELECT last_error FROM channel_accounts WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(last_error.is_none(), "last_error is cleared on recovery");
+}
+
+#[tokio::test]
+async fn test_auth_failure_still_invalidates_account_and_stops_polling() {
+    let client = ScriptedGraphClient::new(
+        "Meta Graph API error (code 190): OAuthException Error validating access token: Session has expired",
+    );
+    let (_dir, supervisor, _rx, db_path) = paced_supervisor(client.clone());
+
+    let _ = supervisor.sync_all().await;
+    let _ = supervisor.sync_all().await;
+
+    assert_eq!(client.calls.load(Ordering::SeqCst), 1);
+    let conn = Connection::open(&db_path).unwrap();
+    let status: String = conn
+        .query_row(
+            "SELECT connection_status FROM channel_accounts WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(status, "invalid");
+}
+
+#[tokio::test]
+async fn test_storage_failure_is_recorded_in_channel_status() {
+    // The v2 bug: the batch died while saving (UNIQUE violation) and the UI saw no error.
+    let temp_dir = tempfile::tempdir().unwrap();
+    let db_path = temp_dir
+        .path()
+        .join("store_fail.db")
+        .to_str()
+        .unwrap()
+        .to_string();
+    create_supervisor_test_db(&db_path);
+    let conn = Connection::open(&db_path).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, created_at, updated_at)
+         VALUES (1, 'messenger', 'page_store', 'Store Fanpage', 'connected', datetime('now'), datetime('now'))",
+        [],
+    )
+    .unwrap();
+    crate::facebook::vault::FacebookTokenVault::encrypt_and_upsert_page_token(
+        &conn,
+        1,
+        "page_store",
+        "mock_valid_token_value",
+        &["pages_messaging".to_string()],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "CREATE TRIGGER fail_store BEFORE INSERT ON messages
+         BEGIN SELECT RAISE(ABORT, 'disk full (injected)'); END;",
+    )
+    .unwrap();
+
+    let thread = FacebookConversationThread {
+        id: "t_store".to_string(),
+        updated_time: "2026-11-20T02:00:00+0000".to_string(),
+        participants: Some(FacebookParticipantsContainer {
+            data: vec![
+                FacebookParticipantNode {
+                    id: "page_store".to_string(),
+                    name: None,
+                    email: None,
+                },
+                FacebookParticipantNode {
+                    id: "psid_store".to_string(),
+                    name: Some("K".to_string()),
+                    email: None,
+                },
+            ],
+        }),
+        messages: Some(FacebookMessagesContainer {
+            data: vec![FacebookMessageNode {
+                id: "m_store".to_string(),
+                created_time: "2026-11-20T01:50:00+0000".to_string(),
+                from: Some(FacebookParticipantNode {
+                    id: "psid_store".to_string(),
+                    name: None,
+                    email: None,
+                }),
+                to: None,
+                message: Some("hi".to_string()),
+                attachments: None,
+            }],
+            paging: None,
+        }),
+    };
+    let events = Arc::new(ConversationEventPublisher::new(64));
+    let client = Arc::new(MockFacebookGraphClient {
+        conversations: vec![thread],
+    });
+    let supervisor = FacebookMessengerSupervisor::new(db_path.clone(), events, client);
+
+    let _ = supervisor.sync_all().await;
+
+    let last_error: Option<String> = conn
+        .query_row(
+            "SELECT last_error FROM channel_accounts WHERE id = 1",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(last_error.unwrap_or_default().contains("injected"));
+}

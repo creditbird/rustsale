@@ -1,10 +1,12 @@
 use anyhow::{anyhow, Result};
 use rusqlite::{Connection, OptionalExtension};
-use std::sync::Arc;
-use std::time::Duration;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
+use super::backoff::{AccountSyncHealth, FailureKind};
 use super::client::FacebookGraphClient;
 use super::normalizer::FacebookMessengerNormalizer;
 use crate::conversation::events::{
@@ -20,6 +22,29 @@ pub struct ConnectedMessengerAccount {
     pub display_name: Option<String>,
 }
 
+/// Error returned by `sync_account_internal` for a failed Graph fetch. Carries the
+/// failure class so `sync_all` can pace retries without parsing message text.
+#[derive(Debug)]
+pub struct SyncFailure {
+    pub kind: FailureKind,
+    pub message: String,
+}
+
+impl std::fmt::Display for SyncFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for SyncFailure {}
+
+fn classify_failure(error: &anyhow::Error) -> FailureKind {
+    if let Some(failure) = error.downcast_ref::<SyncFailure>() {
+        return failure.kind;
+    }
+    FailureKind::Other
+}
+
 pub struct FacebookMessengerSupervisor {
     db_path: String,
     events: Arc<ConversationEventPublisher>,
@@ -27,6 +52,9 @@ pub struct FacebookMessengerSupervisor {
     cancellation_token: CancellationToken,
     outbox_notify: Arc<tokio::sync::Notify>,
     service: std::sync::RwLock<Option<Arc<crate::conversation::service::ConversationService>>>,
+    /// Retry pacing per channel account id. In memory on purpose: a restart retries
+    /// once straight away, which is what a user who just relaunched the app expects.
+    health: Mutex<HashMap<i64, AccountSyncHealth>>,
 }
 
 impl FacebookMessengerSupervisor {
@@ -42,6 +70,76 @@ impl FacebookMessengerSupervisor {
             cancellation_token: CancellationToken::new(),
             outbox_notify: Arc::new(tokio::sync::Notify::new()),
             service: std::sync::RwLock::new(None),
+            health: Mutex::new(HashMap::new()),
+        }
+    }
+
+    fn with_health<T>(
+        &self,
+        f: impl FnOnce(&mut HashMap<i64, AccountSyncHealth>) -> T,
+    ) -> Option<T> {
+        self.health.lock().ok().map(|mut guard| f(&mut guard))
+    }
+
+    fn is_account_due(&self, account_id: i64, now: Instant) -> bool {
+        self.with_health(|map| map.get(&account_id).is_none_or(|h| h.is_due(now)))
+            .unwrap_or(true)
+    }
+
+    /// Tell the UI that an account changed between healthy and failing. The error text
+    /// itself is already persisted in `channel_accounts.last_error` by the sync attempt.
+    fn publish_account_status(&self) {
+        self.events.publish(ConversationInvalidatedEvent {
+            conversation_id: 0,
+            lead_id: None,
+            channel: Channel::Messenger,
+            reason: ConversationInvalidationReason::AccountStatus,
+            message_id: None,
+        });
+    }
+
+    fn note_success(&self, account_id: i64) {
+        let recovered = self
+            .with_health(|map| map.get_mut(&account_id).is_some_and(|h| h.record_success()))
+            .unwrap_or(false);
+        if recovered {
+            info!(target: "facebook_sync", account_id, "Facebook Messenger sync recovered");
+            self.publish_account_status();
+        }
+    }
+
+    fn note_failure(&self, account: &ConnectedMessengerAccount, error: &anyhow::Error) {
+        let kind = classify_failure(error);
+        let signature = error.to_string();
+        let report = self.with_health(|map| {
+            map.entry(account.id)
+                .or_default()
+                .record_failure(Instant::now(), kind, &signature)
+        });
+        let Some(report) = report else {
+            error!(target: "facebook_sync", page_id = %account.page_id, error = %error, "Failed to sync Facebook Messenger page");
+            return;
+        };
+        if report.log_as_error {
+            error!(
+                target: "facebook_sync",
+                page_id = %account.page_id,
+                error = %error,
+                consecutive_failures = report.consecutive_failures,
+                retry_in_secs = report.retry_in.as_secs(),
+                "Failed to sync Facebook Messenger page"
+            );
+        } else {
+            debug!(
+                target: "facebook_sync",
+                page_id = %account.page_id,
+                consecutive_failures = report.consecutive_failures,
+                retry_in_secs = report.retry_in.as_secs(),
+                "Facebook Messenger sync still failing (same error, backing off)"
+            );
+        }
+        if report.became_unhealthy {
+            self.publish_account_status();
         }
     }
 
@@ -223,18 +321,47 @@ impl FacebookMessengerSupervisor {
                             rusqlite::params![err_msg, account.id],
                         );
                     }
-                    return Err(anyhow!(err_msg));
+                    let kind = match e.downcast_ref::<super::error::MetaGraphError>() {
+                        Some(meta_err)
+                            if meta_err.kind == super::error::MetaErrorKind::RateLimited =>
+                        {
+                            FailureKind::RateLimited
+                        }
+                        Some(_) => FailureKind::Other,
+                        None if e.to_string().contains("status 429") => FailureKind::RateLimited,
+                        None => FailureKind::Other,
+                    };
+                    return Err(anyhow::Error::new(SyncFailure {
+                        kind,
+                        message: err_msg,
+                    }));
                 }
             };
 
             let has_threads = !conversations_page.data.is_empty();
             if has_threads {
-                let summary = FacebookMessengerNormalizer::ingest_conversations_batch(
+                let summary = match FacebookMessengerNormalizer::ingest_conversations_batch(
                     &mut conn,
                     account.id,
                     &account.page_id,
                     &conversations_page.data,
-                )?;
+                ) {
+                    Ok(summary) => summary,
+                    Err(e) => {
+                        // Surface storage failures in the channel status too; before, only
+                        // fetch failures set `last_error`, so a poll that died while saving
+                        // looked healthy in the UI.
+                        let err_msg = format!(
+                            "Failed saving conversations for page {}: {}",
+                            account.page_id, e
+                        );
+                        let _ = conn.execute(
+                            "UPDATE channel_accounts SET last_error = ?1, updated_at = datetime('now') WHERE id = ?2",
+                            rusqlite::params![err_msg, account.id],
+                        );
+                        return Err(anyhow!(err_msg));
+                    }
+                };
                 all_new_messages += summary.new_messages_count;
                 for cid in summary.affected_conversation_ids {
                     if !all_affected_conversations.contains(&cid) {
@@ -310,15 +437,22 @@ impl FacebookMessengerSupervisor {
             return Ok(0);
         }
 
+        // Forget pacing state of accounts that are no longer connected (auth failure,
+        // disabled, removed) so a later reconnect starts with a clean slate.
+        let connected_ids: Vec<i64> = accounts.iter().map(|a| a.id).collect();
+        self.with_health(|map| map.retain(|id, _| connected_ids.contains(id)));
+
         let mut total_new = 0;
         for acc in accounts {
+            if !self.is_account_due(acc.id, Instant::now()) {
+                continue;
+            }
             match self.sync_account_internal(&acc).await {
                 Ok(new_count) => {
                     total_new += new_count;
+                    self.note_success(acc.id);
                 }
-                Err(e) => {
-                    error!(target: "facebook_sync", page_id = %acc.page_id, error = %e, "Failed to sync Facebook Messenger page");
-                }
+                Err(e) => self.note_failure(&acc, &e),
             }
         }
         Ok(total_new)
@@ -350,7 +484,13 @@ impl FacebookMessengerSupervisor {
                 )
             })?;
 
-        self.sync_account_internal(&account).await
+        // A manual sync bypasses the retry pacing: the user asked for it right now.
+        let result = self.sync_account_internal(&account).await;
+        match &result {
+            Ok(_) => self.note_success(account.id),
+            Err(e) => self.note_failure(&account, e),
+        }
+        result
     }
 
     pub fn ingest_webhook_events(
