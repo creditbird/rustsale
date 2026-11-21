@@ -22,6 +22,7 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio_util::sync::CancellationToken;
 use url::Url;
 
 /// Raw listings on one Google Maps search page above which the page is assumed
@@ -257,7 +258,11 @@ impl GoogleMapsUnitProcessor {
         })
     }
 
-    async fn finalize_job(&self, job: &ScrapeJob) -> Result<FinalizeOutcome, ScrapeJobError> {
+    async fn finalize_job(
+        &self,
+        job: &ScrapeJob,
+        cancellation: &CancellationToken,
+    ) -> Result<FinalizeOutcome, ScrapeJobError> {
         let enrichment_stage = self
             .repository
             .set_stage(&job.id, ScrapeStage::EmailEnrichment)
@@ -274,6 +279,9 @@ impl GoogleMapsUnitProcessor {
         let enricher = EmailEnricher::default();
         let mut unresolved = false;
         for result in pending {
+            if cancellation.is_cancelled() {
+                return Ok(FinalizeOutcome::default());
+            }
             let Some(claimed) = self
                 .repository
                 .claim_result_for_enrichment(&job.id, &result.id)
@@ -287,11 +295,27 @@ impl GoogleMapsUnitProcessor {
                 .as_deref()
                 .and_then(|value| Url::parse(value).ok())
             {
-                Some(url) => match enricher.find_email(url).await {
-                    Ok(Some(email)) => EnrichmentOutcome::found(email),
-                    Ok(None) => EnrichmentOutcome::not_found(),
-                    Err(error) => EnrichmentOutcome::from_error(error),
-                },
+                Some(url) => {
+                    let found = tokio::select! {
+                        _ = cancellation.cancelled() => None,
+                        found = enricher.find_email(url) => Some(found),
+                    };
+                    let Some(found) = found else {
+                        // Paused or cancelled mid-request: hand the result
+                        // back so a later run enriches it instead of leaving
+                        // it stuck at `running` (A6).
+                        self.repository
+                            .release_enrichment_claim(&job.id, &claimed.id)
+                            .await
+                            .map_err(database_error)?;
+                        return Ok(FinalizeOutcome::default());
+                    };
+                    match found {
+                        Ok(Some(email)) => EnrichmentOutcome::found(email),
+                        Ok(None) => EnrichmentOutcome::not_found(),
+                        Err(error) => EnrichmentOutcome::from_error(error),
+                    }
+                }
                 None => EnrichmentOutcome::from_error(invalid_response(
                     "enrichment website URL is invalid",
                 )),
@@ -303,6 +327,9 @@ impl GoogleMapsUnitProcessor {
                 .map_err(database_error)?;
         }
 
+        if cancellation.is_cancelled() {
+            return Ok(FinalizeOutcome::default());
+        }
         let import_stage = self
             .repository
             .set_stage(&job.id, ScrapeStage::Importing)
@@ -353,8 +380,12 @@ impl ScrapeUnitProcessor for GoogleMapsUnitProcessor {
         Ok(())
     }
 
-    async fn finalize(&self, job: &ScrapeJob) -> Result<FinalizeOutcome, ScrapeJobError> {
-        self.finalize_job(job).await
+    async fn finalize(
+        &self,
+        job: &ScrapeJob,
+        cancellation: &CancellationToken,
+    ) -> Result<FinalizeOutcome, ScrapeJobError> {
+        self.finalize_job(job, cancellation).await
     }
 }
 

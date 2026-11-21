@@ -40,7 +40,14 @@ pub trait ScrapeUnitProcessor: Send + Sync {
     async fn action_health(&self, job: &ScrapeJob) -> Result<GoogleMapsPageHealth, ScrapeJobError>;
     async fn relaunch_for_action(&self, job: &ScrapeJob) -> Result<(), ScrapeJobError>;
     async fn shutdown(&self) -> Result<(), ScrapeJobError>;
-    async fn finalize(&self, _job: &ScrapeJob) -> Result<FinalizeOutcome, ScrapeJobError> {
+    /// Runs enrichment and import after the last unit. Implementations must
+    /// stop promptly once `cancellation` fires (pause/cancel), leaving no work
+    /// item half-claimed (A6).
+    async fn finalize(
+        &self,
+        _job: &ScrapeJob,
+        _cancellation: &CancellationToken,
+    ) -> Result<FinalizeOutcome, ScrapeJobError> {
         Ok(FinalizeOutcome::default())
     }
 }
@@ -414,7 +421,7 @@ impl ScrapeJobRunner {
                 if cancellation.is_cancelled() {
                     return Ok(());
                 }
-                let outcome = match self.processor.finalize(&job).await {
+                let outcome = match self.processor.finalize(&job, &cancellation).await {
                     Ok(outcome) => outcome,
                     Err(error) => {
                         let failed = self.repository.fail_job(job_id, error).await?;
@@ -848,6 +855,7 @@ mod tests {
         gate_used: AtomicBool,
         shutdowns: AtomicUsize,
         finalize_calls: AtomicUsize,
+        finalize_waits_for_cancel: AtomicBool,
         shutdown_probe: StdMutex<Option<(Arc<ScrapeJobRepository>, String)>>,
         status_seen_on_shutdown: StdMutex<Option<ScrapeJobStatus>>,
         action_health: StdMutex<VecDeque<Result<GoogleMapsPageHealth, ScrapeJobError>>>,
@@ -868,6 +876,7 @@ mod tests {
                 gate_used: AtomicBool::new(false),
                 shutdowns: AtomicUsize::new(0),
                 finalize_calls: AtomicUsize::new(0),
+                finalize_waits_for_cancel: AtomicBool::new(false),
                 shutdown_probe: StdMutex::new(None),
                 status_seen_on_shutdown: StdMutex::new(None),
                 action_health: StdMutex::new(VecDeque::new()),
@@ -970,8 +979,20 @@ mod tests {
             Ok(())
         }
 
-        async fn finalize(&self, _job: &ScrapeJob) -> Result<FinalizeOutcome, ScrapeJobError> {
+        async fn finalize(
+            &self,
+            _job: &ScrapeJob,
+            cancellation: &CancellationToken,
+        ) -> Result<FinalizeOutcome, ScrapeJobError> {
             self.finalize_calls.fetch_add(1, Ordering::SeqCst);
+            if self.finalize_waits_for_cancel.load(Ordering::SeqCst) {
+                // Stands in for slow HTTP enrichment: only a cancellation
+                // (or a 10s stall) ends it.
+                tokio::select! {
+                    _ = cancellation.cancelled() => {}
+                    _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+                }
+            }
             Ok(FinalizeOutcome::default())
         }
 
@@ -2089,6 +2110,39 @@ mod tests {
         runner.pause("wait-job").await.unwrap();
 
         assert_eq!(processor.finalize_calls.load(Ordering::SeqCst), 0);
+    }
+
+    /// A6: a pause during finalize (slow enrichment) must cancel it and return
+    /// promptly instead of timing out in `wait_for_idle`.
+    #[tokio::test]
+    async fn pause_during_finalize_returns_promptly() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("fin-job", ScrapeMode::Keyword),
+            vec![unit("fin-job", "fin-unit", "first", "keyword")],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![success()]));
+        processor
+            .finalize_waits_for_cancel
+            .store(true, Ordering::SeqCst);
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("fin-job").await.unwrap();
+        for _ in 0..200 {
+            if processor.finalize_calls.load(Ordering::SeqCst) > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        assert_eq!(processor.finalize_calls.load(Ordering::SeqCst), 1);
+
+        let started = std::time::Instant::now();
+        let paused = runner.pause("fin-job").await.unwrap();
+
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(paused.status, ScrapeJobStatus::Paused);
     }
 
     #[tokio::test]

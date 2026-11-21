@@ -82,7 +82,11 @@ impl ScrapeUnitProcessor for IntegrationProcessor {
         Ok(())
     }
 
-    async fn finalize(&self, job: &ScrapeJob) -> Result<FinalizeOutcome, ScrapeJobError> {
+    async fn finalize(
+        &self,
+        job: &ScrapeJob,
+        _cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<FinalizeOutcome, ScrapeJobError> {
         if matches!(self.finalize_mode, FinalizeMode::Import) {
             self.repository
                 .set_stage(&job.id, ScrapeStage::EmailEnrichment)

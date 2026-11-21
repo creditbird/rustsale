@@ -250,6 +250,23 @@ impl ScrapeJobRepository {
         .await
     }
 
+    /// Returns a result claimed for enrichment to `pending` when the run was
+    /// cancelled before its outcome was saved (A6).
+    pub async fn release_enrichment_claim(&self, job_id: &str, result_id: &str) -> Result<()> {
+        let job_id = job_id.to_string();
+        let result_id = result_id.to_string();
+        self.with_connection(move |conn| {
+            conn.execute(
+                "UPDATE google_maps_scrape_results
+                 SET enrichment_status='pending'
+                 WHERE id=?1 AND job_id=?2 AND enrichment_status='running'",
+                params![result_id, job_id],
+            )?;
+            Ok(())
+        })
+        .await
+    }
+
     pub async fn claim_result_for_enrichment(
         &self,
         job_id: &str,
@@ -1798,6 +1815,45 @@ mod tests {
         let units = context.repository.list_units("job-1").await.unwrap();
         assert_eq!(units[0].status, ScrapeUnitStatus::Pending);
         assert_eq!(units[0].attempt_count, 0);
+    }
+
+    /// A6: a result claimed for enrichment and abandoned on pause/cancel must
+    /// return to `pending`, not stay `running` forever.
+    #[tokio::test]
+    async fn release_enrichment_claim_returns_running_result_to_pending() {
+        let context = TestRepository::new();
+        claimed_running_job(&context).await;
+        let mut result = sample_result();
+        result.phone = None;
+        result.normalized_phone = None;
+        result.website = Some("https://example.com".to_string());
+        result.enrichment_status = "pending".to_string();
+        context
+            .repository
+            .upsert_results("job-1", vec![result])
+            .await
+            .unwrap();
+        let claimed = context
+            .repository
+            .claim_result_for_enrichment("job-1", "result-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(claimed.enrichment_status, "running");
+
+        context
+            .repository
+            .release_enrichment_claim("job-1", "result-1")
+            .await
+            .unwrap();
+
+        let pending = context
+            .repository
+            .list_results_for_enrichment("job-1")
+            .await
+            .unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].enrichment_status, "pending");
     }
 
     async fn claimed_running_job(context: &TestRepository) {

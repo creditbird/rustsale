@@ -60,7 +60,11 @@ impl ScrapeUnitProcessor for FakeProcessor {
         Ok(())
     }
 
-    async fn finalize(&self, _job: &ScrapeJob) -> Result<FinalizeOutcome, ScrapeJobError> {
+    async fn finalize(
+        &self,
+        _job: &ScrapeJob,
+        _cancellation: &tokio_util::sync::CancellationToken,
+    ) -> Result<FinalizeOutcome, ScrapeJobError> {
         Ok(FinalizeOutcome::default())
     }
 }
