@@ -812,18 +812,15 @@ const EXTRACT_PLACE_SCRIPT: &str = r#"
     const address = text(document.querySelector('[data-item-id="address"]')) ||
         text(document.querySelector('.rogA2c'));
     const authority = document.querySelector('[data-item-id="authority"]');
-    let website = authority?.getAttribute('href') || text(authority);
+    // Only the official-website button counts: any other external link on a
+    // place page (booking, ads, reviews) is not the business's own site.
+    const website = authority?.getAttribute('href') || text(authority);
     let facebook = '';
     let zalo = '';
     for (const link of Array.from(document.querySelectorAll('a[href]'))) {
         const href = link.getAttribute('href') || '';
         if (!facebook && href.includes('facebook.com')) facebook = href;
         if (!zalo && href.includes('zalo.me')) zalo = href;
-        if (!website && href.startsWith('http') &&
-            !href.includes('google.') && !href.includes('gstatic.com') &&
-            !href.includes('facebook.com') && !href.includes('zalo.me')) {
-            website = href;
-        }
     }
     const coordinateMatch = canonicalUrl.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/);
     const dataLatitude = canonicalUrl.match(/!3d(-?\d+(?:\.\d+)?)/);
@@ -1555,5 +1552,92 @@ mod tests {
         assert_eq!(first.zalo, Some("https://zalo.me/cafeone".to_string()));
 
         let _ = manager.close().await;
+    }
+}
+
+#[cfg(test)]
+mod extract_script_tests {
+    use super::EXTRACT_PLACE_SCRIPT;
+    use serde_json::{json, Value};
+    use std::io::Write;
+    use std::process::{Command, Stdio};
+
+    /// Evaluates the place-extraction script against a tiny fake DOM (no real
+    /// browser needed). Elements are `{tag, attrs, text}`.
+    fn run_extract(elements: Value) -> Value {
+        let harness = format!(
+            r#"
+const elements = {elements};
+const matches = (el, sel) => sel.split(',').some((raw) => {{
+  const s = raw.trim();
+  let m;
+  if ((m = s.match(/^\[data-item-id="(.+)"\]$/))) return el.attrs['data-item-id'] === m[1];
+  if ((m = s.match(/^\[data-item-id\^="(.+)"\]$/))) return (el.attrs['data-item-id'] || '').startsWith(m[1]);
+  if ((m = s.match(/^a\[href\^="(.+)"\]$/))) return el.tag === 'a' && (el.attrs.href || '').startsWith(m[1]);
+  if (s === 'a[href]') return el.tag === 'a' && el.attrs.href !== undefined;
+  if (s.startsWith('.')) return false;
+  return el.tag === s;
+}});
+const wrap = (el) => el && ({{
+  textContent: el.text || '',
+  getAttribute: (name) => (name in el.attrs ? el.attrs[name] : null),
+}});
+globalThis.window = {{ location: {{ href: 'https://www.google.com/maps/place/Fixture/@10.0,106.0,17z/data=!1sfixture!3d10.0!4d106.0' }} }};
+globalThis.document = {{
+  querySelector: (sel) => wrap(elements.find((el) => matches(el, sel))),
+  querySelectorAll: (sel) => elements.filter((el) => matches(el, sel)).map(wrap),
+}};
+console.log(JSON.stringify({script}));
+"#,
+            elements = elements,
+            script = EXTRACT_PLACE_SCRIPT.trim(),
+        );
+        let runtime = ["node", "bun"]
+            .into_iter()
+            .find(|name| {
+                Command::new(name)
+                    .arg("--version")
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .status()
+                    .is_ok_and(|status| status.success())
+            })
+            .expect("extract script tests need node or bun on PATH");
+        let mut child = Command::new(runtime)
+            .arg("-")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("failed to spawn script runtime");
+        child
+            .stdin
+            .take()
+            .expect("stdin is piped")
+            .write_all(harness.as_bytes())
+            .expect("failed to write harness");
+        let output = child.wait_with_output().expect("script runtime failed");
+        assert!(output.status.success(), "script harness failed");
+        serde_json::from_slice(&output.stdout).expect("script printed JSON")
+    }
+
+    #[test]
+    fn google_maps_script_does_not_use_arbitrary_external_link_as_website() {
+        let result = run_extract(json!([
+            {"tag": "h1", "attrs": {}, "text": "Cafe Fixture"},
+            {"tag": "a", "attrs": {"href": "https://booking.example/reserve/123"}, "text": "Reserve"},
+            {"tag": "a", "attrs": {"href": "https://delivery.example/menu"}, "text": "Order"}
+        ]));
+        assert_eq!(result["name"], "Cafe Fixture");
+        assert_eq!(result["website"], Value::Null);
+    }
+
+    #[test]
+    fn google_maps_script_keeps_the_authority_website() {
+        let result = run_extract(json!([
+            {"tag": "h1", "attrs": {}, "text": "Cafe Fixture"},
+            {"tag": "a", "attrs": {"data-item-id": "authority", "href": "https://cafe.example"}, "text": "cafe.example"},
+            {"tag": "a", "attrs": {"href": "https://booking.example/reserve/123"}, "text": "Reserve"}
+        ]));
+        assert_eq!(result["website"], "https://cafe.example");
     }
 }
