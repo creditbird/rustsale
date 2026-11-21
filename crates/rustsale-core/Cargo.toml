@@ -1,0 +1,67 @@
+[package]
+name = "rustsale-core"
+version = "0.1.0"
+description = "RustSale core: all business logic, no UI-shell dependency"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+name = "rustsale_core"
+path = "src/lib.rs"
+
+[features]
+# In-memory host (MockApp) for tests of crates that embed the core.
+test-support = []
+
+[dependencies]
+thiserror = "2"
+libc = "0.2"
+sha2 = "0.10"
+infer = "0.16"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif"] }
+async-trait = "0.1"
+futures-util = "0.3"
+percent-encoding = "2.3"
+psl = "2"
+regex = "1"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "json", "multipart"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+scraper = "0.23"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rusqlite = { version = "0.39.0", features = ["bundled"] }
+cdp-lite = "0.1"
+rand = "0.8"
+aes-gcm = "0.10"
+keyring = "2.3"
+urlencoding = "2.1"
+chrono = { version = "0.4", features = ["serde"] }
+base64 = "0.22"
+zca-rs = { path = "../zca-rs" }
+anyhow = "1.0"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["rt", "io", "codec"] }
+tokio-stream = "0.1"
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+url = "2.5"
+lettre = { version = "0.11", features = ["tokio1-native-tls", "builder", "smtp-transport"] }
+zip = { version = "5.1.1", default-features = false, features = ["deflate-flate2"] }
+uuid = { version = "1", features = ["v4"] }
+fs2 = "0.4"
+dirs = "5"
+whatsapp-rust = { version = "=0.7.0", default-features = false, features = ["sqlite-storage", "tokio-transport", "tokio-runtime", "tokio-native", "ureq-client"] }
+calamine = "0.26"
+csv = "1.3"
+axum = "0.8"
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+# Pre-existing signatures (db/repository/campaign helpers); refactor separately.
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
