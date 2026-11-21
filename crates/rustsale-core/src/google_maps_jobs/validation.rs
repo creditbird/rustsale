@@ -1,5 +1,8 @@
 use crate::google_maps_jobs::types::{ScrapeErrorKind, ScrapeJobError};
-use crate::scrapers::grid::{BoundingBox, GridLimits};
+use crate::scrapers::grid::{
+    bbox_dimensions_km, count_initial_cells, recommended_step_for_cap, BoundingBox, GridLimits,
+    MAX_GRID_STEP_KM, MIN_GRID_STEP_KM,
+};
 use serde::{Deserialize, Serialize};
 
 pub type ScrapeError = ScrapeJobError;
@@ -23,6 +26,11 @@ pub fn validate_and_estimate_grid(
             "step_km must be finite and greater than zero",
         ));
     }
+    if !(MIN_GRID_STEP_KM..=MAX_GRID_STEP_KM).contains(&step_km) {
+        return Err(invalid_input(format!(
+            "step_km must be between {MIN_GRID_STEP_KM} and {MAX_GRID_STEP_KM} km"
+        )));
+    }
     if limits.max_initial_cells == 0 || limits.max_total_cells == 0 {
         return Err(invalid_input("grid cell limits must be greater than zero"));
     }
@@ -37,14 +45,11 @@ pub fn validate_and_estimate_grid(
         ));
     }
 
-    let height_km = (bbox.lat_max - bbox.lat_min) * 111.0;
-    let max_cos = maximum_longitude_cosine(bbox);
-    let width_km = (bbox.lng_max - bbox.lng_min) * 111.0 * max_cos;
-    let initial_cells = estimate_cell_count(width_km, height_km, step_km);
+    let (width_km, height_km) = bbox_dimensions_km(bbox);
+    let initial_cells = count_initial_cells(bbox, step_km);
     let recommended_min_step_km = if initial_cells > limits.max_initial_cells {
-        Some(recommended_step(
-            width_km,
-            height_km,
+        Some(recommended_step_for_cap(
+            bbox,
             step_km,
             limits.max_initial_cells,
         ))
@@ -78,48 +83,6 @@ fn validate_bbox(bbox: BoundingBox) -> Result<(), ScrapeError> {
         ));
     }
     Ok(())
-}
-
-fn maximum_longitude_cosine(bbox: BoundingBox) -> f64 {
-    let nearest_equator_lat = if bbox.lat_min <= 0.0 && bbox.lat_max >= 0.0 {
-        0.0
-    } else if bbox.lat_min.abs() < bbox.lat_max.abs() {
-        bbox.lat_min
-    } else {
-        bbox.lat_max
-    };
-    nearest_equator_lat.to_radians().cos().abs().max(1e-9)
-}
-
-fn estimate_cell_count(width_km: f64, height_km: f64, step_km: f64) -> usize {
-    let rows = ceil_to_usize((height_km / step_km).ceil()).max(1);
-    let columns = ceil_to_usize((width_km / step_km).ceil()).max(1);
-    rows.saturating_mul(columns)
-}
-
-fn ceil_to_usize(value: f64) -> usize {
-    if value >= usize::MAX as f64 {
-        usize::MAX
-    } else {
-        value.max(0.0) as usize
-    }
-}
-
-fn recommended_step(width_km: f64, height_km: f64, current_step_km: f64, max_cells: usize) -> f64 {
-    let mut low = current_step_km;
-    let mut high = width_km.max(height_km).max(current_step_km);
-    while estimate_cell_count(width_km, height_km, high) > max_cells {
-        high *= 2.0;
-    }
-    for _ in 0..64 {
-        let mid = (low + high) / 2.0;
-        if estimate_cell_count(width_km, height_km, mid) > max_cells {
-            low = mid;
-        } else {
-            high = mid;
-        }
-    }
-    high
 }
 
 fn invalid_input(message: impl Into<String>) -> ScrapeError {
@@ -157,6 +120,27 @@ mod tests {
         for step_km in [0.0, -1.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             let error = validate_and_estimate_grid(bbox, step_km, limits(10_000)).unwrap_err();
             assert_eq!(error.kind, ScrapeErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn rejects_step_outside_supported_range() {
+        let bbox = BoundingBox {
+            lat_min: 10.0,
+            lat_max: 10.5,
+            lng_min: 106.0,
+            lng_max: 106.5,
+        };
+
+        for step_km in [0.05, 0.19, 50.5, 150.0] {
+            let error = validate_and_estimate_grid(bbox, step_km, limits(10_000)).unwrap_err();
+            assert_eq!(error.kind, ScrapeErrorKind::InvalidInput, "step {step_km}");
+        }
+        for step_km in [0.2, 1.0, 50.0] {
+            assert!(
+                validate_and_estimate_grid(bbox, step_km, limits(10_000)).is_ok(),
+                "step {step_km}"
+            );
         }
     }
 

@@ -68,6 +68,95 @@ pub fn generate_grid(bbox: BoundingBox, step_km: f64) -> Vec<GridCell> {
     generate_initial_cells(bbox, step_km, GridLimits::default()).unwrap_or_default()
 }
 
+/// Kilometres per degree of latitude used by every grid calculation (planner, validation, cells).
+pub const KM_PER_DEGREE: f64 = 111.0;
+/// Smallest/largest `step_km` the backend accepts for a grid job.
+pub const MIN_GRID_STEP_KM: f64 = 0.2;
+pub const MAX_GRID_STEP_KM: f64 = 50.0;
+
+/// One row of the initial grid: its latitude band and how many columns it holds.
+struct GridRow {
+    lat_min: f64,
+    lat_max: f64,
+    lng_step_deg: f64,
+    columns: usize,
+}
+
+/// Rows of the initial grid. The only place that converts km to degrees and decides how
+/// many cells a row has, so cell generation, counting and the planner cannot disagree.
+fn initial_grid_rows(bbox: BoundingBox, step_km: f64) -> impl Iterator<Item = GridRow> {
+    let lat_step_deg = step_km / KM_PER_DEGREE;
+    let rows = ((bbox.lat_max - bbox.lat_min) / lat_step_deg)
+        .ceil()
+        .max(1.0) as usize;
+    (0..rows).map_while(move |row| {
+        let lat_min = bbox.lat_min + row as f64 * lat_step_deg;
+        if lat_min >= bbox.lat_max {
+            return None;
+        }
+        let lat_max = (lat_min + lat_step_deg).min(bbox.lat_max);
+        let center_lat = (lat_min + lat_max) / 2.0;
+        let cos_lat = center_lat.to_radians().cos().abs();
+        let lng_step_deg = if cos_lat > 1e-9 {
+            step_km / (KM_PER_DEGREE * cos_lat)
+        } else {
+            bbox.lng_max - bbox.lng_min
+        };
+        let mut columns = ((bbox.lng_max - bbox.lng_min) / lng_step_deg)
+            .ceil()
+            .max(1.0) as usize;
+        // Floating point can put the last column's start on or past the edge.
+        while columns > 1 && bbox.lng_min + (columns - 1) as f64 * lng_step_deg >= bbox.lng_max {
+            columns -= 1;
+        }
+        Some(GridRow {
+            lat_min,
+            lat_max,
+            lng_step_deg,
+            columns,
+        })
+    })
+}
+
+/// Exact number of cells `generate_initial_cells` produces for a bbox and step (no cap applied).
+pub fn count_initial_cells(bbox: BoundingBox, step_km: f64) -> usize {
+    initial_grid_rows(bbox, step_km).fold(0usize, |total, row| total.saturating_add(row.columns))
+}
+
+/// Approximate bbox size in km (width measured at the latitude closest to the equator).
+pub fn bbox_dimensions_km(bbox: BoundingBox) -> (f64, f64) {
+    let nearest_equator_lat = if bbox.lat_min <= 0.0 && bbox.lat_max >= 0.0 {
+        0.0
+    } else if bbox.lat_min.abs() < bbox.lat_max.abs() {
+        bbox.lat_min
+    } else {
+        bbox.lat_max
+    };
+    let max_cos = nearest_equator_lat.to_radians().cos().abs().max(1e-9);
+    let width_km = (bbox.lng_max - bbox.lng_min) * KM_PER_DEGREE * max_cos;
+    let height_km = (bbox.lat_max - bbox.lat_min) * KM_PER_DEGREE;
+    (width_km, height_km)
+}
+
+/// Smallest step (searched by bisection on the real cell count) that keeps the grid within `max_cells`.
+pub fn recommended_step_for_cap(bbox: BoundingBox, current_step_km: f64, max_cells: usize) -> f64 {
+    let (width_km, height_km) = bbox_dimensions_km(bbox);
+    let mut low = current_step_km;
+    let mut high = width_km.max(height_km).max(current_step_km);
+    while count_initial_cells(bbox, high) > max_cells {
+        high *= 2.0;
+    }
+    for _ in 0..48 {
+        let mid = (low + high) / 2.0;
+        if count_initial_cells(bbox, mid) > max_cells {
+            low = mid;
+        } else {
+            high = mid;
+        }
+    }
+    high
+}
+
 pub fn generate_initial_cells(
     bbox: BoundingBox,
     step_km: f64,
@@ -86,30 +175,9 @@ pub fn generate_initial_cells(
         });
     }
 
-    let lat_step_deg = step_km / 111.0;
-    let rows = ((bbox.lat_max - bbox.lat_min) / lat_step_deg)
-        .ceil()
-        .max(1.0) as usize;
     let mut cells = Vec::with_capacity(estimate.initial_cells);
-
-    for row in 0..rows {
-        let lat_min = bbox.lat_min + row as f64 * lat_step_deg;
-        if lat_min >= bbox.lat_max {
-            break;
-        }
-        let lat_max = (lat_min + lat_step_deg).min(bbox.lat_max);
-        let center_lat = (lat_min + lat_max) / 2.0;
-        let cos_lat = center_lat.to_radians().cos().abs();
-        let lng_step_deg = if cos_lat > 1e-9 {
-            step_km / (111.0 * cos_lat)
-        } else {
-            bbox.lng_max - bbox.lng_min
-        };
-        let columns = ((bbox.lng_max - bbox.lng_min) / lng_step_deg)
-            .ceil()
-            .max(1.0) as usize;
-
-        for column in 0..columns {
+    for row in initial_grid_rows(bbox, step_km) {
+        for column in 0..row.columns {
             if cells.len() >= limits.max_initial_cells {
                 return Err(ScrapeError {
                     kind: crate::google_maps_jobs::types::ScrapeErrorKind::InvalidInput,
@@ -117,15 +185,12 @@ pub fn generate_initial_cells(
                     retryable: false,
                 });
             }
-            let lng_min = bbox.lng_min + column as f64 * lng_step_deg;
-            if lng_min >= bbox.lng_max {
-                break;
-            }
-            let lng_max = (lng_min + lng_step_deg).min(bbox.lng_max);
+            let lng_min = bbox.lng_min + column as f64 * row.lng_step_deg;
+            let lng_max = (lng_min + row.lng_step_deg).min(bbox.lng_max);
             cells.push(grid_cell_from_bbox(
                 BoundingBox {
-                    lat_min,
-                    lat_max,
+                    lat_min: row.lat_min,
+                    lat_max: row.lat_max,
                     lng_min,
                     lng_max,
                 },

@@ -637,6 +637,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn create_job_rejects_out_of_range_step() {
+        for step_km in [0.05, 150.0] {
+            let harness = Harness::new(false);
+            let request = CreateScrapeJobRequest {
+                mode: ScrapeMode::Grid,
+                keyword: "cafe".to_string(),
+                location: Some("Thành phố Hồ Chí Minh".to_string()),
+                bbox: Some([10.75, 10.80, 106.68, 106.72]),
+                step_km: Some(step_km),
+                districts: Vec::new(),
+                headless: true,
+            };
+
+            let error = harness.service.create_job(request).await.unwrap_err();
+
+            assert!(
+                error.to_string().contains("step_km"),
+                "step {step_km}: {error}"
+            );
+            assert!(harness.repository.list_jobs().await.unwrap().is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn google_maps_scrape_job_command_rejects_second_active_job() {
         let harness = Harness::new(true);
         let first = harness

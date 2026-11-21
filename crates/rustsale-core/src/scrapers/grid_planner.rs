@@ -1,3 +1,7 @@
+use crate::scrapers::grid::{
+    bbox_dimensions_km, count_initial_cells, recommended_step_for_cap, BoundingBox,
+    MAX_GRID_STEP_KM, MIN_GRID_STEP_KM,
+};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -13,8 +17,8 @@ impl Default for GridSafetyPolicy {
         Self {
             max_cells_per_job: 10_000,
             max_cells_per_chunk: 2_500,
-            min_step_km: 0.2,
-            max_step_km: 50.0,
+            min_step_km: MIN_GRID_STEP_KM,
+            max_step_km: MAX_GRID_STEP_KM,
         }
     }
 }
@@ -65,62 +69,30 @@ impl GridPlanner {
             return Err("Step size must be greater than zero".to_string());
         }
 
-        let earth_radius_km = 6_371.008_8;
-        let height_km =
-            ((lat_max - lat_min) * std::f64::consts::PI / 180.0).abs() * earth_radius_km;
-
-        let nearest_equator_lat = if lat_min <= 0.0 && lat_max >= 0.0 {
-            0.0
-        } else if lat_min.abs() < lat_max.abs() {
-            lat_min
-        } else {
-            lat_max
+        let grid_bbox = BoundingBox {
+            lat_min,
+            lat_max,
+            lng_min,
+            lng_max,
         };
-
-        let width_km = ((lng_max - lng_min) * std::f64::consts::PI / 180.0).abs()
-            * earth_radius_km
-            * (nearest_equator_lat * std::f64::consts::PI / 180.0)
-                .cos()
-                .abs()
-                .max(1e-9);
-
+        let (width_km, height_km) = bbox_dimensions_km(grid_bbox);
         let area_km2 = width_km * height_km;
 
         let effective_step_km = requested_step_km
             .max(policy.min_step_km)
             .min(policy.max_step_km);
 
-        let count_at_step = |step: f64| -> usize {
-            let rows = (height_km / step).ceil().max(1.0) as u64;
-            let cols = (width_km / step).ceil().max(1.0) as u64;
-            (rows as usize).saturating_mul(cols as usize)
-        };
-
-        let estimated_cells = count_at_step(effective_step_km);
+        let estimated_cells = count_initial_cells(grid_bbox, effective_step_km);
         let exceeds_limit = estimated_cells > policy.max_cells_per_job;
 
         let recommended_step_km = if exceeds_limit {
-            let mut low = effective_step_km;
-            let mut high = (area_km2 / (policy.max_cells_per_job as f64))
-                .sqrt()
-                .max(effective_step_km)
-                * 2.0;
-            while count_at_step(high) > policy.max_cells_per_job {
-                high *= 2.0;
+            let mut step =
+                recommended_step_for_cap(grid_bbox, effective_step_km, policy.max_cells_per_job);
+            step = (step * 100.0).ceil() / 100.0;
+            while count_initial_cells(grid_bbox, step) > policy.max_cells_per_job {
+                step += 0.01;
             }
-            for _ in 0..64 {
-                let mid = (low + high) / 2.0;
-                if count_at_step(mid) > policy.max_cells_per_job {
-                    low = mid;
-                } else {
-                    high = mid;
-                }
-            }
-            let mut ceiled_step = (high * 100.0).ceil() / 100.0;
-            while count_at_step(ceiled_step) > policy.max_cells_per_job {
-                ceiled_step += 0.01;
-            }
-            Some(ceiled_step)
+            Some(step)
         } else {
             None
         };
@@ -178,7 +150,40 @@ mod tests {
         let max_clamped = GridPlanner::plan([8.0, 23.0, 102.0, 110.0], 150.0, None).unwrap();
         assert_eq!(max_clamped.requested_step_km, 150.0);
         assert_eq!(max_clamped.effective_step_km, 50.0);
-        assert_eq!(max_clamped.estimated_cells, 612); // based on 50km, not 150km
+        assert_eq!(max_clamped.estimated_cells, 598); // real grid at 50 km (B8), not at 150 km
+    }
+
+    #[test]
+    fn planner_estimated_cells_matches_generate_initial_cells() {
+        use crate::scrapers::grid::{generate_initial_cells, BoundingBox, GridLimits};
+
+        let cases: [([f64; 4], f64); 6] = [
+            ([10.754, 10.798, 106.680, 106.714], 1.0),
+            ([10.0, 10.9, 106.0, 107.0], 2.0),
+            ([60.0, 60.8, 10.0, 12.0], 3.0),
+            ([-34.0, -33.2, 150.5, 151.5], 1.5),
+            ([-0.4, 0.4, 100.0, 101.0], 2.5),
+            ([71.0, 71.4, 20.0, 30.0], 5.0),
+        ];
+        for (bbox, step) in cases {
+            let plan = GridPlanner::plan(bbox, step, None).unwrap();
+            let cells = generate_initial_cells(
+                BoundingBox {
+                    lat_min: bbox[0],
+                    lat_max: bbox[1],
+                    lng_min: bbox[2],
+                    lng_max: bbox[3],
+                },
+                step,
+                GridLimits::default(),
+            )
+            .unwrap();
+            assert_eq!(
+                plan.estimated_cells,
+                cells.len(),
+                "planner and real grid disagree for bbox {bbox:?} step {step}"
+            );
+        }
     }
 
     #[test]
