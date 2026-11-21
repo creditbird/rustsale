@@ -320,7 +320,7 @@ impl GoogleMapsUnitProcessor {
                     "enrichment website URL is invalid",
                 )),
             };
-            unresolved |= outcome.error.is_some();
+            unresolved |= enrichment_is_unresolved(&outcome);
             self.repository
                 .save_enrichment_outcome(&job.id, &claimed.id, outcome)
                 .await
@@ -387,6 +387,12 @@ impl ScrapeUnitProcessor for GoogleMapsUnitProcessor {
     ) -> Result<FinalizeOutcome, ScrapeJobError> {
         self.finalize_job(job, cancellation).await
     }
+}
+
+/// Only an enrichment that can still succeed on retry keeps the job partial.
+/// A permanent failure (dead site, 403, DNS) cannot be fixed by retrying (B9).
+fn enrichment_is_unresolved(outcome: &EnrichmentOutcome) -> bool {
+    outcome.error.as_ref().is_some_and(|error| error.retryable)
 }
 
 const DEFAULT_ACTION_URL: &str = "https://www.google.com/maps";
@@ -677,6 +683,25 @@ mod tests {
     use serde_json::Value;
     use std::path::Path;
     use std::time::Duration;
+
+    /// B9: a permanent enrichment error must not keep the job partial forever.
+    #[test]
+    fn finalize_job_completes_when_only_permanent_enrichment_errors() {
+        let permanent = EnrichmentOutcome::from_error(ScrapeJobError {
+            kind: ScrapeErrorKind::InvalidResponse,
+            message: "enrichment HTTP status 403".to_string(),
+            retryable: false,
+        });
+        let transient = EnrichmentOutcome::from_error(ScrapeJobError {
+            kind: ScrapeErrorKind::TransientNetwork,
+            message: "connection reset".to_string(),
+            retryable: true,
+        });
+
+        assert!(!enrichment_is_unresolved(&permanent));
+        assert!(enrichment_is_unresolved(&transient));
+        assert!(!enrichment_is_unresolved(&EnrichmentOutcome::not_found()));
+    }
 
     struct DiagnosticAutomation {
         screenshot_paths: std::sync::Mutex<Vec<PathBuf>>,
