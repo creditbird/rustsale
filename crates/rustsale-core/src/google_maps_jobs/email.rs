@@ -608,7 +608,7 @@ pub fn normalize_email(value: &str) -> Option<String> {
     }
     if !local
         .bytes()
-        .all(|byte| byte.is_ascii_alphanumeric() || b".!#$%&'*+-/=?^_`{|}~".contains(&byte))
+        .all(|byte| byte.is_ascii_alphanumeric() || b".!#$%&'*+-=?^_`{|}~".contains(&byte))
     {
         return None;
     }
@@ -630,13 +630,51 @@ pub fn normalize_email(value: &str) -> Option<String> {
     if tld.len() < 2 || !tld.bytes().all(|byte| byte.is_ascii_alphabetic()) {
         return None;
     }
-    if ["example.com", "example.org", "example.net"]
-        .iter()
-        .any(|example| domain == *example || domain.ends_with(&format!(".{example}")))
-    {
+    if ASSET_TLDS.contains(tld) || is_placeholder_or_tracking_domain(domain) {
+        return None;
+    }
+    if is_automated_local_part(local) {
         return None;
     }
     Some(value)
+}
+
+/// File extensions that look like a TLD in names such as `logo@2x.png` (B2).
+const ASSET_TLDS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "webp", "svg", "avif", "ico", "bmp", "css", "js", "map", "json",
+    "xml", "woff", "woff2", "ttf", "eot",
+];
+
+/// Placeholder, documentation and error-tracking domains never reach a person.
+const BLOCKED_EMAIL_DOMAINS: &[&str] = &[
+    "example.com",
+    "example.org",
+    "example.net",
+    "domain.com",
+    "email.com",
+    "yourdomain.com",
+    "yourcompany.com",
+    "test.com",
+    "sentry.io",
+    "wixpress.com",
+];
+
+fn is_placeholder_or_tracking_domain(domain: &str) -> bool {
+    BLOCKED_EMAIL_DOMAINS
+        .iter()
+        .any(|blocked| domain == *blocked || domain.ends_with(&format!(".{blocked}")))
+}
+
+/// No-reply mailboxes and long hex hashes (error-tracker ids) are not contacts.
+fn is_automated_local_part(local: &str) -> bool {
+    let compact = local.replace(['-', '_', '.'], "");
+    if ["noreply", "donotreply", "mailerdaemon"]
+        .iter()
+        .any(|prefix| compact.starts_with(prefix))
+    {
+        return true;
+    }
+    local.len() >= 20 && local.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
 
 pub fn is_disallowed_destination(address: IpAddr) -> bool {
@@ -836,7 +874,7 @@ fn email_regex() -> &'static Regex {
     static EMAIL_REGEX: OnceLock<Regex> = OnceLock::new();
     EMAIL_REGEX.get_or_init(|| {
         Regex::new(
-            r"(?i)[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+",
+            r"(?i)[a-z0-9.!#$%&'*+=?^_`{|}~-]+@[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+",
         )
         .expect("valid email regex")
     })
@@ -1280,6 +1318,45 @@ mod tests {
         assert_eq!(
             normalize_email(" Sales@Company.Test ").as_deref(),
             Some("sales@company.test")
+        );
+    }
+
+    /// B2: asset file names, tracking/placeholder domains and no-reply
+    /// addresses are not contact emails; a plain contact address still is.
+    #[test]
+    fn email_extraction_rejects_asset_names_and_placeholder_domains() {
+        for candidate in [
+            "logo@2x.png",
+            "banner@3x.webp",
+            "a/b@site.vn",
+            "x@sentry.io",
+            "abc@o123.ingest.sentry.io",
+            "name@domain.com",
+            "name@email.com",
+            "name@yourdomain.com",
+            "name@test.com",
+            "noreply@congty.vn",
+            "no-reply@congty.vn",
+            "donotreply@congty.vn",
+            "0123456789abcdef0123456789abcdef@sentry.wixpress.com",
+            "0123456789abcdef0123456789abcdef@congty.vn",
+        ] {
+            assert_eq!(normalize_email(candidate), None, "accepted {candidate}");
+        }
+        assert_eq!(
+            normalize_email("lienhe@congty.vn").as_deref(),
+            Some("lienhe@congty.vn")
+        );
+        let html = "<html><body>Ảnh logo@2x.png rồi liên hệ lienhe@congty.vn</body></html>";
+        assert_eq!(
+            extract_primary_email(html).as_deref(),
+            Some("lienhe@congty.vn")
+        );
+        let path_html =
+            "<html><body>Xem https://shop.example/contact/info@shop.example</body></html>";
+        assert_eq!(
+            extract_primary_email(path_html).as_deref(),
+            Some("info@shop.example")
         );
     }
 
