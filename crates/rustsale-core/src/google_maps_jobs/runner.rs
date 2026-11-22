@@ -851,8 +851,8 @@ mod tests {
     use crate::google_maps_jobs::events::ScrapeEventPublisher;
     use crate::google_maps_jobs::repository::ScrapeJobRepository;
     use crate::google_maps_jobs::types::{
-        ScrapeErrorKind, ScrapeJob, ScrapeJobError, ScrapeJobStatus, ScrapeMode, ScrapeStage,
-        ScrapeUnit, ScrapeUnitStatus, TransitionCause,
+        ScrapeErrorKind, ScrapeJob, ScrapeJobError, ScrapeJobStatus, ScrapeMode, ScrapeResult,
+        ScrapeStage, ScrapeUnit, ScrapeUnitStatus, TransitionCause,
     };
     use crate::scrapers::browser::{GoogleMapsPageHealth, GoogleMapsPageState};
     use async_trait::async_trait;
@@ -1023,12 +1023,19 @@ mod tests {
     }
 
     fn repository() -> Arc<ScrapeJobRepository> {
+        repository_with_path().0
+    }
+
+    fn repository_with_path() -> (Arc<ScrapeJobRepository>, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!(
             "rustsale-runner-test-{}-{}.db",
             std::process::id(),
             rand::random::<u64>()
         ));
-        Arc::new(ScrapeJobRepository::new(path.to_string_lossy().to_string()).unwrap())
+        (
+            Arc::new(ScrapeJobRepository::new(path.to_string_lossy().to_string()).unwrap()),
+            path,
+        )
     }
 
     fn job(id: &str, mode: ScrapeMode) -> ScrapeJob {
@@ -1299,6 +1306,94 @@ mod tests {
     #[tokio::test]
     async fn fatal_deep_scan_error_does_not_claim_next_district() {
         fatal_error_stops_later_unit(ScrapeMode::Keyword, "district").await;
+    }
+
+    /// B12: an import that fails after the checkpoint transaction committed
+    /// must not turn the whole job into `Failed`; the result stays pending for
+    /// the next import pass.
+    #[tokio::test]
+    async fn run_job_survives_import_failure_after_checkpoint() {
+        let (repository, path) = repository_with_path();
+        create_job_with_units(
+            &repository,
+            job("import-fail-job", ScrapeMode::Keyword),
+            vec![unit(
+                "import-fail-job",
+                "import-fail-unit",
+                "place:place-1",
+                "place",
+            )],
+        )
+        .await;
+        crate::db::open_db_connection(path.to_str().unwrap())
+            .unwrap()
+            .execute_batch(
+                "CREATE TRIGGER reject_lead_insert BEFORE INSERT ON leads
+                 BEGIN
+                     SELECT RAISE(ABORT, 'lead insert rejected');
+                 END;",
+            )
+            .unwrap();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let result = ScrapeResult {
+            id: "import-fail-result".to_string(),
+            job_id: "import-fail-job".to_string(),
+            source_unit_id: "import-fail-unit".to_string(),
+            place_id: Some("place-1".to_string()),
+            canonical_url: Some("https://www.google.com/maps/place/place-1".to_string()),
+            dedup_key: "place:place-1".to_string(),
+            name: "Import Fail Cafe".to_string(),
+            phone: Some("0901234567".to_string()),
+            normalized_phone: Some("0901234567".to_string()),
+            email: None,
+            normalized_email: None,
+            address: None,
+            website: None,
+            facebook: None,
+            zalo: None,
+            latitude: None,
+            longitude: None,
+            inside_requested_area: Some(true),
+            detail_status: "completed".to_string(),
+            enrichment_status: "not_found".to_string(),
+            import_status: "pending".to_string(),
+            last_error_kind: None,
+            last_error_message: None,
+            first_seen_at: now.clone(),
+            last_seen_at: now,
+        };
+        let processor = Arc::new(FakeProcessor::new(vec![Ok(UnitExecution {
+            results: vec![result],
+            child_units: Vec::new(),
+            budget_exhausted: false,
+        })]));
+        let runner = runner(repository.clone(), processor);
+
+        runner.start("import-fail-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+
+        let finished = repository
+            .get_job("import-fail-job")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            finished.status,
+            ScrapeJobStatus::Completed,
+            "a failed import after a durable checkpoint must not fail the job"
+        );
+        let connection = crate::db::open_db_connection(path.to_str().unwrap()).unwrap();
+        let import_status: String = connection
+            .query_row(
+                "SELECT import_status FROM google_maps_scrape_results
+                 WHERE id='import-fail-result'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(import_status, "pending");
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
