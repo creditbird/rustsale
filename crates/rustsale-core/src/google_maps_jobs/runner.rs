@@ -8,6 +8,7 @@ use crate::google_maps_jobs::types::{
 use crate::scrapers::browser::{GoogleMapsPageHealth, GoogleMapsPageState};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
+use rand::Rng;
 use serde_json::json;
 use std::sync::Arc;
 use std::time::Duration;
@@ -395,11 +396,20 @@ impl ScrapeJobRunner {
         Ok(recovered)
     }
 
-    pub fn retry_delay(&self, attempt_count: u32) -> Duration {
+    pub fn retry_delay(&self, kind: ScrapeErrorKind, attempt_count: u32) -> Duration {
         let exponent = attempt_count.saturating_sub(1).min(20);
-        self.retry_policy
-            .base_delay
-            .saturating_mul(1u32 << exponent)
+        // A rate limit is a cooldown, not a transient blip. Retrying after two
+        // seconds keeps hitting a page that asked for minutes of quiet (A13).
+        let base = match kind {
+            ScrapeErrorKind::RateLimited => self.retry_policy.base_delay.saturating_mul(30),
+            _ => self.retry_policy.base_delay,
+        };
+        let nominal = base.saturating_mul(1u32 << exponent);
+        let nominal_micros = nominal.as_micros().min(u128::from(u64::MAX)) as u64;
+        let span = (nominal_micros / 4).max(1);
+        let jittered = nominal_micros.saturating_sub(span)
+            + rand::thread_rng().gen_range(0..=span.saturating_mul(2));
+        Duration::from_micros(jittered)
     }
 
     pub async fn wait_for_idle(&self, timeout: Duration) -> Result<()> {
@@ -616,7 +626,7 @@ impl ScrapeJobRunner {
                         Some(&error_kind),
                         json!({"message": error.message.clone()}),
                     );
-                    let delay = self.retry_delay(unit.attempt_count);
+                    let delay = self.retry_delay(error.kind, unit.attempt_count);
                     let next_retry_at = (chrono::Utc::now()
                         + chrono::Duration::from_std(delay)
                             .context("retry delay exceeded chrono range")?)
@@ -1445,6 +1455,42 @@ mod tests {
         fatal_error_stops_later_unit(ScrapeMode::Keyword, "district").await;
     }
 
+    #[test]
+    fn retry_delay_has_jitter_within_bounds_and_rate_limit_is_longer() {
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repository(),
+            Arc::new(FakeProcessor::new(Vec::new())),
+            Arc::new(ScrapeEventPublisher::new(8)),
+            RetryPolicy {
+                max_retries: 3,
+                base_delay: Duration::from_secs(1),
+                failure_tolerance: FailureTolerance::default(),
+            },
+        ));
+
+        let mut observed = std::collections::HashSet::new();
+        for _ in 0..50 {
+            let delay = runner.retry_delay(ScrapeErrorKind::TransientNetwork, 2);
+            assert!(
+                delay >= Duration::from_millis(1500) && delay <= Duration::from_millis(2500),
+                "jitter escaped ±25%: {delay:?}"
+            );
+            observed.insert(delay.as_micros());
+        }
+        assert!(observed.len() > 1, "retry delay has no jitter");
+
+        let rate_limited = runner.retry_delay(ScrapeErrorKind::RateLimited, 1);
+        let transient = runner.retry_delay(ScrapeErrorKind::TransientNetwork, 1);
+        assert!(
+            rate_limited >= Duration::from_millis(22_500),
+            "rate limit retried too soon: {rate_limited:?}"
+        );
+        assert!(
+            transient <= Duration::from_millis(1_250),
+            "ordinary retry delay drifted: {transient:?}"
+        );
+    }
+
     /// B12: an import that fails after the checkpoint transaction committed
     /// must not turn the whole job into `Failed`; the result stays pending for
     /// the next import pass.
@@ -1550,9 +1596,15 @@ mod tests {
         ]));
         let runner = runner(repository.clone(), processor.clone());
 
-        assert_eq!(runner.retry_delay(1), Duration::from_millis(2));
-        assert_eq!(runner.retry_delay(2), Duration::from_millis(4));
-        assert_eq!(runner.retry_delay(3), Duration::from_millis(8));
+        for (attempt, nominal_ms) in [(1u32, 2u64), (2, 4), (3, 8)] {
+            let delay = runner.retry_delay(ScrapeErrorKind::TransientNetwork, attempt);
+            let lower = u128::from(nominal_ms * 750);
+            let upper = u128::from(nominal_ms * 1250);
+            assert!(
+                (lower..=upper).contains(&delay.as_micros()),
+                "attempt {attempt}: {delay:?} outside ±25% of {nominal_ms} ms"
+            );
+        }
         runner.start("retry-job").await.unwrap();
         runner.wait_for_idle(Duration::from_secs(10)).await.unwrap();
 
