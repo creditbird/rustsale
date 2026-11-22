@@ -20,7 +20,7 @@ fn id(value: f64) -> i64 {
 
 /// A JS number as a sticker id, refusing values a `u32` cannot hold.
 fn sticker_id(value: f64) -> Result<u32, CoreApiError> {
-    if value.is_finite() && value >= 0.0 && value <= f64::from(u32::MAX) {
+    if value.is_finite() && value.fract() == 0.0 && value >= 0.0 && value <= f64::from(u32::MAX) {
         Ok(value as u32)
     } else {
         Err(CoreApiError::invalid("sticker id is out of range"))

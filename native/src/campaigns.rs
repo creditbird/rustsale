@@ -18,18 +18,9 @@ fn id(value: f64) -> i64 {
     if value.is_finite() { value as i64 } else { 0 }
 }
 
-/// A JS number as a lead id, refusing values an `i32` cannot hold.
+/// JS numbers as lead ids, refusing anything that is not a whole, non-negative `i32`.
 fn lead_ids(values: Vec<f64>) -> Result<Vec<i32>, CoreApiError> {
-    values
-        .into_iter()
-        .map(|value| {
-            if value.is_finite() && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) {
-                Ok(value as i32)
-            } else {
-                Err(CoreApiError::invalid("lead id is out of range"))
-            }
-        })
-        .collect()
+    values.into_iter().map(id32).collect()
 }
 
 /// An optional JS number as a `u32`.

@@ -240,6 +240,9 @@ mod tests {
         for result in [
             Templates::delete_smtp_server(4_294_967_297.0).await,
             Templates::delete_email_template(4_294_967_297.0).await,
+            Templates::delete_smtp_server(1.5).await,
+            Templates::delete_email_template(-1.0).await,
+            Templates::delete_email_template(f64::NAN).await,
         ] {
             let error = match result {
                 Ok(_) => panic!("an id past i32 must be refused"),

@@ -1,19 +1,15 @@
 //! The AI copilot: intent, reply suggestions, proposals and the lead evidence context.
 
 use crate::error::CoreApiError;
-use crate::runtime::{on_blocking, on_core, state_of};
+use crate::runtime::{id32, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::ai::commands as ai;
 use rustsale_core::commands::DbState;
 
-/// A JS number as a lead id, refusing values an `i32` cannot hold.
+/// A JS number as a lead id, refusing anything that is not a whole, non-negative `i32`.
 fn lead_id(value: f64) -> Result<i32, CoreApiError> {
-    if value.is_finite() && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) {
-        Ok(value as i32)
-    } else {
-        Err(CoreApiError::invalid("lead id is out of range"))
-    }
+    id32(value)
 }
 
 /// A JS number as a row id; anything not finite becomes 0, which the core reports as missing.

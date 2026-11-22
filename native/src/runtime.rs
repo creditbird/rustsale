@@ -203,10 +203,11 @@ pub(crate) fn limit(value: Option<f64>) -> u32 {
     }
 }
 
-/// A JS number as an `i32` row id, refusing values an `i32` cannot hold instead of wrapping
-/// them onto another row.
+/// A JS number as an `i32` row id. Row ids are whole and not negative, so NaN, infinities,
+/// fractions, negatives and values an `i32` cannot hold are refused instead of being truncated
+/// or wrapped onto another row.
 pub(crate) fn id32(value: f64) -> Result<i32, CoreApiError> {
-    if value.is_finite() && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) {
+    if value.is_finite() && value.fract() == 0.0 && value >= 0.0 && value <= f64::from(i32::MAX) {
         Ok(value as i32)
     } else {
         Err(CoreApiError::invalid("id is out of range"))
@@ -272,8 +273,12 @@ mod tests {
         assert!(id32(f64::NAN).is_err());
         assert!(id32(f64::INFINITY).is_err());
         assert_eq!(id32(0.0).ok(), Some(0));
-        assert_eq!(id32(-1.0).ok(), Some(-1));
         assert_eq!(id32(f64::from(i32::MAX)).ok(), Some(i32::MAX));
-        assert_eq!(id32(f64::from(i32::MIN)).ok(), Some(i32::MIN));
+        assert!(id32(f64::from(i32::MAX) + 1.0).is_err());
+        assert!(id32(-1.0).is_err());
+        assert!(id32(f64::from(i32::MIN)).is_err());
+        assert!(id32(1.5).is_err());
+        assert!(id32(-0.5).is_err());
+        assert!(id32(f64::NEG_INFINITY).is_err());
     }
 }

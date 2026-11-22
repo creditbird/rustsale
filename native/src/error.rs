@@ -49,9 +49,15 @@ impl CoreApiError {
 impl From<String> for CoreApiError {
     fn from(message: String) -> Self {
         let lower = message.to_lowercase();
-        let code = if lower.contains("not found")
+        let code = if lower.contains("no such table")
+            || lower.contains("no such column")
+            || lower.contains("no such index")
+        {
+            // A schema fault is the app's bug, not a missing record the caller can fix.
+            "internal"
+        } else if lower.contains("not found")
             || lower.contains("no such")
-            || lower.contains("no rows")
+            || lower.contains("returned no rows")
             || lower.contains("does not exist")
             || lower.contains("không tồn tại")
         {
@@ -161,6 +167,16 @@ mod tests {
             CoreApiError::from("scrape job qa was not found").code,
             "not_found"
         );
+    }
+
+    #[test]
+    fn schema_faults_are_internal_not_not_found() {
+        assert_eq!(CoreApiError::from("no such table: leads").code, "internal");
+        assert_eq!(
+            CoreApiError::from("no such column: leads.phone").code,
+            "internal"
+        );
+        assert_eq!(CoreApiError::from("no such file").code, "not_found");
     }
 
     #[test]
