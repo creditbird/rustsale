@@ -1,7 +1,9 @@
 //! Leads, categories and the lead activity log.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, id32, limit, on_blocking, optional_id32, state_of};
+use crate::runtime::{
+    args, body, checked_optional_id32, id32, limit, on_blocking, optional_id32, state_of,
+};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -50,7 +52,8 @@ impl Leads {
         cursor: Option<String>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
-        let query: LeadQuery = args(query)?;
+        let mut query: LeadQuery = args(query)?;
+        query.category_id = checked_optional_id32(query.category_id)?;
         let limit = limit(limit_);
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -66,7 +69,8 @@ impl Leads {
         cursor: Option<String>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
-        let query: LeadQuery = args(query)?;
+        let mut query: LeadQuery = args(query)?;
+        query.category_id = checked_optional_id32(query.category_id)?;
         let limit = limit(limit_);
         let category = id32(category_id)?;
         on_blocking(move |h| {

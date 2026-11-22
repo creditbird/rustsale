@@ -1,7 +1,10 @@
 //! The remaining lead commands: outreach paging, the full list, the activity log and lead edits.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, id32, limit, on_blocking, optional_id32, state_of};
+use crate::runtime::{
+    args, body, checked_id32, checked_optional_id32, id32, limit, on_blocking, optional_id32,
+    state_of,
+};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -19,6 +22,15 @@ struct OutreachFilters {
     filter_verified_zalo: bool,
     filter_unreached: bool,
     filter_mobile_only: bool,
+}
+
+impl OutreachFilters {
+    /// Checks the ids serde accepted, before the core pages over rows.
+    fn checked(mut self) -> Result<Self, CoreApiError> {
+        self.category_id = checked_optional_id32(self.category_id)?;
+        self.filter_template_id = checked_optional_id32(self.filter_template_id)?;
+        Ok(self)
+    }
 }
 
 impl Default for OutreachFilters {
@@ -86,7 +98,7 @@ impl LeadsMore {
         cursor: Option<f64>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
-        let filters: OutreachFilters = args(filters)?;
+        let filters = OutreachFilters::checked(args(filters)?)?;
         let limit = limit(limit_);
         let cursor = optional_id32(cursor)?;
         on_blocking(move |h| {
@@ -113,7 +125,7 @@ impl LeadsMore {
         filters: Option<JsonValue>,
         excluded_lead_ids: Option<Vec<f64>>,
     ) -> Result<JsonValue, JsError> {
-        let filters: OutreachFilters = args(filters)?;
+        let filters = OutreachFilters::checked(args(filters)?)?;
         let excluded = excluded_lead_ids
             .unwrap_or_default()
             .into_iter()
@@ -170,7 +182,8 @@ impl LeadsMore {
 
     /// Logs an activity on a lead from `{ leadId, activityType, content, performedBy? }`.
     pub async fn add_activity(activity: JsonValue) -> Result<JsonValue, JsError> {
-        let activity: NewActivity = body(activity)?;
+        let mut activity: NewActivity = body(activity)?;
+        activity.lead_id = checked_id32(activity.lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::add_activity(
@@ -187,7 +200,8 @@ impl LeadsMore {
     /// Replaces lead `lead` from `{ id, name, company?, status?, value?, owner?, email?, phone?,
     /// about?, address?, currency? }`.
     pub async fn update(lead: JsonValue) -> Result<JsonValue, JsError> {
-        let lead: LeadEdit = body(lead)?;
+        let mut lead: LeadEdit = body(lead)?;
+        lead.id = checked_id32(lead.id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::update_lead(

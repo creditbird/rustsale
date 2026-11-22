@@ -1,7 +1,7 @@
 //! Deals of the pipeline: the list, stage moves and create/delete.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, id32, on_blocking, state_of};
+use crate::runtime::{body, checked_id32, id32, on_blocking, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -49,7 +49,8 @@ impl Deals {
     /// Creates a deal from `{ leadId, title, value?, stage, currency? }` and resolves the new deal.
     /// `currency` defaults to VND; any other value than VND or USD rejects.
     pub async fn create(deal: JsonValue) -> Result<JsonValue, JsError> {
-        let deal: NewDeal = body(deal)?;
+        let mut deal: NewDeal = body(deal)?;
+        deal.lead_id = checked_id32(deal.lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::create_deal(
