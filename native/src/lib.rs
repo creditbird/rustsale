@@ -15,6 +15,7 @@ mod import;
 mod leads;
 mod leads_more;
 mod maps;
+mod maps_more;
 mod ports;
 mod runtime;
 mod settings;
@@ -41,6 +42,7 @@ fn native(registry: &mut Registry) {
         .module::<conversations::Conversations>()
         .module::<conversation_actions::ConversationActions>()
         .module::<maps::GoogleMaps>()
+        .module::<maps_more::GoogleMapsMore>()
         .module::<templates::Templates>()
         .module::<settings::Settings>()
         .module::<util::Util>()

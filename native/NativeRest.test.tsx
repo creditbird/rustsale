@@ -7,6 +7,7 @@ import {
   Campaigns,
   Desktop,
   Facebook,
+  GoogleMapsMore,
   Host,
   ImportLeads,
   LeadsMore,
@@ -267,4 +268,26 @@ test("desktop: focus sequence accepts newer updates and rejects older ones", asy
   const stale = row(await Desktop.setActiveConversationFocus(8, true, 9));
   expect(stale.accepted).toBe(false);
   expect(stale.backend_seq).toBe(10);
+});
+
+test("google maps more: grid plan, provinces, catalog and missing jobs", async () => {
+  await Host.start(dir);
+
+  const plan = row(await GoogleMapsMore.planGrid([10.37, 11.16, 106.36, 107.03], 5));
+  expect(plan.estimated_cells).toBeGreaterThan(0);
+  expect(plan.exceeds_limit).toBe(false);
+  await expect(GoogleMapsMore.planGrid([10.37, 11.16], 5)).rejects.toThrow();
+
+  const provinces = row(await GoogleMapsMore.presetProvinces());
+  expect(Object.keys(provinces).length).toBeGreaterThanOrEqual(60);
+
+  const countries = rows(await GoogleMapsMore.countries());
+  expect(countries.some((item) => item.code === "VN")).toBe(true);
+
+  const status = row(await GoogleMapsMore.countryStatus("VN"));
+  expect(status.country_code).toBe("VN");
+
+  await expect(GoogleMapsMore.resolveBounds(999_999_999)).rejects.toThrow();
+  await expect(GoogleMapsMore.retryFailedUnits("missing-job")).rejects.toThrow();
+  await expect(GoogleMapsMore.retryEmailEnrichment("missing-job")).rejects.toThrow();
 });
