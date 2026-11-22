@@ -2,7 +2,10 @@
 //! multi-channel campaign center.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, id32, id64, on_blocking, on_core, state_of};
+use crate::runtime::{
+    body, checked_id64, checked_ids64, checked_optional_id64, id32, id64, on_blocking, on_core,
+    state_of,
+};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::campaign::commands as unified;
@@ -162,7 +165,9 @@ impl Campaigns {
     /// `quiet_hours_enabled`, `quiet_hours_start`, `quiet_hours_end`, `timezone` as `null` or a
     /// value) and resolves its id.
     pub async fn create_whatsapp_campaign(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: CreateCampaignRequest = body(request)?;
+        let mut request: CreateCampaignRequest = body(request)?;
+        request.template_id = checked_optional_id64(request.template_id)?;
+        request.assigned_account_ids = checked_ids64(request.assigned_account_ids)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::create_whatsapp_campaign(state, request)?)
@@ -177,7 +182,10 @@ impl Campaigns {
         recipients: JsonValue,
         template: Option<String>,
     ) -> Result<JsonValue, JsError> {
-        let recipients: Vec<CampaignRecipientInput> = body(recipients)?;
+        let mut recipients: Vec<CampaignRecipientInput> = body(recipients)?;
+        for recipient in &mut recipients {
+            recipient.lead_id = checked_optional_id64(recipient.lead_id)?;
+        }
         let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -328,8 +336,14 @@ impl Campaigns {
         campaign: JsonValue,
         steps: JsonValue,
     ) -> Result<JsonValue, JsError> {
-        let campaign: Campaign = body(campaign)?;
-        let steps: Vec<CampaignStep> = body(steps)?;
+        let mut campaign: Campaign = body(campaign)?;
+        campaign.id = checked_optional_id64(campaign.id)?;
+        let mut steps: Vec<CampaignStep> = body(steps)?;
+        for step in &mut steps {
+            step.id = checked_optional_id64(step.id)?;
+            step.campaign_id = checked_id64(step.campaign_id)?;
+            step.template_id = checked_optional_id64(step.template_id)?;
+        }
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(unified::save_unified_campaign(campaign, steps, state)?)

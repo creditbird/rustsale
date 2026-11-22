@@ -1,7 +1,7 @@
 //! Facebook Pages: accounts, scheduled posts, comment automations, page health and Messenger sync.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, id64, on_blocking, on_core, state_of};
+use crate::runtime::{body, checked_id64, id64, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -72,7 +72,8 @@ impl Facebook {
     /// `draft_group_id`, `channel_account_id`, `page_id`, `post_type`, `message`, `link_url`,
     /// `media_paths`, `scheduled_publish_time`) and resolves its id.
     pub async fn schedule_post(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: CreateFacebookPostRequest = body(request)?;
+        let mut request: CreateFacebookPostRequest = body(request)?;
+        request.channel_account_id = checked_id64(request.channel_account_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(fb::schedule_facebook_post(state, request)?)
@@ -113,7 +114,8 @@ impl Facebook {
     /// postIds?, keywords?, matchMode?, autoLike?, publicReplyTemplate?, privateReplyTemplate?,
     /// isEnabled? }`) and resolves its id.
     pub async fn create_comment_automation(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: CreateCommentAutomationRequest = body(request)?;
+        let mut request: CreateCommentAutomationRequest = body(request)?;
+        request.channel_account_id = checked_id64(request.channel_account_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(fb::create_comment_automation(state, request)?)
@@ -133,7 +135,8 @@ impl Facebook {
     /// Replaces the fields of a comment automation rule from `request` (`{ id, ruleName, postIds?,
     /// keywords?, matchMode?, autoLike?, publicReplyTemplate?, privateReplyTemplate?, isEnabled? }`).
     pub async fn update_comment_automation(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: UpdateCommentAutomationRequest = body(request)?;
+        let mut request: UpdateCommentAutomationRequest = body(request)?;
+        request.id = checked_id64(request.id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(fb::update_comment_automation(state, request)?)

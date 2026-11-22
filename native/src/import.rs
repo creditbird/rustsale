@@ -1,7 +1,7 @@
 //! Lead import and export: file dialog, inspection, execution and templates.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, on_core, state_of};
+use crate::runtime::{body, checked_optional_id32, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -41,7 +41,8 @@ impl ImportLeads {
     /// `default_category_id`, `default_status`, `default_owner`, `default_currency`,
     /// `normalize_phone`) and resolves the `ImportSummaryResult`.
     pub async fn execute(options: JsonValue) -> Result<JsonValue, JsError> {
-        let options: LeadImportOptions = body(options)?;
+        let mut options: LeadImportOptions = body(options)?;
+        options.default_category_id = checked_optional_id32(options.default_category_id)?;
         on_core(move |h| async move {
             let app = h.clone();
             let state = state_of::<DbState>(&h)?;
