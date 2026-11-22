@@ -434,6 +434,18 @@ mod tests {
     }
 
     #[test]
+    fn normalize_vn_mobile_accepts_first_valid_of_multiple_numbers() {
+        assert_eq!(
+            normalize_vn_mobile("028 1234 5678, 0912 000 000").as_deref(),
+            Some("0912000000")
+        );
+        assert_eq!(
+            normalize_vn_mobile("0912 000 000; 0987 000 000").as_deref(),
+            Some("0912000000")
+        );
+    }
+
+    #[test]
     fn creates_lead_for_mobile_without_email() {
         let mut connection = connection();
         insert_result(
