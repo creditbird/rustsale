@@ -770,6 +770,42 @@ impl ConversationService {
         Ok(res)
     }
 
+    /// Checks, without writing anything, that `request` can be queued: the conversation and the
+    /// account exist, the account owns the conversation and is connected.
+    pub fn check_send_target(
+        &self,
+        request: &super::types::SendConversationMessageRequest,
+    ) -> Result<(), super::error::SendTargetError> {
+        use super::error::SendTargetError;
+        let db = |error: rusqlite::Error| SendTargetError::Database(error.to_string());
+        let owner = self
+            .repository
+            .conversation_account_id(request.conversation_id)
+            .map_err(db)?
+            .ok_or(SendTargetError::ConversationNotFound(
+                request.conversation_id,
+            ))?;
+        let status = self
+            .repository
+            .account_connection_status(request.channel_account_id)
+            .map_err(db)?
+            .ok_or(SendTargetError::AccountNotFound(request.channel_account_id))?;
+        if owner != request.channel_account_id {
+            return Err(SendTargetError::AccountMismatch {
+                account_id: request.channel_account_id,
+                conversation_id: request.conversation_id,
+            });
+        }
+        // `connecting` and `degraded` still deliver; a dropped or rejected login does not.
+        if matches!(status.as_str(), "disconnected" | "invalid") {
+            return Err(SendTargetError::AccountUnavailable {
+                account_id: request.channel_account_id,
+                status,
+            });
+        }
+        Ok(())
+    }
+
     pub fn enqueue_message(
         &self,
         request: &super::types::SendConversationMessageRequest,

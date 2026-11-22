@@ -1,4 +1,6 @@
-use super::error::{ConversationCommandError, ConversationError, ConversationErrorCode};
+use super::error::{
+    ConversationCommandError, ConversationError, ConversationErrorCode, SendTargetError,
+};
 use super::service::ConversationService;
 use super::types::{
     Channel, ConversationForwardTargetResult, ConversationMentionCandidate, ConversationMessage,
@@ -127,10 +129,21 @@ pub fn relink_conversation_lead(
         .map_err(|error| error.to_string())
 }
 
+/// Checks, without writing anything, that the message of `request` can be queued: the
+/// conversation and the account exist, the account owns the conversation and is connected.
+pub fn check_send_target(
+    state: &ConversationState,
+    request: &SendConversationMessageRequest,
+) -> Result<(), SendTargetError> {
+    state.service.check_send_target(request)
+}
+
 pub fn send_conversation_message(
     state: State<'_, ConversationState>,
     request: SendConversationMessageRequest,
 ) -> Result<ConversationMessage, String> {
+    // A message nobody can deliver is an error now, not a silent outbox row.
+    check_send_target(&state, &request).map_err(|error| error.to_string())?;
     let msg = state
         .service
         .enqueue_message(&request)

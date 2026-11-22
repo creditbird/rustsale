@@ -111,6 +111,29 @@ impl From<anyhow::Error> for ConversationError {
     }
 }
 
+/// Why a message cannot be queued to its target. Checked before anything is written.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SendTargetError {
+    /// The conversation does not exist.
+    #[error("conversation {0} not found")]
+    ConversationNotFound(i64),
+    /// The channel account does not exist.
+    #[error("channel account {0} not found")]
+    AccountNotFound(i64),
+    /// The account exists but is not the one that owns the conversation.
+    #[error("channel account {account_id} does not belong to conversation {conversation_id}")]
+    AccountMismatch {
+        account_id: i64,
+        conversation_id: i64,
+    },
+    /// The account that would deliver the message is not connected.
+    #[error("channel account {account_id} is not connected ({status})")]
+    AccountUnavailable { account_id: i64, status: String },
+    /// The database could not be read.
+    #[error("cannot check the send target: {0}")]
+    Database(String),
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConversationCommandError {

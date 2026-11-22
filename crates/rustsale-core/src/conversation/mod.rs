@@ -46,6 +46,8 @@ mod repository_test;
 #[cfg(test)]
 mod retry_test;
 #[cfg(test)]
+mod send_target_test;
+#[cfg(test)]
 pub mod service_test;
 #[cfg(test)]
 mod staging_test;

@@ -2050,6 +2050,32 @@ impl ConversationRepository {
         Ok(items)
     }
 
+    /// The channel account that owns conversation `conversation_id`, absent when the
+    /// conversation does not exist.
+    pub fn conversation_account_id(&self, conversation_id: i64) -> Result<Option<i64>> {
+        let conn = open_db_connection(&self.db_path)?;
+        Ok(conn
+            .query_row(
+                "SELECT channel_account_id FROM channel_conversations WHERE id = ?1",
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    /// The connection status stored for channel account `account_id`, absent when there is no
+    /// such account.
+    pub fn account_connection_status(&self, account_id: i64) -> Result<Option<String>> {
+        let conn = open_db_connection(&self.db_path)?;
+        Ok(conn
+            .query_row(
+                "SELECT connection_status FROM channel_accounts WHERE id = ?1",
+                [account_id],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     pub fn mark_conversation_read(&self, key: &str) -> Result<u64> {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;

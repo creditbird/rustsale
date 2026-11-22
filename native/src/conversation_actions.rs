@@ -146,7 +146,10 @@ impl ConversationActions {
         .await
     }
 
-    /// Queues one message from `request` in the outbox; the channel supervisor delivers it.
+    /// Queues one message from `request` in the outbox; the channel supervisor delivers it. Fails
+    /// with `not_found` for a missing conversation or account, `invalid_request` for an account
+    /// that is not the conversation's and `unavailable` when that account is not connected; nothing
+    /// is queued then.
     pub async fn send_message(request: JsonValue) -> Result<JsonValue, JsError> {
         let mut request: SendConversationMessageRequest = body(request)?;
         request.conversation_id = checked_id64(request.conversation_id)?;
@@ -154,6 +157,9 @@ impl ConversationActions {
         request.reply_to_message_id = checked_optional_id64(request.reply_to_message_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
+            // Before anything is queued: a missing target is `not_found`, an account that is not
+            // connected is `unavailable`, and a wrong account is never swapped for another.
+            commands::check_send_target(&state, &request)?;
             Ok::<_, CoreApiError>(commands::send_conversation_message(state, request)?)
         })
         .await
