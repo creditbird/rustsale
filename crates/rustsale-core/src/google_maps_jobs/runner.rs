@@ -516,9 +516,15 @@ impl ScrapeJobRunner {
                             TransitionCause::System,
                         )
                         .await?;
-                    self.events
-                        .publish_job(&partial, "Scrape job completed with unresolved enrichment")
-                        .await;
+                    let message = if current.failed_units > 0 {
+                        format!(
+                            "Scrape job completed partially: {} unit(s) failed",
+                            current.failed_units
+                        )
+                    } else {
+                        "Scrape job completed with unresolved enrichment".to_string()
+                    };
+                    self.events.publish_job(&partial, message).await;
                     let partial_error_kind = partial
                         .last_error_kind
                         .map(|kind| format!("{kind:?}").to_ascii_lowercase());
@@ -793,9 +799,37 @@ impl ScrapeJobRunner {
                             TransitionCause::System,
                         )
                         .await?;
-                    self.events
-                        .publish_job(&terminal, "Scrape job stopped after unit failure")
-                        .await;
+                    let pending_units = match self.repository.list_units(job_id).await {
+                        Ok(units) => units
+                            .iter()
+                            .filter(|unit| unit.status == ScrapeUnitStatus::Pending)
+                            .count(),
+                        Err(error) => {
+                            tracing::warn!(job_id, error = %error, "failed to count pending scrape units");
+                            0
+                        }
+                    };
+                    let message = if terminal.status == ScrapeJobStatus::Partial {
+                        format!(
+                            "Scrape job stopped: {} unit(s) failed, {} pending — Retry Failed Units to continue",
+                            terminal.failed_units, pending_units
+                        )
+                    } else {
+                        "Scrape job failed after unit failure".to_string()
+                    };
+                    self.events.publish_job(&terminal, message).await;
+                    log_scrape_event(
+                        "job_stopped",
+                        Some(&terminal.id),
+                        Some(&unit.id),
+                        Some(&format!("{:?}", terminal.stage).to_ascii_lowercase()),
+                        Some(unit.attempt_count),
+                        Some(&error_kind),
+                        json!({
+                            "failed_units": terminal.failed_units,
+                            "pending_units": pending_units,
+                        }),
+                    );
                     self.processor
                         .shutdown()
                         .await
@@ -2251,6 +2285,145 @@ mod tests {
             event.message
         );
         assert_ne!(event.message, "Scrape job completed");
+    }
+
+    /// A tolerated place failure updates the job's failure counter before the
+    /// finalize pass, so this path—not `complete_job_if_exhausted`—announces
+    /// the partial result. The message must carry the count, not a count-free
+    /// "unresolved enrichment" line the UI cannot explain.
+    #[tokio::test]
+    async fn finalizing_after_a_counted_unit_failure_announces_the_partial_count() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("counted-partial-job", ScrapeMode::Keyword),
+            vec![unit("counted-partial-job", "place-a", "a", "place")],
+        )
+        .await;
+        let events = Arc::new(ScrapeEventPublisher::new(64));
+        let mut receiver = events.subscribe();
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repository.clone(),
+            Arc::new(FakeProcessor::new(vec![error(
+                ScrapeErrorKind::SelectorChanged,
+                false,
+            )])),
+            events,
+            RetryPolicy::for_tests(),
+        ));
+
+        runner.start("counted-partial-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        let stored = repository
+            .get_job("counted-partial-job")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ScrapeJobStatus::Partial);
+        assert_eq!(stored.failed_units, 1);
+
+        let mut partial_events = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            if event.status == ScrapeJobStatus::Partial {
+                partial_events.push(event);
+            }
+        }
+        let event = partial_events.last().expect("partial completion event");
+        assert_eq!(
+            event.message,
+            "Scrape job completed partially: 1 unit(s) failed"
+        );
+    }
+
+    /// When retries run out on a non-place unit the job stops `Partial` with
+    /// work still queued. The event must state both real counts so "Retry
+    /// Failed Units" tells the user what would actually resume.
+    #[tokio::test]
+    async fn an_exhausted_retry_stop_announces_failed_and_pending_counts() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("retry-stop-job", ScrapeMode::Keyword),
+            vec![
+                unit("retry-stop-job", "search-a", "a", "keyword"),
+                unit("retry-stop-job", "search-b", "b", "keyword"),
+                unit("retry-stop-job", "search-c", "c", "keyword"),
+            ],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(
+            (0..=4)
+                .map(|_| error(ScrapeErrorKind::TransientNetwork, true))
+                .collect(),
+        ));
+        let events = Arc::new(ScrapeEventPublisher::new(64));
+        let mut receiver = events.subscribe();
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repository.clone(),
+            processor.clone(),
+            events,
+            RetryPolicy::for_tests(),
+        ));
+
+        runner.start("retry-stop-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+
+        assert_eq!(processor.calls().len(), 4);
+        let stored = repository.get_job("retry-stop-job").await.unwrap().unwrap();
+        assert_eq!(stored.status, ScrapeJobStatus::Partial);
+        assert_eq!(stored.failed_units, 1);
+
+        let mut partial_events = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            if event.status == ScrapeJobStatus::Partial {
+                partial_events.push(event);
+            }
+        }
+        let event = partial_events.last().expect("partial stop event");
+        assert_eq!(
+            event.message,
+            "Scrape job stopped: 1 unit(s) failed, 2 pending — Retry Failed Units to continue"
+        );
+    }
+
+    /// A non-retryable unit failure ends the job `Failed`: the message must say
+    /// the job failed, not that it stopped partially.
+    #[tokio::test]
+    async fn a_fatal_unit_failure_announces_job_failure() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("fatal-stop-job", ScrapeMode::Keyword),
+            vec![unit("fatal-stop-job", "search-a", "a", "keyword")],
+        )
+        .await;
+        let events = Arc::new(ScrapeEventPublisher::new(64));
+        let mut receiver = events.subscribe();
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repository.clone(),
+            Arc::new(FakeProcessor::new(vec![error(
+                ScrapeErrorKind::SelectorChanged,
+                false,
+            )])),
+            events,
+            RetryPolicy::for_tests(),
+        ));
+
+        runner.start("fatal-stop-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        let stored = repository.get_job("fatal-stop-job").await.unwrap().unwrap();
+        assert_eq!(stored.status, ScrapeJobStatus::Failed);
+
+        let mut failed_events = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            if event.status == ScrapeJobStatus::Failed {
+                failed_events.push(event);
+            }
+        }
+        let event = failed_events.last().expect("failed stop event");
+        assert_eq!(event.message, "Scrape job failed after unit failure");
     }
 
     #[tokio::test]
