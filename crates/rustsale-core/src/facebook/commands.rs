@@ -479,8 +479,10 @@ pub fn list_comment_logs_impl(
     let mut sql = "SELECT id, comment_id, page_id, post_id, sender_psid, sender_name, comment_text, automation_id, like_status, public_reply_status, private_reply_status, skip_reason, error_message, created_at, updated_at FROM facebook_comment_logs".to_string();
     if page_id.is_some() {
         sql.push_str(" WHERE page_id = ?1");
+        sql.push_str(" ORDER BY id DESC LIMIT ?2");
+    } else {
+        sql.push_str(" ORDER BY id DESC LIMIT ?1");
     }
-    sql.push_str(" ORDER BY id DESC LIMIT ?2");
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let map_row = |r: &rusqlite::Row| {
