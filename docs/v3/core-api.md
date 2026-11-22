@@ -22,7 +22,8 @@ notification, scrapers, tray`.
 ## 2. Boot: service hub
 
 ```rust
-let core = Core::start(CoreConfig { data_dir }, ports, &tokio_handle)?;   // Result<Core, CoreError>
+let core = Core::start(CoreConfig { data_dir, local_api_port: None }, ports, &tokio_handle)?;   // Result<Core, CoreError>
+// local_api_port: Some(8797) overrides RUSTSALE_LOCAL_API_PORT (the NSH host passes it; Tauri passes None)
 let app: &AppHandle = core.handle();                                      // the "service hub"
 ```
 
@@ -366,6 +367,8 @@ type `CoreApiError { code: String, message: String }` to TSX.
 
 ## 8. Large lists: paging that exists vs gaps
 
+> **Status (P1, commit 50f5b95):** every gap in the right-hand column is closed by a NEW command; the v2 commands stay for the Tauri adapter. See section 14.
+
 TSX must never receive a whole large list. Sorting/filtering stays in Rust.
 
 | Data | Exists today | Gap (P1 core work) |
@@ -454,3 +457,55 @@ mark the account `invalid` (it leaves the connected list until reconnected). The
 `channel_accounts.last_error` holds the text, including storage failures. The "sync now" command
 bypasses the pacing. Only the first failure of a streak, a changed error, or every 20th repeat is
 logged at `error`; the rest are `debug`.
+
+## 14. P1 status: paging and the native module (`feat/nsh-v3-native`)
+
+**Paging (core, new commands, v2 ones untouched).** Keyset cursors: an opaque JSON string tagged
+with sort and direction, a unique tie-break key so the order is total. A page is
+`{ items, total, nextCursor }` (camelCase). `limit` 0 means 50, max 200. Errors are
+`PageError { InvalidCursor, InvalidRequest, Database, Internal }`; a cursor made for another sort
+is rejected, never silently wrong.
+
+| New command | Replaces for the UI | TSX export |
+|---|---|---|
+| `get_leads_page`, `get_leads_by_category_page` | `get_leads`, `get_leads_by_category` | `Leads.page`, `Leads.byCategoryPage` |
+| `list_conversation_inbox_page` | `list_conversation_inbox` | `Conversations.inboxPage` |
+| `list_google_maps_results_page` | (none, new) | `GoogleMaps.resultsPage` |
+| `get_activities_page` | `get_activities` | `Leads.activitiesPage` |
+| `list_comment_logs_page` | `list_comment_logs` | not exported yet (Facebook module pending) |
+
+**Native crate `native/`** (`nsh-app-rustsale`, NSH 0.6.1 mixed mode, own `[workspace]`;
+`import { ... } from "rustsale/native"`). Modules: `Host`, `Leads`, `LeadsMore`, `Deals`,
+`Categories`, `Conversations`, `ConversationActions`, `GoogleMaps`, `Templates`, `Settings`.
+Status per command is in `feature-parity.md` section 2 (column "Trạng thái v3"): 80 of 177
+exported, 5 legacy commands deliberately not exported, 1 via a port (updater), 91 pending.
+Pending groups: CAMP (except legacy), ZALO, FB, AI, IMPORT, UTIL, the rest of SCRAPE
+(administrative catalog, grid, retry, runtime prepare), and the CONV commands that need a real
+account or network (stickers, recall, reaction, forward, sync, QR, attachments).
+
+- **Errors:** every export returns `Result<_, CoreApiError { code, message }>`; `ConversationCommandError`
+  keeps its code, `PageError` maps to `invalid_cursor` / `invalid_request` / `internal`, `String`
+  errors sorted by a small keyword table (tested).
+- **Boot:** `Host.start(dataDir?)` starts the core with real NSH ports. It refuses any path with a
+  `com.rustsale.crm` component or `..`, refuses a configured Zalo webhook URL, uses the
+  `com.rustsale.crm.v3-dev` folder by default and local API port 8797.
+- **Ports -> NSH** (core port -> `Request` on a tokio channel -> a pump on the engine thread):
+  events -> `Host.onEvent`; notifications -> `show_notification`; dialogs -> `pick_paths` /
+  `pick_save_path`; opener -> `open_url` / `reveal_path`; tray -> `tray()` + menu; window ->
+  show/hide/focus/`quit`; autostart -> `launch_at_login` / `set_launch_at_login`.
+- **Updater** follows the packaged-app API `nsh/updater` (release builds use the native target of
+  `nsh package`, gpui is dev only): the core asks, TSX answers through `Host.onUpdaterRequest` /
+  `Host.answerUpdater`. Without a TSX listener the port returns `Unsupported`.
+- **Not real noops, but degraded:** autostart returns `Unsupported` outside a packaged app; the
+  window exit code is dropped (NSH `quit` has none); core log files are not written because the
+  host's logger is inherited (`init_structured_logging_or_inherit`); tray, notifications and
+  dialogs need a desktop host (headless tests only prove the plumbing).
+- **Wire naming:** v2 models (Lead, CurrencySettings, TrayConfig, NotificationSettings,
+  templates, SMTP) are snake_case; conversation types, paging queries and `Page` are camelCase.
+  Results are `unknown` in the generated TS (`JsonValue`), so TSX casts to its own types.
+- **Not exported on purpose:** `send_zalo_campaign`, `get_campaign_leads`,
+  `start_google_maps_scrape`, `stop_google_maps_scrape`, `verify_all_zalo_sessions`. A Rust test
+  (`legacy_commands_are_not_exported_to_tsx`) checks the generated declarations, and another
+  (`every_export_has_a_doc_comment`) checks `registry().undocumented()`.
+- **Build gotcha:** NSH re-resolves its own generated workspace under `native/.nsh/rust`;
+  `zip` is pinned to `=2.4.2` in `native/Cargo.toml` because calamine 0.26 does not build with 2.6.

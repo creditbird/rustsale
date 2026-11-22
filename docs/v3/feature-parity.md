@@ -4,7 +4,7 @@
 - **Nhánh:** `docs/v3-feature-parity`, tách từ `feat/nsh-v3` (`e9b1d32`)
 - **Người lập:** Lữ Bố, 2026-11-22
 - **Phạm vi:** chỉ đọc code trong repo. Không đọc DB, `~/.local/share/com.rustsale.crm*`, `.env`, token hay dữ liệu thật.
-- **Mục đích:** P0a trong `docs/v3/ARCHITECTURE.md`. Cột **Trạng thái v3** để trống, do người port điền.
+- **Mục đích:** P0a trong `docs/v3/ARCHITECTURE.md`. Cột **Trạng thái v3** của 2.1–2.11 đã điền ở P1 (2026-11-22, nhánh `feat/nsh-v3-native`); các bảng khác vẫn để trống.
 - **Quy ước ID:** `LEAD`, `CONV`, `CAMP`, `SCRAPE`, `ZALO`, `FB`, `AI`, `IMPORT`, `SET`, `DESK`, `UTIL` cho command; `EVT` cho event; `UI` cho màn hình; `BG` cho tác vụ nền; `DSK` cho tính năng desktop không phải command.
 
 ## 0. Tóm tắt số lượng
@@ -58,233 +58,233 @@
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| LEAD-01 | LEAD | Phân trang lead theo bộ lọc outreach: category, template, kênh, search, Zalo đã xác minh, chưa từng nhắn, chỉ mobile | ZaloOutreach.svelte, EmailOutreach.svelte | src-tauri/src/commands.rs:get_outreach_leads_page | Có cursor và limit; dùng chung cho Zalo và Email | |
-| LEAD-02 | LEAD | Trả về toàn bộ ID lead khớp bộ lọc outreach, trừ danh sách ID đã loại | ZaloOutreach.svelte, EmailOutreach.svelte | src-tauri/src/commands.rs:resolve_outreach_lead_ids | Dùng khi chọn "tất cả" thay vì chọn tay | |
-| LEAD-03 | LEAD | Lấy toàn bộ lead cho bảng, dashboard, kanban và bộ chọn chiến dịch | LeadsList.svelte, Dashboard.svelte, KanbanBoard.svelte, CategoryManager.svelte, CampaignCenter.svelte | src-tauri/src/commands.rs:get_leads | Trả cả lead đã Converted; UI tự tách | |
-| LEAD-04 | LEAD | Lấy chi tiết một lead theo ID | LeadDetails.svelte | src-tauri/src/commands.rs:get_lead_details | Kèm các trường Zalo, currency | |
-| LEAD-05 | LEAD | Tạo lead mới với tiền tệ tùy chọn | LeadsList.svelte | src-tauri/src/commands.rs:add_lead | Validate currency; mặc định VND | |
-| LEAD-06 | LEAD | Đổi trạng thái lead | LeadsList.svelte | src-tauri/src/commands.rs:update_lead_status | Không ghi activity | |
-| LEAD-07 | LEAD | Lấy toàn bộ deal cho pipeline và dashboard | KanbanBoard.svelte, Dashboard.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_deals | Kèm lead, stage, value, currency | |
-| LEAD-08 | LEAD | Chuyển deal sang stage khác khi kéo thả kanban | KanbanBoard.svelte | src-tauri/src/commands.rs:update_deal_stage | Không chặn stage không hợp lệ ở backend | |
-| LEAD-09 | LEAD | Tạo deal gắn lead, giá trị và tiền tệ | KanbanBoard.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:create_deal | Có thể tạo từ lead chưa có deal | |
-| LEAD-10 | LEAD | Xóa deal | KanbanBoard.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:delete_deal | Xóa cứng | |
-| LEAD-11 | LEAD | Lấy lịch sử hoạt động của một lead | LeadDetails.svelte | src-tauri/src/commands.rs:get_activities | Sắp xếp mới nhất trước | |
-| LEAD-12 | LEAD | Lấy N hoạt động gần nhất cho dashboard | Dashboard.svelte | src-tauri/src/commands.rs:get_recent_activities | Mặc định 5 trong UI | |
-| LEAD-13 | LEAD | Ghi một hoạt động mới cho lead | LeadDetails.svelte | src-tauri/src/commands.rs:add_activity | Có loại hoạt động và nội dung | |
-| LEAD-14 | LEAD | Cập nhật toàn bộ thông tin lead | LeadDetails.svelte | src-tauri/src/commands.rs:update_lead | Gồm currency, address, about | |
-| LEAD-15 | LEAD | Xóa lead | LeadDetails.svelte | src-tauri/src/commands.rs:delete_lead | Xóa cứng, UI có xác nhận | |
-| LEAD-16 | LEAD | Liệt kê category | CategoryManager.svelte, LeadsList.svelte, GroupMembersModal.svelte | src-tauri/src/commands.rs:get_categories | Dùng chung cho gán category | |
-| LEAD-17 | LEAD | Liệt kê category của một lead | LeadDetails.svelte, GroupMembersModal.svelte | src-tauri/src/commands.rs:get_categories_for_lead | Trả id và tên | |
-| LEAD-18 | LEAD | Tạo category mới, từ chối tên rỗng | CategoryManager.svelte, LeadsList.svelte, GroupMembersModal.svelte | src-tauri/src/commands.rs:create_category | Trim và validate | |
-| LEAD-19 | LEAD | Xóa category | CategoryManager.svelte | src-tauri/src/commands.rs:delete_category | Không xóa lead | |
-| LEAD-20 | LEAD | Gán nhiều lead vào category | CategoryManager.svelte, LeadsList.svelte | src-tauri/src/commands.rs:add_leads_to_category | Trả sớm nếu danh sách rỗng | |
-| LEAD-21 | LEAD | Bỏ nhiều lead khỏi category | CategoryManager.svelte | src-tauri/src/commands.rs:remove_leads_from_category | Trả sớm nếu danh sách rỗng | |
-| LEAD-22 | LEAD | Liệt kê lead thuộc category | CategoryManager.svelte | src-tauri/src/commands.rs:get_leads_by_category | Dùng cho panel phải của CategoryManager | |
+| LEAD-01 | LEAD | Phân trang lead theo bộ lọc outreach: category, template, kênh, search, Zalo đã xác minh, chưa từng nhắn, chỉ mobile | ZaloOutreach.svelte, EmailOutreach.svelte | src-tauri/src/commands.rs:get_outreach_leads_page | Có cursor và limit; dùng chung cho Zalo và Email | Đã xuất `LeadsMore.outreachPage` |
+| LEAD-02 | LEAD | Trả về toàn bộ ID lead khớp bộ lọc outreach, trừ danh sách ID đã loại | ZaloOutreach.svelte, EmailOutreach.svelte | src-tauri/src/commands.rs:resolve_outreach_lead_ids | Dùng khi chọn "tất cả" thay vì chọn tay | Đã xuất `LeadsMore.outreachIds` |
+| LEAD-03 | LEAD | Lấy toàn bộ lead cho bảng, dashboard, kanban và bộ chọn chiến dịch | LeadsList.svelte, Dashboard.svelte, KanbanBoard.svelte, CategoryManager.svelte, CampaignCenter.svelte | src-tauri/src/commands.rs:get_leads | Trả cả lead đã Converted; UI tự tách | Đã xuất `LeadsMore.list`; bản phân trang: `Leads.page` |
+| LEAD-04 | LEAD | Lấy chi tiết một lead theo ID | LeadDetails.svelte | src-tauri/src/commands.rs:get_lead_details | Kèm các trường Zalo, currency | Đã xuất `Leads.details` |
+| LEAD-05 | LEAD | Tạo lead mới với tiền tệ tùy chọn | LeadsList.svelte | src-tauri/src/commands.rs:add_lead | Validate currency; mặc định VND | Đã xuất `Leads.add` |
+| LEAD-06 | LEAD | Đổi trạng thái lead | LeadsList.svelte | src-tauri/src/commands.rs:update_lead_status | Không ghi activity | Đã xuất `Leads.updateStatus` |
+| LEAD-07 | LEAD | Lấy toàn bộ deal cho pipeline và dashboard | KanbanBoard.svelte, Dashboard.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_deals | Kèm lead, stage, value, currency | Đã xuất `Deals.list` |
+| LEAD-08 | LEAD | Chuyển deal sang stage khác khi kéo thả kanban | KanbanBoard.svelte | src-tauri/src/commands.rs:update_deal_stage | Không chặn stage không hợp lệ ở backend | Đã xuất `Deals.updateStage` |
+| LEAD-09 | LEAD | Tạo deal gắn lead, giá trị và tiền tệ | KanbanBoard.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:create_deal | Có thể tạo từ lead chưa có deal | Đã xuất `Deals.create` |
+| LEAD-10 | LEAD | Xóa deal | KanbanBoard.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:delete_deal | Xóa cứng | Đã xuất `Deals.delete` |
+| LEAD-11 | LEAD | Lấy lịch sử hoạt động của một lead | LeadDetails.svelte | src-tauri/src/commands.rs:get_activities | Sắp xếp mới nhất trước | Đã xuất `LeadsMore.activities` |
+| LEAD-12 | LEAD | Lấy N hoạt động gần nhất cho dashboard | Dashboard.svelte | src-tauri/src/commands.rs:get_recent_activities | Mặc định 5 trong UI | Đã xuất `LeadsMore.recentActivities` |
+| LEAD-13 | LEAD | Ghi một hoạt động mới cho lead | LeadDetails.svelte | src-tauri/src/commands.rs:add_activity | Có loại hoạt động và nội dung | Đã xuất `LeadsMore.addActivity` |
+| LEAD-14 | LEAD | Cập nhật toàn bộ thông tin lead | LeadDetails.svelte | src-tauri/src/commands.rs:update_lead | Gồm currency, address, about | Đã xuất `LeadsMore.update` |
+| LEAD-15 | LEAD | Xóa lead | LeadDetails.svelte | src-tauri/src/commands.rs:delete_lead | Xóa cứng, UI có xác nhận | Đã xuất `LeadsMore.delete` |
+| LEAD-16 | LEAD | Liệt kê category | CategoryManager.svelte, LeadsList.svelte, GroupMembersModal.svelte | src-tauri/src/commands.rs:get_categories | Dùng chung cho gán category | Đã xuất `Categories.list`; cũng có `Leads.categories` |
+| LEAD-17 | LEAD | Liệt kê category của một lead | LeadDetails.svelte, GroupMembersModal.svelte | src-tauri/src/commands.rs:get_categories_for_lead | Trả id và tên | Đã xuất `Categories.forLead` |
+| LEAD-18 | LEAD | Tạo category mới, từ chối tên rỗng | CategoryManager.svelte, LeadsList.svelte, GroupMembersModal.svelte | src-tauri/src/commands.rs:create_category | Trim và validate | Đã xuất `Categories.create` |
+| LEAD-19 | LEAD | Xóa category | CategoryManager.svelte | src-tauri/src/commands.rs:delete_category | Không xóa lead | Đã xuất `Categories.delete` |
+| LEAD-20 | LEAD | Gán nhiều lead vào category | CategoryManager.svelte, LeadsList.svelte | src-tauri/src/commands.rs:add_leads_to_category | Trả sớm nếu danh sách rỗng | Đã xuất `Categories.addLeads` |
+| LEAD-21 | LEAD | Bỏ nhiều lead khỏi category | CategoryManager.svelte | src-tauri/src/commands.rs:remove_leads_from_category | Trả sớm nếu danh sách rỗng | Đã xuất `Categories.removeLeads` |
+| LEAD-22 | LEAD | Liệt kê lead thuộc category | CategoryManager.svelte | src-tauri/src/commands.rs:get_leads_by_category | Dùng cho panel phải của CategoryManager | Đã xuất `Categories.leads`; bản phân trang: `Leads.byCategoryPage` |
 
 ### 2.2 Nhóm CONV — 47 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| CONV-01 | CONV | Lấy danh sách hội thoại khách/nhóm của 4 kênh kèm unread và preview | ConversationWorkspace.svelte, ConversationSidebar.svelte | src-tauri/src/conversation/commands.rs:list_conversation_inbox | Gộp identity theo lead và kênh | |
-| CONV-02 | CONV | Đánh dấu hội thoại đã đọc | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:mark_conversation_read | Cập nhật unread trong inbox | |
-| CONV-03 | CONV | Lấy timeline theo contact, gộp các kênh | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:get_contact_timeline | Dùng khi một người có nhiều kênh | |
-| CONV-04 | CONV | Lấy timeline phân trang của một hội thoại | ConversationTimeline.svelte | src-tauri/src/conversation/commands.rs:get_conversation_timeline | Cursor theo occurredAt và messageId | |
-| CONV-05 | CONV | Lấy timeline theo identity đã liên kết | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:get_identity_timeline | Identity là cầu nối Zalo/WhatsApp/Facebook | |
-| CONV-06 | CONV | Liên kết identity hội thoại với lead | LinkedLeadActions.svelte | src-tauri/src/conversation/commands.rs:link_conversation_identity | Có thể gộp nhiều identity | |
-| CONV-07 | CONV | Bỏ liên kết identity | LinkedLeadActions.svelte | src-tauri/src/conversation/commands.rs:unlink_conversation_identity | Không xóa tin nhắn | |
-| CONV-08 | CONV | Bỏ liên kết lead khỏi hội thoại | LinkedLeadActions.svelte, UnknownContactActions.svelte | src-tauri/src/conversation/commands.rs:unlink_conversation_lead | Hội thoại vẫn còn | |
-| CONV-09 | CONV | Chuyển liên kết lead sang lead khác | LinkedLeadActions.svelte | src-tauri/src/conversation/commands.rs:relink_conversation_lead | Gộp hoặc tách identity | |
-| CONV-10 | CONV | Xếp hàng gửi tin nhắn văn bản vào outbox | MessageComposer.svelte | src-tauri/src/conversation/commands.rs:send_conversation_message | Gọi notify_outbox cho Zalo và WhatsApp | |
-| CONV-11 | CONV | Lấy trạng thái runtime của các tài khoản kênh | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:get_conversation_runtime_status | Hiển thị banner mất kết nối | |
-| CONV-12 | CONV | Khởi động lại listener của một tài khoản Zalo | ZaloAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:restart_conversation_account | Chỉ Zalo supervisor | |
-| CONV-13 | CONV | Xóa một hội thoại theo conversation, identity hoặc lead | DeleteConversationDialog.svelte | src-tauri/src/conversation/commands.rs:delete_conversation | Có validate đúng một định danh | |
-| CONV-14 | CONV | Xóa nhiều hội thoại | ConversationSidebar.svelte | src-tauri/src/conversation/commands.rs:delete_conversations_batch | Chế độ chọn nhiều trong sidebar | |
-| CONV-15 | CONV | Mở hội thoại trực tiếp với số hoặc UID mới | NewChatDialog.svelte | src-tauri/src/conversation/commands.rs:start_direct_conversation | Enqueue tin nhắn đầu tiên | |
-| CONV-16 | CONV | Gửi một batch nhiều phần text/đính kèm, hỗ trợ tag HUMAN_AGENT | MessageComposer.svelte, MessageBatchGroup.svelte | src-tauri/src/conversation/commands.rs:send_conversation_batch | Chỉ chấp nhận tag HUMAN_AGENT | |
-| CONV-17 | CONV | Đưa file từ đường dẫn vào hàng chờ đính kèm | MessageComposer.svelte, AttachmentPreviewQueue.svelte | src-tauri/src/conversation/commands.rs:stage_conversation_attachment_paths | Copy vào staging, trả metadata | |
-| CONV-18 | CONV | Đưa ảnh clipboard vào hàng chờ đính kèm | MessageComposer.svelte | src-tauri/src/conversation/commands.rs:stage_conversation_clipboard_image | Giới hạn 10 MB ở frontend | |
-| CONV-19 | CONV | Bỏ một tệp đã stage | AttachmentPreviewQueue.svelte | src-tauri/src/conversation/commands.rs:discard_conversation_staged_attachment | Xóa file staging | |
-| CONV-20 | CONV | Tìm sticker Zalo theo từ khóa | ZaloStickerPicker.svelte | src-tauri/src/conversation/commands.rs:search_zalo_stickers | Gọi qua tài khoản Zalo của hội thoại | |
-| CONV-21 | CONV | Lấy chi tiết sticker Zalo | StickerMessageContent.svelte | src-tauri/src/conversation/commands.rs:get_zalo_sticker_detail | Tải ảnh sticker | |
-| CONV-22 | CONV | Thu hồi tin nhắn đã gửi | RecallMessageDialog.svelte, MessageActionsMenu.svelte | src-tauri/src/conversation/commands.rs:recall_conversation_message | Chỉ tin của mình và trong hạn | |
-| CONV-23 | CONV | Liệt kê mẫu trả lời nhanh | QuickTemplatePopover.svelte, QuickTemplateManagerDialog.svelte | src-tauri/src/conversation/commands.rs:list_conversation_quick_templates | Mẫu dùng chung toàn app | |
-| CONV-24 | CONV | Tạo mẫu trả lời nhanh | QuickTemplateForm.svelte | src-tauri/src/conversation/commands.rs:create_conversation_quick_template | Hỗ trợ ảnh và biến | |
-| CONV-25 | CONV | Sửa mẫu trả lời nhanh | QuickTemplateForm.svelte | src-tauri/src/conversation/commands.rs:update_conversation_quick_template | Cập nhật nội dung và ảnh | |
-| CONV-26 | CONV | Xóa mẫu trả lời nhanh | QuickTemplateManagerDialog.svelte | src-tauri/src/conversation/commands.rs:delete_conversation_quick_template | Xóa cứng | |
-| CONV-27 | CONV | Tăng bộ đếm sử dụng mẫu | QuickTemplatePopover.svelte | src-tauri/src/conversation/commands.rs:mark_conversation_quick_template_used | Dùng cho sắp xếp gần đây | |
-| CONV-28 | CONV | Thả hoặc bỏ cảm xúc trên tin nhắn | MessageReactionPicker.svelte, MessageReactionSummary.svelte | src-tauri/src/conversation/commands.rs:set_conversation_reaction | Hỗ trợ Zalo và WhatsApp | |
-| CONV-29 | CONV | Chuyển tiếp tin nhắn sang nhiều hội thoại | ForwardConversationDialog.svelte | src-tauri/src/conversation/commands.rs:forward_conversation_message | Trả operation id để theo dõi | |
-| CONV-30 | CONV | Đọc trạng thái một lần chuyển tiếp | ForwardTargetResultList.svelte | src-tauri/src/conversation/commands.rs:get_conversation_forward_operation | Theo từng đích | |
-| CONV-31 | CONV | Thử lại một đích chuyển tiếp bị lỗi | ForwardTargetResultList.svelte | src-tauri/src/conversation/commands.rs:retry_conversation_forward_target | Theo client operation id | |
-| CONV-32 | CONV | Liệt kê thành viên có thể @mention | MentionCandidatePopover.svelte | src-tauri/src/conversation/commands.rs:list_conversation_mention_candidates | Chỉ nhóm | |
-| CONV-33 | CONV | Ghim tin nhắn | PinnedMessageBanner.svelte, MessageActionsMenu.svelte | src-tauri/src/conversation/commands.rs:pin_conversation_message | Lưu người ghim | |
-| CONV-34 | CONV | Bỏ ghim tin nhắn | PinnedMessageBanner.svelte | src-tauri/src/conversation/commands.rs:unpin_conversation_message | Theo conversation và message | |
-| CONV-35 | CONV | Liệt kê tin nhắn đã ghim | PinnedMessageBanner.svelte | src-tauri/src/conversation/commands.rs:list_conversation_pinned_messages | Kèm preview | |
-| CONV-36 | CONV | Đọc thành viên nhóm Zalo kèm lead và category | GroupMembersModal.svelte | src-tauri/src/commands.rs:get_group_members_unrestricted | Tên command cũ nhưng vẫn dùng | |
-| CONV-37 | CONV | Import thành viên nhóm thành lead, gán category | GroupMembersModal.svelte | src-tauri/src/commands.rs:batch_import_group_members_to_leads | Có skip_existing và tạo category mới | |
-| CONV-38 | CONV | Đồng bộ sâu thành viên nhóm qua runtime Zalo/WhatsApp | GroupMembersModal.svelte | src-tauri/src/commands.rs:sync_and_deep_scan_group_members | Timeout 15 giây, batch profile 50 | |
-| CONV-39 | CONV | Đồng bộ lịch sử chat nhóm Zalo | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:sync_zalo_group_chat_history | Backfill tối đa 5 trang | |
-| CONV-40 | CONV | Đồng bộ hội thoại WhatsApp | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:sync_whatsapp_conversations | Qua WhatsApp supervisor | |
-| CONV-41 | CONV | Tải tệp đính kèm về máy | ImageMessageContent.svelte, FileMessageContent.svelte, ImageGalleryModal.svelte | src-tauri/src/conversation/commands.rs:download_conversation_attachment | Có kiểm tra quyền và dung lượng | |
-| CONV-42 | CONV | Phát lại delta tin nhắn bị lỡ | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:resume_conversation_deltas | Cứu gap khi event bị lag | |
-| CONV-43 | CONV | Đọc mốc sequence cao nhất của hội thoại | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:get_conversation_high_water_mark | Dùng khi khởi động lại app | |
-| CONV-44 | CONV | Bắt đầu phiên QR đăng nhập WhatsApp | WhatsAppAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:start_whatsapp_qr_login | Trả QR qua event whatsapp-qr-code | |
-| CONV-45 | CONV | Hủy phiên QR WhatsApp | WhatsAppAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:cancel_whatsapp_qr_login | Dọn file session tạm | |
-| CONV-46 | CONV | Liệt kê tài khoản WhatsApp đã kết nối | WhatsAppAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:get_managed_whatsapp_accounts | Kèm tên và số điện thoại | |
-| CONV-47 | CONV | Ngắt kết nối tài khoản WhatsApp | WhatsAppAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:disconnect_whatsapp_account | Xóa session và dừng bot | |
+| CONV-01 | CONV | Lấy danh sách hội thoại khách/nhóm của 4 kênh kèm unread và preview | ConversationWorkspace.svelte, ConversationSidebar.svelte | src-tauri/src/conversation/commands.rs:list_conversation_inbox | Gộp identity theo lead và kênh | Đã xuất `Conversations.inboxPage` (phân trang theo cursor) |
+| CONV-02 | CONV | Đánh dấu hội thoại đã đọc | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:mark_conversation_read | Cập nhật unread trong inbox | Đã xuất `Conversations.markRead` |
+| CONV-03 | CONV | Lấy timeline theo contact, gộp các kênh | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:get_contact_timeline | Dùng khi một người có nhiều kênh | Đã xuất `ConversationActions.contactTimeline` |
+| CONV-04 | CONV | Lấy timeline phân trang của một hội thoại | ConversationTimeline.svelte | src-tauri/src/conversation/commands.rs:get_conversation_timeline | Cursor theo occurredAt và messageId | Đã xuất `Conversations.timeline` |
+| CONV-05 | CONV | Lấy timeline theo identity đã liên kết | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:get_identity_timeline | Identity là cầu nối Zalo/WhatsApp/Facebook | Đã xuất `ConversationActions.identityTimeline` |
+| CONV-06 | CONV | Liên kết identity hội thoại với lead | LinkedLeadActions.svelte | src-tauri/src/conversation/commands.rs:link_conversation_identity | Có thể gộp nhiều identity | Đã xuất `ConversationActions.linkIdentity` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| CONV-07 | CONV | Bỏ liên kết identity | LinkedLeadActions.svelte | src-tauri/src/conversation/commands.rs:unlink_conversation_identity | Không xóa tin nhắn | Đã xuất `ConversationActions.unlinkIdentity` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| CONV-08 | CONV | Bỏ liên kết lead khỏi hội thoại | LinkedLeadActions.svelte, UnknownContactActions.svelte | src-tauri/src/conversation/commands.rs:unlink_conversation_lead | Hội thoại vẫn còn | Đã xuất `ConversationActions.unlinkLead` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| CONV-09 | CONV | Chuyển liên kết lead sang lead khác | LinkedLeadActions.svelte | src-tauri/src/conversation/commands.rs:relink_conversation_lead | Gộp hoặc tách identity | Đã xuất `ConversationActions.relinkLead` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| CONV-10 | CONV | Xếp hàng gửi tin nhắn văn bản vào outbox | MessageComposer.svelte | src-tauri/src/conversation/commands.rs:send_conversation_message | Gọi notify_outbox cho Zalo và WhatsApp | Đã xuất `ConversationActions.sendMessage` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| CONV-11 | CONV | Lấy trạng thái runtime của các tài khoản kênh | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:get_conversation_runtime_status | Hiển thị banner mất kết nối | Đã xuất `Conversations.runtimeStatus` |
+| CONV-12 | CONV | Khởi động lại listener của một tài khoản Zalo | ZaloAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:restart_conversation_account | Chỉ Zalo supervisor | Chưa xuất |
+| CONV-13 | CONV | Xóa một hội thoại theo conversation, identity hoặc lead | DeleteConversationDialog.svelte | src-tauri/src/conversation/commands.rs:delete_conversation | Có validate đúng một định danh | Đã xuất `ConversationActions.deleteConversation` |
+| CONV-14 | CONV | Xóa nhiều hội thoại | ConversationSidebar.svelte | src-tauri/src/conversation/commands.rs:delete_conversations_batch | Chế độ chọn nhiều trong sidebar | Đã xuất `ConversationActions.deleteConversations` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| CONV-15 | CONV | Mở hội thoại trực tiếp với số hoặc UID mới | NewChatDialog.svelte | src-tauri/src/conversation/commands.rs:start_direct_conversation | Enqueue tin nhắn đầu tiên | Chưa xuất |
+| CONV-16 | CONV | Gửi một batch nhiều phần text/đính kèm, hỗ trợ tag HUMAN_AGENT | MessageComposer.svelte, MessageBatchGroup.svelte | src-tauri/src/conversation/commands.rs:send_conversation_batch | Chỉ chấp nhận tag HUMAN_AGENT | Đã xuất `ConversationActions.sendBatch` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| CONV-17 | CONV | Đưa file từ đường dẫn vào hàng chờ đính kèm | MessageComposer.svelte, AttachmentPreviewQueue.svelte | src-tauri/src/conversation/commands.rs:stage_conversation_attachment_paths | Copy vào staging, trả metadata | Chưa xuất |
+| CONV-18 | CONV | Đưa ảnh clipboard vào hàng chờ đính kèm | MessageComposer.svelte | src-tauri/src/conversation/commands.rs:stage_conversation_clipboard_image | Giới hạn 10 MB ở frontend | Chưa xuất |
+| CONV-19 | CONV | Bỏ một tệp đã stage | AttachmentPreviewQueue.svelte | src-tauri/src/conversation/commands.rs:discard_conversation_staged_attachment | Xóa file staging | Chưa xuất |
+| CONV-20 | CONV | Tìm sticker Zalo theo từ khóa | ZaloStickerPicker.svelte | src-tauri/src/conversation/commands.rs:search_zalo_stickers | Gọi qua tài khoản Zalo của hội thoại | Chưa xuất |
+| CONV-21 | CONV | Lấy chi tiết sticker Zalo | StickerMessageContent.svelte | src-tauri/src/conversation/commands.rs:get_zalo_sticker_detail | Tải ảnh sticker | Chưa xuất |
+| CONV-22 | CONV | Thu hồi tin nhắn đã gửi | RecallMessageDialog.svelte, MessageActionsMenu.svelte | src-tauri/src/conversation/commands.rs:recall_conversation_message | Chỉ tin của mình và trong hạn | Chưa xuất |
+| CONV-23 | CONV | Liệt kê mẫu trả lời nhanh | QuickTemplatePopover.svelte, QuickTemplateManagerDialog.svelte | src-tauri/src/conversation/commands.rs:list_conversation_quick_templates | Mẫu dùng chung toàn app | Đã xuất `ConversationActions.quickTemplates` |
+| CONV-24 | CONV | Tạo mẫu trả lời nhanh | QuickTemplateForm.svelte | src-tauri/src/conversation/commands.rs:create_conversation_quick_template | Hỗ trợ ảnh và biến | Đã xuất `ConversationActions.createQuickTemplate` |
+| CONV-25 | CONV | Sửa mẫu trả lời nhanh | QuickTemplateForm.svelte | src-tauri/src/conversation/commands.rs:update_conversation_quick_template | Cập nhật nội dung và ảnh | Đã xuất `ConversationActions.updateQuickTemplate` |
+| CONV-26 | CONV | Xóa mẫu trả lời nhanh | QuickTemplateManagerDialog.svelte | src-tauri/src/conversation/commands.rs:delete_conversation_quick_template | Xóa cứng | Đã xuất `ConversationActions.deleteQuickTemplate` |
+| CONV-27 | CONV | Tăng bộ đếm sử dụng mẫu | QuickTemplatePopover.svelte | src-tauri/src/conversation/commands.rs:mark_conversation_quick_template_used | Dùng cho sắp xếp gần đây | Đã xuất `ConversationActions.markQuickTemplateUsed` |
+| CONV-28 | CONV | Thả hoặc bỏ cảm xúc trên tin nhắn | MessageReactionPicker.svelte, MessageReactionSummary.svelte | src-tauri/src/conversation/commands.rs:set_conversation_reaction | Hỗ trợ Zalo và WhatsApp | Chưa xuất |
+| CONV-29 | CONV | Chuyển tiếp tin nhắn sang nhiều hội thoại | ForwardConversationDialog.svelte | src-tauri/src/conversation/commands.rs:forward_conversation_message | Trả operation id để theo dõi | Chưa xuất |
+| CONV-30 | CONV | Đọc trạng thái một lần chuyển tiếp | ForwardTargetResultList.svelte | src-tauri/src/conversation/commands.rs:get_conversation_forward_operation | Theo từng đích | Đã xuất `ConversationActions.forwardOperation` |
+| CONV-31 | CONV | Thử lại một đích chuyển tiếp bị lỗi | ForwardTargetResultList.svelte | src-tauri/src/conversation/commands.rs:retry_conversation_forward_target | Theo client operation id | Chưa xuất |
+| CONV-32 | CONV | Liệt kê thành viên có thể @mention | MentionCandidatePopover.svelte | src-tauri/src/conversation/commands.rs:list_conversation_mention_candidates | Chỉ nhóm | Đã xuất `ConversationActions.mentionCandidates` |
+| CONV-33 | CONV | Ghim tin nhắn | PinnedMessageBanner.svelte, MessageActionsMenu.svelte | src-tauri/src/conversation/commands.rs:pin_conversation_message | Lưu người ghim | Đã xuất `ConversationActions.pinMessage` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| CONV-34 | CONV | Bỏ ghim tin nhắn | PinnedMessageBanner.svelte | src-tauri/src/conversation/commands.rs:unpin_conversation_message | Theo conversation và message | Đã xuất `ConversationActions.unpinMessage` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| CONV-35 | CONV | Liệt kê tin nhắn đã ghim | PinnedMessageBanner.svelte | src-tauri/src/conversation/commands.rs:list_conversation_pinned_messages | Kèm preview | Đã xuất `ConversationActions.pinnedMessages` |
+| CONV-36 | CONV | Đọc thành viên nhóm Zalo kèm lead và category | GroupMembersModal.svelte | src-tauri/src/commands.rs:get_group_members_unrestricted | Tên command cũ nhưng vẫn dùng | Chưa xuất |
+| CONV-37 | CONV | Import thành viên nhóm thành lead, gán category | GroupMembersModal.svelte | src-tauri/src/commands.rs:batch_import_group_members_to_leads | Có skip_existing và tạo category mới | Chưa xuất |
+| CONV-38 | CONV | Đồng bộ sâu thành viên nhóm qua runtime Zalo/WhatsApp | GroupMembersModal.svelte | src-tauri/src/commands.rs:sync_and_deep_scan_group_members | Timeout 15 giây, batch profile 50 | Chưa xuất |
+| CONV-39 | CONV | Đồng bộ lịch sử chat nhóm Zalo | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:sync_zalo_group_chat_history | Backfill tối đa 5 trang | Chưa xuất |
+| CONV-40 | CONV | Đồng bộ hội thoại WhatsApp | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:sync_whatsapp_conversations | Qua WhatsApp supervisor | Chưa xuất |
+| CONV-41 | CONV | Tải tệp đính kèm về máy | ImageMessageContent.svelte, FileMessageContent.svelte, ImageGalleryModal.svelte | src-tauri/src/conversation/commands.rs:download_conversation_attachment | Có kiểm tra quyền và dung lượng | Chưa xuất |
+| CONV-42 | CONV | Phát lại delta tin nhắn bị lỡ | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:resume_conversation_deltas | Cứu gap khi event bị lag | Đã xuất `ConversationActions.resumeDeltas` |
+| CONV-43 | CONV | Đọc mốc sequence cao nhất của hội thoại | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:get_conversation_high_water_mark | Dùng khi khởi động lại app | Đã xuất `ConversationActions.highWaterMark` |
+| CONV-44 | CONV | Bắt đầu phiên QR đăng nhập WhatsApp | WhatsAppAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:start_whatsapp_qr_login | Trả QR qua event whatsapp-qr-code | Chưa xuất |
+| CONV-45 | CONV | Hủy phiên QR WhatsApp | WhatsAppAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:cancel_whatsapp_qr_login | Dọn file session tạm | Chưa xuất |
+| CONV-46 | CONV | Liệt kê tài khoản WhatsApp đã kết nối | WhatsAppAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:get_managed_whatsapp_accounts | Kèm tên và số điện thoại | Chưa xuất |
+| CONV-47 | CONV | Ngắt kết nối tài khoản WhatsApp | WhatsAppAccountsSettings.svelte | src-tauri/src/conversation/commands.rs:disconnect_whatsapp_account | Xóa session và dừng bot | Chưa xuất |
 
 ### 2.3 Nhóm CAMP — 25 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| CAMP-01 | CAMP | Liệt kê mẫu outreach Zalo | ZaloOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_outreach_templates | Kèm ảnh đại diện mẫu | |
-| CAMP-02 | CAMP | Tạo mẫu outreach Zalo kèm ảnh | ZaloOutreach.svelte | src-tauri/src/commands.rs:create_outreach_template | Lưu image_url | |
-| CAMP-03 | CAMP | Sửa mẫu outreach Zalo | ZaloOutreach.svelte | src-tauri/src/commands.rs:update_outreach_template | Ghi đè nội dung và ảnh | |
-| CAMP-04 | CAMP | Xóa mẫu outreach Zalo | ZaloOutreach.svelte | src-tauri/src/commands.rs:delete_outreach_template | Xóa cứng | |
-| CAMP-05 | CAMP | Gửi outreach Zalo cho danh sách lead, phát event tiến độ | LeadDetails.svelte | src-tauri/src/commands.rs:send_zalo_outreach | Lọc lead thiếu số; phát outreach-progress, outreach-log, outreach-complete | |
-| CAMP-06 | CAMP | Chạy chiến dịch outreach Zalo hàng loạt với delay và ảnh | ZaloOutreach.svelte | src-tauri/src/commands.rs:start_zalo_outreach | Có burst delay và inter-message delay | |
-| CAMP-07 | CAMP | Lệnh gửi chiến dịch Zalo kiểu cũ | Không có | src-tauri/src/commands.rs:send_zalo_campaign | Không thấy frontend gọi; giữ để tương thích | |
-| CAMP-08 | CAMP | Đọc lead của chiến dịch cũ | Không có | src-tauri/src/commands.rs:get_campaign_leads | Chỉ service còn dùng; UI dùng LEAD-01 | |
-| CAMP-09 | CAMP | Gửi email hàng loạt qua SMTP, phát event tiến độ | EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:send_email_outreach | Chạy tokio nền; thay biến tên, công ty, email, số điện thoại | |
-| CAMP-10 | CAMP | Tạo chiến dịch WhatsApp với rate limit và quiet hours | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:create_whatsapp_campaign | Lưu tài khoản, delay, burst, giờ yên tĩnh | |
-| CAMP-11 | CAMP | Nạp danh sách người nhận cho chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:populate_whatsapp_campaign_recipients | Chuẩn hóa số E.164, render template | |
-| CAMP-12 | CAMP | Chạy worker gửi chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:start_whatsapp_campaign | Spawn run_campaign_worker | |
-| CAMP-13 | CAMP | Tạm dừng chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:pause_whatsapp_campaign | Đổi trạng thái trong DB | |
-| CAMP-14 | CAMP | Tiếp tục chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:resume_whatsapp_campaign | Worker đọc lại trạng thái | |
-| CAMP-15 | CAMP | Hủy chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:cancel_whatsapp_campaign | Dừng worker | |
-| CAMP-16 | CAMP | Đọc một chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:get_whatsapp_campaign | Kèm counters | |
-| CAMP-17 | CAMP | Liệt kê chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:list_whatsapp_campaigns | Lọc theo trạng thái ở UI | |
-| CAMP-18 | CAMP | Liệt kê người nhận và trạng thái gửi | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:get_whatsapp_campaign_recipients | Có skip reason và lỗi cuối | |
-| CAMP-19 | CAMP | Đặt chiến dịch đa kênh sang ACTIVE | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:start_unified_campaign | Chỉ đổi status, không tự gửi | |
-| CAMP-20 | CAMP | Đặt chiến dịch đa kênh sang PAUSED | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:pause_unified_campaign | Chỉ đổi status | |
-| CAMP-21 | CAMP | Ghi danh lead vào bước đầu của chiến dịch | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:enroll_leads_into_campaign | Tạo campaign_execution PENDING, cần có bước | |
-| CAMP-22 | CAMP | Tính analytics theo bước và tỷ lệ phản hồi/chuyển đổi | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:get_unified_campaign_analytics | Đọc campaign_executions và deals | |
-| CAMP-23 | CAMP | Liệt kê chiến dịch đa kênh | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:get_all_unified_campaigns | Trả campaign và metadata | |
-| CAMP-24 | CAMP | Lưu chiến dịch và toàn bộ bước trong một transaction | CampaignCenter.svelte, SequenceBuilder.svelte | src-tauri/src/campaign/commands.rs:save_unified_campaign | Xóa bước cũ rồi ghi lại | |
-| CAMP-25 | CAMP | Xóa chiến dịch đa kênh | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:delete_unified_campaign | Xóa cứng | |
+| CAMP-01 | CAMP | Liệt kê mẫu outreach Zalo | ZaloOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_outreach_templates | Kèm ảnh đại diện mẫu | Chưa xuất |
+| CAMP-02 | CAMP | Tạo mẫu outreach Zalo kèm ảnh | ZaloOutreach.svelte | src-tauri/src/commands.rs:create_outreach_template | Lưu image_url | Chưa xuất |
+| CAMP-03 | CAMP | Sửa mẫu outreach Zalo | ZaloOutreach.svelte | src-tauri/src/commands.rs:update_outreach_template | Ghi đè nội dung và ảnh | Chưa xuất |
+| CAMP-04 | CAMP | Xóa mẫu outreach Zalo | ZaloOutreach.svelte | src-tauri/src/commands.rs:delete_outreach_template | Xóa cứng | Chưa xuất |
+| CAMP-05 | CAMP | Gửi outreach Zalo cho danh sách lead, phát event tiến độ | LeadDetails.svelte | src-tauri/src/commands.rs:send_zalo_outreach | Lọc lead thiếu số; phát outreach-progress, outreach-log, outreach-complete | Chưa xuất |
+| CAMP-06 | CAMP | Chạy chiến dịch outreach Zalo hàng loạt với delay và ảnh | ZaloOutreach.svelte | src-tauri/src/commands.rs:start_zalo_outreach | Có burst delay và inter-message delay | Chưa xuất |
+| CAMP-07 | CAMP | Lệnh gửi chiến dịch Zalo kiểu cũ | Không có | src-tauri/src/commands.rs:send_zalo_campaign | Không thấy frontend gọi; giữ để tương thích | Không xuất (lệnh cũ, TSX không được thấy; thay bằng luồng mới) |
+| CAMP-08 | CAMP | Đọc lead của chiến dịch cũ | Không có | src-tauri/src/commands.rs:get_campaign_leads | Chỉ service còn dùng; UI dùng LEAD-01 | Không xuất (lệnh cũ, TSX không được thấy; thay bằng luồng mới) |
+| CAMP-09 | CAMP | Gửi email hàng loạt qua SMTP, phát event tiến độ | EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:send_email_outreach | Chạy tokio nền; thay biến tên, công ty, email, số điện thoại | Chưa xuất |
+| CAMP-10 | CAMP | Tạo chiến dịch WhatsApp với rate limit và quiet hours | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:create_whatsapp_campaign | Lưu tài khoản, delay, burst, giờ yên tĩnh | Chưa xuất |
+| CAMP-11 | CAMP | Nạp danh sách người nhận cho chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:populate_whatsapp_campaign_recipients | Chuẩn hóa số E.164, render template | Chưa xuất |
+| CAMP-12 | CAMP | Chạy worker gửi chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:start_whatsapp_campaign | Spawn run_campaign_worker | Chưa xuất |
+| CAMP-13 | CAMP | Tạm dừng chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:pause_whatsapp_campaign | Đổi trạng thái trong DB | Chưa xuất |
+| CAMP-14 | CAMP | Tiếp tục chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:resume_whatsapp_campaign | Worker đọc lại trạng thái | Chưa xuất |
+| CAMP-15 | CAMP | Hủy chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:cancel_whatsapp_campaign | Dừng worker | Chưa xuất |
+| CAMP-16 | CAMP | Đọc một chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:get_whatsapp_campaign | Kèm counters | Chưa xuất |
+| CAMP-17 | CAMP | Liệt kê chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:list_whatsapp_campaigns | Lọc theo trạng thái ở UI | Chưa xuất |
+| CAMP-18 | CAMP | Liệt kê người nhận và trạng thái gửi | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:get_whatsapp_campaign_recipients | Có skip reason và lỗi cuối | Chưa xuất |
+| CAMP-19 | CAMP | Đặt chiến dịch đa kênh sang ACTIVE | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:start_unified_campaign | Chỉ đổi status, không tự gửi | Chưa xuất |
+| CAMP-20 | CAMP | Đặt chiến dịch đa kênh sang PAUSED | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:pause_unified_campaign | Chỉ đổi status | Chưa xuất |
+| CAMP-21 | CAMP | Ghi danh lead vào bước đầu của chiến dịch | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:enroll_leads_into_campaign | Tạo campaign_execution PENDING, cần có bước | Chưa xuất |
+| CAMP-22 | CAMP | Tính analytics theo bước và tỷ lệ phản hồi/chuyển đổi | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:get_unified_campaign_analytics | Đọc campaign_executions và deals | Chưa xuất |
+| CAMP-23 | CAMP | Liệt kê chiến dịch đa kênh | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:get_all_unified_campaigns | Trả campaign và metadata | Chưa xuất |
+| CAMP-24 | CAMP | Lưu chiến dịch và toàn bộ bước trong một transaction | CampaignCenter.svelte, SequenceBuilder.svelte | src-tauri/src/campaign/commands.rs:save_unified_campaign | Xóa bước cũ rồi ghi lại | Chưa xuất |
+| CAMP-25 | CAMP | Xóa chiến dịch đa kênh | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:delete_unified_campaign | Xóa cứng | Chưa xuất |
 
 ### 2.4 Nhóm SCRAPE — 22 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| SCRAPE-01 | SCRAPE | Lệnh cào Google Maps kiểu cũ, giữ để tương thích IPC | Không có | src-tauri/src/commands.rs:start_google_maps_scrape | Chuyển tiếp sang job service; UI mới dùng SCRAPE-14 | |
-| SCRAPE-02 | SCRAPE | Dừng job cào kiểu cũ | Không có | src-tauri/src/commands.rs:stop_google_maps_scrape | Không thấy frontend gọi | |
-| SCRAPE-03 | SCRAPE | Tính lưới ô cào từ bbox và bước km | GoogleMapsScraper.svelte | src-tauri/src/commands.rs:plan_grid_crawl | Dùng GridPlanner, giới hạn 10.000 ô | |
-| SCRAPE-04 | SCRAPE | Trả về bbox 63 tỉnh/thành Việt Nam | GoogleMapsScraper.svelte | src-tauri/src/commands.rs:get_preset_provinces | Hard-code trong backend | |
-| SCRAPE-05 | SCRAPE | Liệt kê quốc gia từ catalog GeoNames bundled | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:list_administrative_countries | Đọc file resources, không mạng | |
-| SCRAPE-06 | SCRAPE | Đọc trạng thái dữ liệu hành chính của một nước | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:get_administrative_country_status | Cho biết đã nạp hay chưa | |
-| SCRAPE-07 | SCRAPE | Tải và nạp dữ liệu hành chính GeoNames cho một nước | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:load_administrative_country | Tải từ download.geonames.org, có force refresh | |
-| SCRAPE-08 | SCRAPE | Liệt kê khu vực con theo parent | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:list_administrative_areas | Có limit | |
-| SCRAPE-09 | SCRAPE | Tìm khu vực hành chính theo từ khóa | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:search_administrative_areas | Tìm theo tên | |
-| SCRAPE-10 | SCRAPE | Đọc bbox của một geoname ID | AdministrativeAreaSelector.svelte, GoogleMapsScraper.svelte | src-tauri/src/administrative_catalog/commands.rs:resolve_administrative_bounds | Có cache bounds | |
-| SCRAPE-11 | SCRAPE | Geocode địa danh thành bbox | GoogleMapsScraper.svelte | src-tauri/src/administrative_catalog/commands.rs:geocode_bounding_box | Dùng catalog, không gọi Google | |
-| SCRAPE-12 | SCRAPE | Đọc trạng thái runtime trình duyệt cào | GoogleMapsRuntimePanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:get_google_maps_runtime_status | Sidecar cloak-runtime | |
-| SCRAPE-13 | SCRAPE | Cài hoặc chuẩn bị runtime trình duyệt cào | GoogleMapsRuntimePanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:prepare_google_maps_runtime | Có thể tải browser, timeout 15 phút | |
-| SCRAPE-14 | SCRAPE | Tạo job cào mới và spawn runner | GoogleMapsScraper.svelte | src-tauri/src/google_maps_jobs/commands.rs:create_google_maps_scrape_job | Chia ô ban đầu, chạy nền | |
-| SCRAPE-15 | SCRAPE | Tạm dừng job cào | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:pause_google_maps_scrape_job | Giữ tiến độ | |
-| SCRAPE-16 | SCRAPE | Tiếp tục job cào | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:resume_google_maps_scrape_job | Chạy tiếp từ ô dở | |
-| SCRAPE-17 | SCRAPE | Hủy job cào | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:cancel_google_maps_scrape_job | Dừng runner | |
-| SCRAPE-18 | SCRAPE | Thử lại các ô cào lỗi | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:retry_google_maps_failed_units | Reset ô FAILED | |
-| SCRAPE-19 | SCRAPE | Thử lại bước tìm email doanh nghiệp | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:retry_google_maps_email_enrichment | Enrichment từ website | |
-| SCRAPE-20 | SCRAPE | Đọc trạng thái một job cào | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:get_google_maps_scrape_job | Kèm action_required | |
-| SCRAPE-21 | SCRAPE | Liệt kê job cào | GoogleMapsJobHistory.svelte | src-tauri/src/google_maps_jobs/commands.rs:list_google_maps_scrape_jobs | Mới nhất trước | |
-| SCRAPE-22 | SCRAPE | Xóa job cào và dữ liệu tạm | GoogleMapsJobHistory.svelte | src-tauri/src/google_maps_jobs/commands.rs:delete_google_maps_scrape_job | Xóa profile nếu có | |
+| SCRAPE-01 | SCRAPE | Lệnh cào Google Maps kiểu cũ, giữ để tương thích IPC | Không có | src-tauri/src/commands.rs:start_google_maps_scrape | Chuyển tiếp sang job service; UI mới dùng SCRAPE-14 | Không xuất (lệnh cũ, TSX không được thấy; thay bằng luồng mới) |
+| SCRAPE-02 | SCRAPE | Dừng job cào kiểu cũ | Không có | src-tauri/src/commands.rs:stop_google_maps_scrape | Không thấy frontend gọi | Không xuất (lệnh cũ, TSX không được thấy; thay bằng luồng mới) |
+| SCRAPE-03 | SCRAPE | Tính lưới ô cào từ bbox và bước km | GoogleMapsScraper.svelte | src-tauri/src/commands.rs:plan_grid_crawl | Dùng GridPlanner, giới hạn 10.000 ô | Chưa xuất |
+| SCRAPE-04 | SCRAPE | Trả về bbox 63 tỉnh/thành Việt Nam | GoogleMapsScraper.svelte | src-tauri/src/commands.rs:get_preset_provinces | Hard-code trong backend | Chưa xuất |
+| SCRAPE-05 | SCRAPE | Liệt kê quốc gia từ catalog GeoNames bundled | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:list_administrative_countries | Đọc file resources, không mạng | Chưa xuất |
+| SCRAPE-06 | SCRAPE | Đọc trạng thái dữ liệu hành chính của một nước | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:get_administrative_country_status | Cho biết đã nạp hay chưa | Chưa xuất |
+| SCRAPE-07 | SCRAPE | Tải và nạp dữ liệu hành chính GeoNames cho một nước | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:load_administrative_country | Tải từ download.geonames.org, có force refresh | Chưa xuất |
+| SCRAPE-08 | SCRAPE | Liệt kê khu vực con theo parent | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:list_administrative_areas | Có limit | Chưa xuất |
+| SCRAPE-09 | SCRAPE | Tìm khu vực hành chính theo từ khóa | AdministrativeAreaSelector.svelte | src-tauri/src/administrative_catalog/commands.rs:search_administrative_areas | Tìm theo tên | Chưa xuất |
+| SCRAPE-10 | SCRAPE | Đọc bbox của một geoname ID | AdministrativeAreaSelector.svelte, GoogleMapsScraper.svelte | src-tauri/src/administrative_catalog/commands.rs:resolve_administrative_bounds | Có cache bounds | Chưa xuất |
+| SCRAPE-11 | SCRAPE | Geocode địa danh thành bbox | GoogleMapsScraper.svelte | src-tauri/src/administrative_catalog/commands.rs:geocode_bounding_box | Dùng catalog, không gọi Google | Chưa xuất |
+| SCRAPE-12 | SCRAPE | Đọc trạng thái runtime trình duyệt cào | GoogleMapsRuntimePanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:get_google_maps_runtime_status | Sidecar cloak-runtime | Đã xuất `GoogleMaps.runtimeStatus` |
+| SCRAPE-13 | SCRAPE | Cài hoặc chuẩn bị runtime trình duyệt cào | GoogleMapsRuntimePanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:prepare_google_maps_runtime | Có thể tải browser, timeout 15 phút | Chưa xuất |
+| SCRAPE-14 | SCRAPE | Tạo job cào mới và spawn runner | GoogleMapsScraper.svelte | src-tauri/src/google_maps_jobs/commands.rs:create_google_maps_scrape_job | Chia ô ban đầu, chạy nền | Đã xuất `GoogleMaps.createJob` |
+| SCRAPE-15 | SCRAPE | Tạm dừng job cào | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:pause_google_maps_scrape_job | Giữ tiến độ | Đã xuất `GoogleMaps.pauseJob` |
+| SCRAPE-16 | SCRAPE | Tiếp tục job cào | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:resume_google_maps_scrape_job | Chạy tiếp từ ô dở | Đã xuất `GoogleMaps.resumeJob` |
+| SCRAPE-17 | SCRAPE | Hủy job cào | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:cancel_google_maps_scrape_job | Dừng runner | Đã xuất `GoogleMaps.cancelJob` |
+| SCRAPE-18 | SCRAPE | Thử lại các ô cào lỗi | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:retry_google_maps_failed_units | Reset ô FAILED | Chưa xuất |
+| SCRAPE-19 | SCRAPE | Thử lại bước tìm email doanh nghiệp | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:retry_google_maps_email_enrichment | Enrichment từ website | Chưa xuất |
+| SCRAPE-20 | SCRAPE | Đọc trạng thái một job cào | GoogleMapsJobPanel.svelte | src-tauri/src/google_maps_jobs/commands.rs:get_google_maps_scrape_job | Kèm action_required | Đã xuất `GoogleMaps.getJob` |
+| SCRAPE-21 | SCRAPE | Liệt kê job cào | GoogleMapsJobHistory.svelte | src-tauri/src/google_maps_jobs/commands.rs:list_google_maps_scrape_jobs | Mới nhất trước | Đã xuất `GoogleMaps.listJobs` |
+| SCRAPE-22 | SCRAPE | Xóa job cào và dữ liệu tạm | GoogleMapsJobHistory.svelte | src-tauri/src/google_maps_jobs/commands.rs:delete_google_maps_scrape_job | Xóa profile nếu có | Đã xuất `GoogleMaps.deleteJob` |
 
 ### 2.5 Nhóm ZALO — 5 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| ZALO-01 | ZALO | Bắt đầu đăng nhập Zalo bằng QR | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:start_zalo_qr_login | Phát zalo-qr-code, scanned, expired, declined, success, error | |
-| ZALO-02 | ZALO | Liệt kê tài khoản Zalo kèm trạng thái auth và runtime | ZaloAccountsSettings.svelte, ZaloOutreach.svelte | src-tauri/src/commands.rs:get_managed_zalo_accounts | Tách auth status và runtime status | |
-| ZALO-03 | ZALO | Xóa phiên Zalo | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:delete_zalo_session | Xóa session và tài khoản | |
-| ZALO-04 | ZALO | Kiểm tra lại phiên Zalo | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:verify_zalo_session | Gọi zca-rs | |
-| ZALO-05 | ZALO | Kiểm tra toàn bộ phiên Zalo | Không có | src-tauri/src/commands.rs:verify_all_zalo_sessions | Không thấy frontend gọi | |
+| ZALO-01 | ZALO | Bắt đầu đăng nhập Zalo bằng QR | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:start_zalo_qr_login | Phát zalo-qr-code, scanned, expired, declined, success, error | Chưa xuất |
+| ZALO-02 | ZALO | Liệt kê tài khoản Zalo kèm trạng thái auth và runtime | ZaloAccountsSettings.svelte, ZaloOutreach.svelte | src-tauri/src/commands.rs:get_managed_zalo_accounts | Tách auth status và runtime status | Chưa xuất |
+| ZALO-03 | ZALO | Xóa phiên Zalo | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:delete_zalo_session | Xóa session và tài khoản | Chưa xuất |
+| ZALO-04 | ZALO | Kiểm tra lại phiên Zalo | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:verify_zalo_session | Gọi zca-rs | Chưa xuất |
+| ZALO-05 | ZALO | Kiểm tra toàn bộ phiên Zalo | Không có | src-tauri/src/commands.rs:verify_all_zalo_sessions | Không thấy frontend gọi | Không xuất (lệnh cũ, TSX không được thấy; thay bằng luồng mới) |
 
 ### 2.6 Nhóm FB — 16 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| FB-01 | FB | Liệt kê page Facebook đã kết nối | FacebookAccountsSettings.svelte, FacebookHub.svelte | src-tauri/src/commands.rs:get_managed_facebook_accounts | Kèm token status, runtime | |
-| FB-02 | FB | Xóa tài khoản hoặc page Facebook | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:delete_facebook_account | Xóa token trong vault | |
-| FB-03 | FB | Lưu token hoặc page Facebook mới, hoặc cập nhật | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:save_managed_facebook_account | Hỗ trợ OAuth và nhập tay | |
-| FB-04 | FB | Lấy danh sách page từ token Facebook | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:fetch_facebook_pages_from_token | Gọi Graph API | |
-| FB-05 | FB | Tạo bài đăng Facebook hẹn giờ hoặc nháp | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:schedule_facebook_post | Có media, link, scheduling mode | |
-| FB-06 | FB | Đẩy bài đăng Facebook vào hàng đợi xuất bản ngay | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:publish_facebook_post_now | Chỉ nhận draft, failed, queued, overdue_prompt | |
-| FB-07 | FB | Liệt kê bài đăng Facebook | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_facebook_scheduled_posts | Lọc theo page, tối đa 100 | |
-| FB-08 | FB | Hủy bài đăng Facebook chưa xuất bản | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:cancel_facebook_scheduled_post | Xóa bản ghi draft, queued, overdue_prompt | |
-| FB-09 | FB | Tạo rule tự động trả lời bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:create_comment_automation | Có keyword, match mode, auto like, reply công khai và riêng | |
-| FB-10 | FB | Liệt kê rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_comment_automations | Lọc theo page | |
-| FB-11 | FB | Sửa rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:update_comment_automation | Cập nhật toàn bộ trường | |
-| FB-12 | FB | Xóa rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:delete_comment_automation | Xóa cứng | |
-| FB-13 | FB | Đọc log đã trả lời bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_comment_logs | Lọc theo page và rule | |
-| FB-14 | FB | Đọc sức khỏe token và page Facebook | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:get_facebook_page_health | Kiểm tra token, quyền, page | |
-| FB-15 | FB | Đồng bộ hội thoại Messenger từ Graph API | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:sync_facebook_conversations | Theo page hoặc toàn bộ | |
-| FB-16 | FB | Nhận event webhook Messenger vào SQLite, kiểm tra page hợp lệ | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:ingest_facebook_webhook_events | Chỉ nhận event đúng page đã cấu hình | |
+| FB-01 | FB | Liệt kê page Facebook đã kết nối | FacebookAccountsSettings.svelte, FacebookHub.svelte | src-tauri/src/commands.rs:get_managed_facebook_accounts | Kèm token status, runtime | Chưa xuất |
+| FB-02 | FB | Xóa tài khoản hoặc page Facebook | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:delete_facebook_account | Xóa token trong vault | Chưa xuất |
+| FB-03 | FB | Lưu token hoặc page Facebook mới, hoặc cập nhật | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:save_managed_facebook_account | Hỗ trợ OAuth và nhập tay | Chưa xuất |
+| FB-04 | FB | Lấy danh sách page từ token Facebook | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:fetch_facebook_pages_from_token | Gọi Graph API | Chưa xuất |
+| FB-05 | FB | Tạo bài đăng Facebook hẹn giờ hoặc nháp | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:schedule_facebook_post | Có media, link, scheduling mode | Chưa xuất |
+| FB-06 | FB | Đẩy bài đăng Facebook vào hàng đợi xuất bản ngay | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:publish_facebook_post_now | Chỉ nhận draft, failed, queued, overdue_prompt | Chưa xuất |
+| FB-07 | FB | Liệt kê bài đăng Facebook | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_facebook_scheduled_posts | Lọc theo page, tối đa 100 | Chưa xuất |
+| FB-08 | FB | Hủy bài đăng Facebook chưa xuất bản | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:cancel_facebook_scheduled_post | Xóa bản ghi draft, queued, overdue_prompt | Chưa xuất |
+| FB-09 | FB | Tạo rule tự động trả lời bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:create_comment_automation | Có keyword, match mode, auto like, reply công khai và riêng | Chưa xuất |
+| FB-10 | FB | Liệt kê rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_comment_automations | Lọc theo page | Chưa xuất |
+| FB-11 | FB | Sửa rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:update_comment_automation | Cập nhật toàn bộ trường | Chưa xuất |
+| FB-12 | FB | Xóa rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:delete_comment_automation | Xóa cứng | Chưa xuất |
+| FB-13 | FB | Đọc log đã trả lời bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_comment_logs | Lọc theo page và rule | Chưa xuất |
+| FB-14 | FB | Đọc sức khỏe token và page Facebook | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:get_facebook_page_health | Kiểm tra token, quyền, page | Chưa xuất |
+| FB-15 | FB | Đồng bộ hội thoại Messenger từ Graph API | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:sync_facebook_conversations | Theo page hoặc toàn bộ | Chưa xuất |
+| FB-16 | FB | Nhận event webhook Messenger vào SQLite, kiểm tra page hợp lệ | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:ingest_facebook_webhook_events | Chỉ nhận event đúng page đã cấu hình | Chưa xuất |
 
 ### 2.7 Nhóm AI — 5 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| AI-01 | AI | Phân loại ý định khách từ text, fallback heuristic | AICopilotBar.svelte | src-tauri/src/ai/commands.rs:classify_customer_intent | Provider từ env: OpenAI, Gemini, Claude, Ollama, Mock | |
-| AI-02 | AI | Sinh gợi ý trả lời từ evidence CRM và policy gate | AICopilotBar.svelte | src-tauri/src/ai/commands.rs:generate_smart_reply_suggestions | Ghi evidence log và cập nhật journey state | |
-| AI-03 | AI | Liệt kê proposal AI đang chờ duyệt | AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:get_pending_ai_proposals | Chỉ trạng thái PENDING | |
-| AI-04 | AI | Duyệt, từ chối hoặc đánh dấu proposal | AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:review_ai_proposal | Chấp nhận APPROVED, REJECTED, APPLIED, PENDING | |
-| AI-05 | AI | Đọc evidence CRM của lead cho AI | AICopilotBar.svelte, AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:get_lead_evidence_context | Lead, deal, message gần đây, journey | |
+| AI-01 | AI | Phân loại ý định khách từ text, fallback heuristic | AICopilotBar.svelte | src-tauri/src/ai/commands.rs:classify_customer_intent | Provider từ env: OpenAI, Gemini, Claude, Ollama, Mock | Chưa xuất |
+| AI-02 | AI | Sinh gợi ý trả lời từ evidence CRM và policy gate | AICopilotBar.svelte | src-tauri/src/ai/commands.rs:generate_smart_reply_suggestions | Ghi evidence log và cập nhật journey state | Chưa xuất |
+| AI-03 | AI | Liệt kê proposal AI đang chờ duyệt | AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:get_pending_ai_proposals | Chỉ trạng thái PENDING | Chưa xuất |
+| AI-04 | AI | Duyệt, từ chối hoặc đánh dấu proposal | AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:review_ai_proposal | Chấp nhận APPROVED, REJECTED, APPLIED, PENDING | Chưa xuất |
+| AI-05 | AI | Đọc evidence CRM của lead cho AI | AICopilotBar.svelte, AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:get_lead_evidence_context | Lead, deal, message gần đây, journey | Chưa xuất |
 
 ### 2.8 Nhóm IMPORT — 5 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| IMPORT-01 | IMPORT | Mở hộp thoại chọn file Excel hoặc CSV | LeadImportModal.svelte | src-tauri/src/commands.rs:pick_lead_import_file | Lọc xlsx, xls, csv | |
-| IMPORT-02 | IMPORT | Đọc sheet và cột, trả về inspection để map | LeadImportModal.svelte | src-tauri/src/commands.rs:inspect_lead_import_file | Chạy trong spawn_blocking | |
-| IMPORT-03 | IMPORT | Import lead theo mapping, phát progress qua Channel và event | LeadImportModal.svelte | src-tauri/src/commands.rs:execute_lead_import | Vừa gửi Channel vừa emit lead-import-progress | |
-| IMPORT-04 | IMPORT | Xuất file mẫu Excel hoặc CSV | LeadImportModal.svelte | src-tauri/src/commands.rs:download_lead_import_template | Có sẵn hai mẫu | |
-| IMPORT-05 | IMPORT | Xuất CSV lead đã chọn qua hộp thoại lưu file | LeadsList.svelte | src-tauri/src/commands.rs:export_leads_csv_file | Gọi qua utils/leadsExportCsv.ts | |
+| IMPORT-01 | IMPORT | Mở hộp thoại chọn file Excel hoặc CSV | LeadImportModal.svelte | src-tauri/src/commands.rs:pick_lead_import_file | Lọc xlsx, xls, csv | Chưa xuất |
+| IMPORT-02 | IMPORT | Đọc sheet và cột, trả về inspection để map | LeadImportModal.svelte | src-tauri/src/commands.rs:inspect_lead_import_file | Chạy trong spawn_blocking | Chưa xuất |
+| IMPORT-03 | IMPORT | Import lead theo mapping, phát progress qua Channel và event | LeadImportModal.svelte | src-tauri/src/commands.rs:execute_lead_import | Vừa gửi Channel vừa emit lead-import-progress | Chưa xuất |
+| IMPORT-04 | IMPORT | Xuất file mẫu Excel hoặc CSV | LeadImportModal.svelte | src-tauri/src/commands.rs:download_lead_import_template | Có sẵn hai mẫu | Chưa xuất |
+| IMPORT-05 | IMPORT | Xuất CSV lead đã chọn qua hộp thoại lưu file | LeadsList.svelte | src-tauri/src/commands.rs:export_leads_csv_file | Gọi qua utils/leadsExportCsv.ts | Chưa xuất |
 
 ### 2.9 Nhóm SET — 19 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| SET-01 | SET | Đọc tiền tệ gốc và tỷ giá | LanguageSettings.svelte, LeadsList.svelte, KanbanBoard.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_currency_settings | Lưu trong app_metadata | |
-| SET-02 | SET | Lưu tiền tệ gốc và tỷ giá | LanguageSettings.svelte | src-tauri/src/commands.rs:update_currency_settings | Chỉ VND và USD | |
-| SET-03 | SET | Liệt kê tài khoản SMTP | EmailAccountsSettings.svelte, EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_managed_smtp_accounts | Không trả mật khẩu | |
-| SET-04 | SET | Thêm hoặc sửa SMTP | EmailAccountsSettings.svelte | src-tauri/src/commands.rs:save_smtp_server | Lưu cấu hình | |
-| SET-05 | SET | Xóa SMTP | EmailAccountsSettings.svelte | src-tauri/src/commands.rs:delete_smtp_server | Xóa cứng | |
-| SET-06 | SET | Kiểm tra kết nối SMTP | EmailAccountsSettings.svelte | src-tauri/src/commands.rs:test_smtp_connection | Chỉ kiểm tra host và port | |
-| SET-07 | SET | Liệt kê mẫu email | EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_email_templates | Mẫu email riêng, không phải template đa kênh | |
-| SET-08 | SET | Tạo mẫu email | EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:create_email_template | Có subject và body | |
-| SET-09 | SET | Sửa mẫu email | EmailOutreach.svelte | src-tauri/src/commands.rs:update_email_template | Cập nhật subject và body | |
-| SET-10 | SET | Xóa mẫu email | EmailOutreach.svelte | src-tauri/src/commands.rs:delete_email_template | Xóa cứng | |
-| SET-11 | SET | Liệt kê template đa kênh theo filter | TemplateCenter.svelte, SequenceBuilder.svelte | src-tauri/src/commands.rs:get_templates | Filter theo folder, stage, channel, tag | |
-| SET-12 | SET | Đọc một template đa kênh | TemplateCenter.svelte, TemplatePickerModal.svelte | src-tauri/src/commands.rs:get_template_by_id | Trả đầy đủ nội dung | |
-| SET-13 | SET | Tạo template đa kênh | TemplateCenter.svelte, SaveTemplateModal.svelte | src-tauri/src/commands.rs:create_template | Có biến và spintax | |
-| SET-14 | SET | Sửa template đa kênh | TemplateCenter.svelte | src-tauri/src/commands.rs:update_template | Cập nhật toàn bộ | |
-| SET-15 | SET | Xóa template đa kênh | TemplateCenter.svelte | src-tauri/src/commands.rs:delete_template | Xóa cứng | |
-| SET-16 | SET | Liệt kê folder template | TemplateCenter.svelte | src-tauri/src/commands.rs:get_template_folders | Kèm màu | |
-| SET-17 | SET | Tạo folder template | TemplateCenter.svelte | src-tauri/src/commands.rs:create_template_folder | Tên và màu | |
-| SET-18 | SET | Xóa folder template | TemplateCenter.svelte | src-tauri/src/commands.rs:delete_template_folder | Template trong folder được bỏ folder | |
-| SET-19 | SET | Tăng bộ đếm dùng template | TemplatePickerModal.svelte, SequenceBuilder.svelte | src-tauri/src/commands.rs:increment_template_usage | Dùng cho xếp hạng | |
+| SET-01 | SET | Đọc tiền tệ gốc và tỷ giá | LanguageSettings.svelte, LeadsList.svelte, KanbanBoard.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_currency_settings | Lưu trong app_metadata | Đã xuất `Settings.currency` |
+| SET-02 | SET | Lưu tiền tệ gốc và tỷ giá | LanguageSettings.svelte | src-tauri/src/commands.rs:update_currency_settings | Chỉ VND và USD | Đã xuất `Settings.updateCurrency` |
+| SET-03 | SET | Liệt kê tài khoản SMTP | EmailAccountsSettings.svelte, EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_managed_smtp_accounts | Không trả mật khẩu | Đã xuất `Templates.smtpAccounts` |
+| SET-04 | SET | Thêm hoặc sửa SMTP | EmailAccountsSettings.svelte | src-tauri/src/commands.rs:save_smtp_server | Lưu cấu hình | Đã xuất `Templates.saveSmtpServer` |
+| SET-05 | SET | Xóa SMTP | EmailAccountsSettings.svelte | src-tauri/src/commands.rs:delete_smtp_server | Xóa cứng | Đã xuất `Templates.deleteSmtpServer` |
+| SET-06 | SET | Kiểm tra kết nối SMTP | EmailAccountsSettings.svelte | src-tauri/src/commands.rs:test_smtp_connection | Chỉ kiểm tra host và port | Đã xuất `Templates.testSmtpConnection` — bọc, chưa gọi thử (cần mạng hoặc dữ liệu thật) |
+| SET-07 | SET | Liệt kê mẫu email | EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_email_templates | Mẫu email riêng, không phải template đa kênh | Đã xuất `Templates.emailTemplates` |
+| SET-08 | SET | Tạo mẫu email | EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:create_email_template | Có subject và body | Đã xuất `Templates.createEmailTemplate` |
+| SET-09 | SET | Sửa mẫu email | EmailOutreach.svelte | src-tauri/src/commands.rs:update_email_template | Cập nhật subject và body | Đã xuất `Templates.updateEmailTemplate` |
+| SET-10 | SET | Xóa mẫu email | EmailOutreach.svelte | src-tauri/src/commands.rs:delete_email_template | Xóa cứng | Đã xuất `Templates.deleteEmailTemplate` |
+| SET-11 | SET | Liệt kê template đa kênh theo filter | TemplateCenter.svelte, SequenceBuilder.svelte | src-tauri/src/commands.rs:get_templates | Filter theo folder, stage, channel, tag | Đã xuất `Templates.list` |
+| SET-12 | SET | Đọc một template đa kênh | TemplateCenter.svelte, TemplatePickerModal.svelte | src-tauri/src/commands.rs:get_template_by_id | Trả đầy đủ nội dung | Đã xuất `Templates.template` |
+| SET-13 | SET | Tạo template đa kênh | TemplateCenter.svelte, SaveTemplateModal.svelte | src-tauri/src/commands.rs:create_template | Có biến và spintax | Đã xuất `Templates.createTemplate` |
+| SET-14 | SET | Sửa template đa kênh | TemplateCenter.svelte | src-tauri/src/commands.rs:update_template | Cập nhật toàn bộ | Đã xuất `Templates.updateTemplate` |
+| SET-15 | SET | Xóa template đa kênh | TemplateCenter.svelte | src-tauri/src/commands.rs:delete_template | Xóa cứng | Đã xuất `Templates.deleteTemplate` |
+| SET-16 | SET | Liệt kê folder template | TemplateCenter.svelte | src-tauri/src/commands.rs:get_template_folders | Kèm màu | Đã xuất `Templates.folders` |
+| SET-17 | SET | Tạo folder template | TemplateCenter.svelte | src-tauri/src/commands.rs:create_template_folder | Tên và màu | Đã xuất `Templates.createFolder` |
+| SET-18 | SET | Xóa folder template | TemplateCenter.svelte | src-tauri/src/commands.rs:delete_template_folder | Template trong folder được bỏ folder | Đã xuất `Templates.deleteFolder` |
+| SET-19 | SET | Tăng bộ đếm dùng template | TemplatePickerModal.svelte, SequenceBuilder.svelte | src-tauri/src/commands.rs:increment_template_usage | Dùng cho xếp hạng | Đã xuất `Templates.incrementUsage` |
 
 ### 2.10 Nhóm DESK — 8 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| DESK-01 | DESK | Đọc cài đặt thông báo desktop | NotificationSettings.svelte | src-tauri/src/notification.rs:get_notification_settings | enabled, sound, privacy, mute groups | |
-| DESK-02 | DESK | Lưu cài đặt thông báo desktop | NotificationSettings.svelte | src-tauri/src/notification.rs:update_notification_settings | Ghi vào app_metadata | |
-| DESK-03 | DESK | Đồng bộ hội thoại đang mở để chặn thông báo trùng | ConversationWorkspace.svelte | src-tauri/src/notification.rs:set_active_conversation_focus | Có sequence để chống event cũ | |
-| DESK-04 | DESK | Gửi thông báo desktop thử | NotificationSettings.svelte | src-tauri/src/notification.rs:test_desktop_notification | Phát desktop-notification-sent với test=true | |
-| DESK-05 | DESK | Đọc cấu hình tray | NotificationSettings.svelte | src-tauri/src/tray.rs:get_tray_state | close_to_tray và dnd | |
-| DESK-06 | DESK | Bật hoặc tắt thu nhỏ xuống tray khi đóng cửa sổ | NotificationSettings.svelte | src-tauri/src/tray.rs:set_close_to_tray | Ghi app_metadata | |
-| DESK-07 | DESK | Bật hoặc tắt Không làm phiền | NotificationSettings.svelte | src-tauri/src/tray.rs:set_tray_dnd | Phát tray-dnd-changed | |
-| DESK-08 | DESK | Tải và cài bản .deb mới trên Linux portable | AppUpdateSettings.svelte, UpdateModal.svelte | src-tauri/src/commands.rs:install_portable_linux_update | Tải từ rustsale.trantrongtri.com, validate version | |
+| DESK-01 | DESK | Đọc cài đặt thông báo desktop | NotificationSettings.svelte | src-tauri/src/notification.rs:get_notification_settings | enabled, sound, privacy, mute groups | Đã xuất `Settings.notifications` |
+| DESK-02 | DESK | Lưu cài đặt thông báo desktop | NotificationSettings.svelte | src-tauri/src/notification.rs:update_notification_settings | Ghi vào app_metadata | Đã xuất `Settings.updateNotifications` |
+| DESK-03 | DESK | Đồng bộ hội thoại đang mở để chặn thông báo trùng | ConversationWorkspace.svelte | src-tauri/src/notification.rs:set_active_conversation_focus | Có sequence để chống event cũ | Chưa xuất |
+| DESK-04 | DESK | Gửi thông báo desktop thử | NotificationSettings.svelte | src-tauri/src/notification.rs:test_desktop_notification | Phát desktop-notification-sent với test=true | Chưa xuất |
+| DESK-05 | DESK | Đọc cấu hình tray | NotificationSettings.svelte | src-tauri/src/tray.rs:get_tray_state | close_to_tray và dnd | Đã xuất `Settings.tray` |
+| DESK-06 | DESK | Bật hoặc tắt thu nhỏ xuống tray khi đóng cửa sổ | NotificationSettings.svelte | src-tauri/src/tray.rs:set_close_to_tray | Ghi app_metadata | Đã xuất `Settings.setCloseToTray` |
+| DESK-07 | DESK | Bật hoặc tắt Không làm phiền | NotificationSettings.svelte | src-tauri/src/tray.rs:set_tray_dnd | Phát tray-dnd-changed | Đã xuất `Settings.setDoNotDisturb` |
+| DESK-08 | DESK | Tải và cài bản .deb mới trên Linux portable | AppUpdateSettings.svelte, UpdateModal.svelte | src-tauri/src/commands.rs:install_portable_linux_update | Tải từ rustsale.trantrongtri.com, validate version | Không xuất dạng lệnh: port `Updater` bám `nsh/updater` (`Host.onUpdaterRequest` / `Host.answerUpdater`) |
 
 ### 2.11 Nhóm UTIL — 3 command
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| UTIL-01 | UTIL | Command demo mẫu của Tauri | Không có | src-tauri/src/lib.rs:greet | Vẫn đăng ký trong invoke_handler | |
-| UTIL-02 | UTIL | Sinh hardware ID hash cho license | LicenseModal.svelte | src-tauri/src/commands.rs:get_hardware_id | Hash OS, arch, hostname, user | |
-| UTIL-03 | UTIL | Lưu ảnh từ URL hoặc base64 qua hộp thoại chọn chỗ lưu | ImageGalleryModal.svelte, ImageMessageContent.svelte, FileMessageContent.svelte | src-tauri/src/commands.rs:save_image_file | Gọi qua utils/imageExport.ts | |
+| UTIL-01 | UTIL | Command demo mẫu của Tauri | Không có | src-tauri/src/lib.rs:greet | Vẫn đăng ký trong invoke_handler | Chưa xuất |
+| UTIL-02 | UTIL | Sinh hardware ID hash cho license | LicenseModal.svelte | src-tauri/src/commands.rs:get_hardware_id | Hash OS, arch, hostname, user | Chưa xuất |
+| UTIL-03 | UTIL | Lưu ảnh từ URL hoặc base64 qua hộp thoại chọn chỗ lưu | ImageGalleryModal.svelte, ImageMessageContent.svelte, FileMessageContent.svelte | src-tauri/src/commands.rs:save_image_file | Gọi qua utils/imageExport.ts | Chưa xuất |
 
 **Đối chiếu:** tổng 22 + 47 + 25 + 22 + 5 + 16 + 5 + 5 + 19 + 8 + 3 = **177**.
 

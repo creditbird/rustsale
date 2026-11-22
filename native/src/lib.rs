@@ -32,3 +32,33 @@ fn native(registry: &mut Registry) {
         .module::<templates::Templates>()
         .module::<settings::Settings>();
 }
+
+#[cfg(test)]
+mod tests {
+    use nsh_core::element::declarations;
+
+    #[test]
+    fn every_export_has_a_doc_comment() {
+        let missing = super::registry().undocumented();
+        assert!(missing.is_empty(), "undocumented exports: {missing:?}");
+    }
+
+    #[test]
+    fn legacy_commands_are_not_exported_to_tsx() {
+        let text = declarations(&super::registry(), &[]);
+        for legacy in [
+            "send_zalo_campaign",
+            "sendZaloCampaign",
+            "get_campaign_leads",
+            "campaignLeads",
+            "start_google_maps_scrape",
+            "startGoogleMapsScrape",
+            "stop_google_maps_scrape",
+            "stopGoogleMapsScrape",
+            "verify_all_zalo_sessions",
+            "verifyAllZaloSessions",
+        ] {
+            assert!(!text.contains(legacy), "legacy command leaked: {legacy}");
+        }
+    }
+}
