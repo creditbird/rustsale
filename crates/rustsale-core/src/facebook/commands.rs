@@ -876,6 +876,11 @@ mod tests {
         assert_eq!(logs[0].comment_id, "comm_1");
         assert_eq!(logs[0].like_status, "success");
 
+        // Without a page filter the limit is the only bound parameter.
+        let all_logs = list_comment_logs_impl(&conn, None, Some(10)).unwrap();
+        assert_eq!(all_logs.len(), 1);
+        assert_eq!(all_logs[0].comment_id, "comm_1");
+
         // 5. Delete rule
         let deleted = delete_comment_automation_impl(&conn, rule_id).unwrap();
         assert!(deleted);

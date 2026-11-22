@@ -32,6 +32,16 @@ fn lead_ids(values: Vec<f64>) -> Result<Vec<i32>, CoreApiError> {
         .collect()
 }
 
+/// A JS number as an `i32` row id, refusing values an `i32` cannot hold instead of wrapping them
+/// onto another row.
+fn id32(value: f64) -> Result<i32, CoreApiError> {
+    if value.is_finite() && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) {
+        Ok(value as i32)
+    } else {
+        Err(CoreApiError::invalid("id is out of range"))
+    }
+}
+
 /// An optional JS number as a `u32`.
 fn optional_u32(value: Option<f64>) -> Option<u32> {
     value
@@ -46,7 +56,6 @@ fn optional_u64(value: Option<f64>) -> Option<u64> {
         .map(|n| n as u64)
 }
 
-/// An optional JS number as an `i64`.
 /// Outreach templates, Zalo and email outreach jobs, WhatsApp campaigns and unified campaigns.
 /// Long jobs answer when they start and report through `Host.onEvent` (`outreach-progress`,
 /// `email-outreach-progress`, `campaign-progress`).
@@ -86,15 +95,11 @@ impl Campaigns {
         content: String,
         image_url: Option<String>,
     ) -> Result<JsonValue, CoreApiError> {
-        let template = id(template_id);
+        let template = id32(template_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::update_outreach_template(
-                template as i32,
-                name,
-                content,
-                image_url,
-                state,
+                template, name, content, image_url, state,
             )?)
         })
         .await
@@ -102,10 +107,10 @@ impl Campaigns {
 
     /// Deletes outreach template `id`.
     pub async fn delete_outreach_template(template_id: f64) -> Result<JsonValue, CoreApiError> {
-        let template = id(template_id);
+        let template = id32(template_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
-            Ok::<_, CoreApiError>(commands::delete_outreach_template(template as i32, state)?)
+            Ok::<_, CoreApiError>(commands::delete_outreach_template(template, state)?)
         })
         .await
     }
@@ -118,7 +123,7 @@ impl Campaigns {
         template_id: f64,
     ) -> Result<JsonValue, CoreApiError> {
         let leads = lead_ids(lead_ids_)?;
-        let template = id(template_id) as i32;
+        let template = id32(template_id)?;
         on_core(move |h| async move {
             Ok::<_, CoreApiError>(commands::send_zalo_outreach(h, imei, leads, template).await?)
         })
@@ -137,7 +142,7 @@ impl Campaigns {
         inter_message_delay_seconds: Option<f64>,
     ) -> Result<JsonValue, CoreApiError> {
         let leads = lead_ids(lead_ids_)?;
-        let template = id(template_id) as i32;
+        let template = id32(template_id)?;
         let burst_max = optional_u32(burst_max_messages);
         let burst_delay = optional_u64(burst_delay_seconds);
         let inter_delay = optional_u64(inter_message_delay_seconds);
@@ -167,8 +172,8 @@ impl Campaigns {
         lead_ids_: Vec<f64>,
     ) -> Result<JsonValue, CoreApiError> {
         let leads = lead_ids(lead_ids_)?;
-        let smtp = id(smtp_id) as i32;
-        let template = id(template_id) as i32;
+        let smtp = id32(smtp_id)?;
+        let template = id32(template_id)?;
         on_core(move |h| async move {
             Ok::<_, CoreApiError>(commands::send_email_outreach(h, smtp, template, leads).await?)
         })

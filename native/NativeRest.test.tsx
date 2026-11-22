@@ -100,6 +100,10 @@ test("campaigns: outreach templates and the unified campaign lifecycle", async (
   await Campaigns.deleteUnifiedCampaign(campaignId);
   campaigns = rows(await Campaigns.unifiedCampaigns());
   expect(campaigns.some((item) => item.id === campaignId)).toBe(false);
+
+  // An id an i32 cannot hold is refused, never wrapped onto another template.
+  await expect(Campaigns.deleteOutreachTemplate(4_294_967_297)).rejects.toThrow();
+  await expect(Campaigns.sendEmailOutreach(4_294_967_297, templateId, [])).rejects.toThrow();
 });
 
 test("campaigns: WhatsApp campaign create, populate and cancel", async () => {
