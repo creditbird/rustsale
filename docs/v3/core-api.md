@@ -422,6 +422,11 @@ See the report to Nakroth: `cargo fmt --check`, `cargo clippy --workspace -- -D 
 `cargo test --workspace` (1021 + 4 + 1 passed, 4 ignored: same test set as v2), `cargo tree -p
 rustsale-core | grep -i tauri` empty.
 
+Fixed during the P1 parity pass: `list_comment_logs_impl` built `LIMIT ?2` even when the optional
+page filter was absent, so the single bound parameter left `?1` unset and SQLite rejected the
+query. Without a page filter it now uses `LIMIT ?1`; `NativeRest.test.tsx` calls
+`Facebook.commentLogs(null, 10)` to cover it.
+
 ## 12. Dev identity and cutover checklist (RS P0c)
 
 v3 must never share state with the production v2 app while both exist on one machine. Until
@@ -473,16 +478,17 @@ is rejected, never silently wrong.
 | `list_conversation_inbox_page` | `list_conversation_inbox` | `Conversations.inboxPage` |
 | `list_google_maps_results_page` | (none, new) | `GoogleMaps.resultsPage` |
 | `get_activities_page` | `get_activities` | `Leads.activitiesPage` |
-| `list_comment_logs_page` | `list_comment_logs` | not exported yet (Facebook module pending) |
+| `list_comment_logs_page` | `list_comment_logs` | not needed for parity; `Facebook.commentLogs` wraps the v2 command |
 
 **Native crate `native/`** (`nsh-app-rustsale`, NSH 0.6.1 mixed mode, own `[workspace]`;
 `import { ... } from "rustsale/native"`). Modules: `Host`, `Leads`, `LeadsMore`, `Deals`,
-`Categories`, `Conversations`, `ConversationActions`, `GoogleMaps`, `Templates`, `Settings`.
-Status per command is in `feature-parity.md` section 2 (column "Trạng thái v3"): 80 of 177
-exported, 5 legacy commands deliberately not exported, 1 via a port (updater), 91 pending.
-Pending groups: CAMP (except legacy), ZALO, FB, AI, IMPORT, UTIL, the rest of SCRAPE
-(administrative catalog, grid, retry, runtime prepare), and the CONV commands that need a real
-account or network (stickers, recall, reaction, forward, sync, QR, attachments).
+`Categories`, `Conversations`, `ConversationActions`, `GoogleMaps`, `Templates`, `Settings`,
+`Campaigns`, `Zalo`, `Facebook`, `Ai`, `ImportLeads`, `Util`, `Desktop`, `GoogleMapsMore` and
+`ConversationNetwork`. Status per command is in `feature-parity.md` section 2 (column
+"Trạng thái v3"): 171 of 177 exported, 5 legacy commands deliberately not exported, 1 via a port
+(updater), 0 pending. Commands that need a network or a real channel account are wrapped; the
+headless tests call them only with missing ids or invalid input, or not at all, and the parity
+file marks the ones no test exercises ("bọc, chưa gọi thử").
 
 - **Errors:** every export returns `Result<_, CoreApiError { code, message }>`; `ConversationCommandError`
   keeps its code, `PageError` maps to `invalid_cursor` / `invalid_request` / `internal`, `String`

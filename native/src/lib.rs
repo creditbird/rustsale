@@ -1,19 +1,28 @@
 //! RustSale v3 native module: what `App.tsx` imports from `rustsale/native`.
 //! The only place TSX reaches `rustsale-core`.
 
+mod ai;
+mod campaigns;
 mod categories;
 mod conversation_actions;
+mod conversation_network;
 mod conversations;
 mod deals;
+mod desktop;
 mod error;
+mod facebook;
 mod host;
+mod import;
 mod leads;
 mod leads_more;
 mod maps;
+mod maps_more;
 mod ports;
 mod runtime;
 mod settings;
 mod templates;
+mod util;
+mod zalo;
 
 use nsh_core::prelude::*;
 
@@ -22,15 +31,24 @@ use nsh_core::prelude::*;
 fn native(registry: &mut Registry) {
     registry
         .module::<host::Host>()
+        .module::<ai::Ai>()
         .module::<leads::Leads>()
         .module::<leads_more::LeadsMore>()
         .module::<deals::Deals>()
+        .module::<desktop::Desktop>()
+        .module::<import::ImportLeads>()
+        .module::<campaigns::Campaigns>()
         .module::<categories::Categories>()
+        .module::<facebook::Facebook>()
         .module::<conversations::Conversations>()
         .module::<conversation_actions::ConversationActions>()
+        .module::<conversation_network::ConversationNetwork>()
         .module::<maps::GoogleMaps>()
+        .module::<maps_more::GoogleMapsMore>()
         .module::<templates::Templates>()
-        .module::<settings::Settings>();
+        .module::<settings::Settings>()
+        .module::<util::Util>()
+        .module::<zalo::Zalo>();
 }
 
 #[cfg(test)]
