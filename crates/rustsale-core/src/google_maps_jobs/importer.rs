@@ -22,7 +22,48 @@ struct PendingResult {
 }
 
 pub fn normalize_vn_mobile(value: &str) -> Option<String> {
-    let digits = value
+    // `+84 (0) 912 ...` is a common way to write the trunk prefix after the
+    // country code. Dropping `(0)` before extracting digits keeps the number
+    // valid instead of producing an 11-digit `00...` string (B11/C20).
+    let value = value.replace("(0)", "");
+    for candidate in phone_candidates(&value) {
+        if let Some(normalized) = normalize_vn_mobile_candidate(candidate) {
+            return Some(normalized);
+        }
+    }
+    None
+}
+
+/// A contact field may list several numbers separated by `/`, `,`, `;` or a
+/// line break. Each part is tried on its own so one invalid entry does not
+/// discard a valid mobile next to it (B11/C20).
+fn phone_candidates(value: &str) -> Vec<&str> {
+    if value
+        .chars()
+        .any(|character| matches!(character, '/' | ',' | ';' | '|' | '\n'))
+    {
+        value
+            .split(['/', ',', ';', '|', '\n'])
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+            .collect()
+    } else {
+        vec![value.trim()]
+    }
+}
+
+fn normalize_vn_mobile_candidate(value: &str) -> Option<String> {
+    // Drop an extension such as `ext 12` before counting digits.
+    let cut = value
+        .char_indices()
+        .find(|(index, _)| {
+            value[*index..]
+                .get(..3)
+                .is_some_and(|start| start.eq_ignore_ascii_case("ext"))
+        })
+        .map(|(index, _)| index)
+        .unwrap_or(value.len());
+    let digits = value[..cut]
         .chars()
         .filter(char::is_ascii_digit)
         .collect::<String>();
@@ -374,6 +415,22 @@ mod tests {
         );
         assert_eq!(normalize_vn_mobile("028 1234 5678"), None);
         assert_eq!(normalize_vn_mobile("090123456"), None);
+    }
+
+    #[test]
+    fn normalize_vn_mobile_handles_plus84_with_parenthesized_zero_and_multiple_numbers() {
+        assert_eq!(
+            normalize_vn_mobile("+84 (0) 912 000 000").as_deref(),
+            Some("0912000000")
+        );
+        assert_eq!(
+            normalize_vn_mobile("0912 000 000 / 0987 000 000").as_deref(),
+            Some("0912000000")
+        );
+        assert_eq!(
+            normalize_vn_mobile("0912 000 000 ext 12").as_deref(),
+            Some("0912000000")
+        );
     }
 
     #[test]
