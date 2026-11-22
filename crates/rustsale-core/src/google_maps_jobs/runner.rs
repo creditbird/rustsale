@@ -516,9 +516,15 @@ impl ScrapeJobRunner {
                             TransitionCause::System,
                         )
                         .await?;
-                    self.events
-                        .publish_job(&partial, "Scrape job completed with unresolved enrichment")
-                        .await;
+                    let message = if current.failed_units > 0 {
+                        format!(
+                            "Scrape job completed partially: {} unit(s) failed",
+                            current.failed_units
+                        )
+                    } else {
+                        "Scrape job completed with unresolved enrichment".to_string()
+                    };
+                    self.events.publish_job(&partial, message).await;
                     let partial_error_kind = partial
                         .last_error_kind
                         .map(|kind| format!("{kind:?}").to_ascii_lowercase());
