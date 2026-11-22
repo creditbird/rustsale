@@ -279,11 +279,15 @@ impl ConversationAttachmentStager {
             "ogg" => Some("audio/ogg"),
             "wav" => Some("audio/wav"),
             "pdf" => Some("application/pdf"),
-            "docx" => Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+            "docx" => {
+                Some("application/vnd.openxmlformats-officedocument.wordprocessingml.document")
+            }
             "doc" => Some("application/msword"),
             "xlsx" => Some("application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"),
             "xls" => Some("application/vnd.ms-excel"),
-            "pptx" => Some("application/vnd.openxmlformats-officedocument.presentationml.presentation"),
+            "pptx" => {
+                Some("application/vnd.openxmlformats-officedocument.presentationml.presentation")
+            }
             "ppt" => Some("application/vnd.ms-powerpoint"),
             "txt" => Some("text/plain"),
             "csv" => Some("text/csv"),
@@ -305,7 +309,9 @@ impl ConversationAttachmentStager {
 
         let inferred_mime = match (raw_inferred, ext_mime) {
             // If infer gives generic container (zip or octet-stream) but extension gives specific office/doc mime, prefer extension
-            (Some(inf), Some(by_ext)) if inf == "application/zip" || inf == "application/octet-stream" => {
+            (Some(inf), Some(by_ext))
+                if inf == "application/zip" || inf == "application/octet-stream" =>
+            {
                 by_ext.to_string()
             }
             (Some(inf), _) => inf,

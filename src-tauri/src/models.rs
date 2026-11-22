@@ -375,4 +375,3 @@ pub struct TemplateFilter {
     pub search_query: Option<String>,
     pub tag: Option<String>,
 }
-

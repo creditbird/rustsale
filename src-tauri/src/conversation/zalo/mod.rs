@@ -4,6 +4,7 @@ pub mod phase2a_probe;
 pub mod probe;
 pub mod sticker_cache;
 pub mod supervisor;
+pub mod webhook;
 
 pub(crate) const DIRECT_MESSAGE_WATERMARK_SCOPE: &str = "direct_messages";
 pub(crate) const GROUP_MESSAGE_WATERMARK_SCOPE: &str = "group_messages";

@@ -267,11 +267,7 @@ impl AccountRotator {
     }
 
     /// Selects the next available account for the channel that passes throttler checks.
-    pub fn next_account(
-        &self,
-        channel: &str,
-        throttler: &AntiBanThrottler,
-    ) -> Option<String> {
+    pub fn next_account(&self, channel: &str, throttler: &AntiBanThrottler) -> Option<String> {
         let ch = channel.trim().to_lowercase();
         let accounts = self.get_accounts(&ch);
         if accounts.is_empty() {

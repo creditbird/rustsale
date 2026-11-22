@@ -322,6 +322,9 @@ async fn staging_blocks_executable_file_extensions() {
         .await
         .unwrap_err();
 
-    assert_eq!(err.code, super::error::ConversationErrorCode::UnsupportedMedia);
+    assert_eq!(
+        err.code,
+        super::error::ConversationErrorCode::UnsupportedMedia
+    );
     assert!(err.message.contains("Executable files are not supported"));
 }

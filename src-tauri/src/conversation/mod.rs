@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod caption;
 pub mod commands;
 pub mod deletion_sync;
 pub mod echo_cache;
@@ -20,11 +21,12 @@ pub mod retry;
 pub mod service;
 pub mod staging;
 pub mod types;
+pub mod unsupported_text;
 pub mod whatsapp;
 pub mod zalo;
 
 #[cfg(test)]
-mod commands_test;
+pub mod commands_test;
 #[cfg(test)]
 mod forwarding_test;
 #[cfg(test)]

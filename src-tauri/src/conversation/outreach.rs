@@ -199,13 +199,14 @@ pub fn record_outreach_success_in_transaction(
         |row| row.get(0),
     )?;
 
-    let delta_event = crate::conversation::repository::ConversationRepository::record_message_delta_tx(
-        &tx,
-        conversation_id,
-        Some(record.lead_id),
-        crate::conversation::types::Channel::Zalo,
-        message_id,
-    )?;
+    let delta_event =
+        crate::conversation::repository::ConversationRepository::record_message_delta_tx(
+            tx,
+            conversation_id,
+            Some(record.lead_id),
+            crate::conversation::types::Channel::Zalo,
+            message_id,
+        )?;
 
     // 7. Return AppliedOutreachMessage
     Ok(AppliedOutreachMessage {

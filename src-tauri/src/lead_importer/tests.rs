@@ -1,7 +1,7 @@
-use std::io::Write;
-use tempfile::NamedTempFile;
 use calamine::Data;
 use rusqlite::Connection;
+use std::io::Write;
+use tempfile::NamedTempFile;
 
 use super::importer::{
     execute_lead_import, normalize_email, normalize_vn_mobile, parse_lead_monetary_value,
@@ -12,7 +12,10 @@ use super::types::{ColumnMapping, ConflictStrategy, LeadImportOptions};
 #[test]
 fn test_cell_to_string_variations() {
     assert_eq!(cell_to_string(&Data::Empty), "");
-    assert_eq!(cell_to_string(&Data::String("  Nguyen Van A  ".into())), "Nguyen Van A");
+    assert_eq!(
+        cell_to_string(&Data::String("  Nguyen Van A  ".into())),
+        "Nguyen Van A"
+    );
     assert_eq!(cell_to_string(&Data::Int(42)), "42");
     assert_eq!(cell_to_string(&Data::Float(50000000.0)), "50000000");
     assert_eq!(cell_to_string(&Data::Float(12.34)), "12.34");
@@ -30,7 +33,10 @@ fn test_inspect_csv_file_success() {
 
     let inspection = inspect_lead_file(&path, None).expect("Inspection should succeed");
     assert_eq!(inspection.file_type, "csv");
-    assert_eq!(inspection.headers, vec!["Họ và tên", "Số điện thoại", "Email", "Công ty"]);
+    assert_eq!(
+        inspection.headers,
+        vec!["Họ và tên", "Số điện thoại", "Email", "Công ty"]
+    );
     assert_eq!(inspection.sample_rows.len(), 2);
     assert_eq!(inspection.sample_rows[0][0], "Nguyễn Văn An");
     assert_eq!(inspection.sample_rows[0][1], "0912345678");
@@ -50,32 +56,86 @@ fn test_inspect_nonexistent_file_returns_error() {
 #[test]
 fn test_normalize_vn_mobile_matrix() {
     // Standard 10-digit formats
-    assert_eq!(normalize_vn_mobile("0912345678"), Some("0912345678".to_string()));
-    assert_eq!(normalize_vn_mobile("0868123456"), Some("0868123456".to_string()));
-    assert_eq!(normalize_vn_mobile("0399123456"), Some("0399123456".to_string()));
-    assert_eq!(normalize_vn_mobile("0777123456"), Some("0777123456".to_string()));
-    assert_eq!(normalize_vn_mobile("0599123456"), Some("0599123456".to_string()));
+    assert_eq!(
+        normalize_vn_mobile("0912345678"),
+        Some("0912345678".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("0868123456"),
+        Some("0868123456".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("0399123456"),
+        Some("0399123456".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("0777123456"),
+        Some("0777123456".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("0599123456"),
+        Some("0599123456".to_string())
+    );
 
     // International prefixes
-    assert_eq!(normalize_vn_mobile("+84912345678"), Some("0912345678".to_string()));
-    assert_eq!(normalize_vn_mobile("84912345678"), Some("0912345678".to_string()));
-    assert_eq!(normalize_vn_mobile("0084912345678"), Some("0912345678".to_string()));
+    assert_eq!(
+        normalize_vn_mobile("+84912345678"),
+        Some("0912345678".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("84912345678"),
+        Some("0912345678".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("0084912345678"),
+        Some("0912345678".to_string())
+    );
 
     // Disambiguate domestic 084 truncated by Excel from country codes (R3)
-    assert_eq!(normalize_vn_mobile("841234567"), Some("0841234567".to_string()));
-    assert_eq!(normalize_vn_mobile("+84841234567"), Some("0841234567".to_string()));
-    assert_eq!(normalize_vn_mobile("84841234567"), Some("0841234567".to_string()));
-    assert_eq!(normalize_vn_mobile("0084841234567"), Some("0841234567".to_string()));
+    assert_eq!(
+        normalize_vn_mobile("841234567"),
+        Some("0841234567".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("+84841234567"),
+        Some("0841234567".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("84841234567"),
+        Some("0841234567".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("0084841234567"),
+        Some("0841234567".to_string())
+    );
 
     // Missing leading zero (Excel numerical truncation)
-    assert_eq!(normalize_vn_mobile("912345678"), Some("0912345678".to_string()));
-    assert_eq!(normalize_vn_mobile("868123456"), Some("0868123456".to_string()));
-    assert_eq!(normalize_vn_mobile("399123456"), Some("0399123456".to_string()));
+    assert_eq!(
+        normalize_vn_mobile("912345678"),
+        Some("0912345678".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("868123456"),
+        Some("0868123456".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("399123456"),
+        Some("0399123456".to_string())
+    );
 
     // Separators and spaces
-    assert_eq!(normalize_vn_mobile("0912.345.678"), Some("0912345678".to_string()));
-    assert_eq!(normalize_vn_mobile("0912 345 678"), Some("0912345678".to_string()));
-    assert_eq!(normalize_vn_mobile("(+84) 912-345-678"), Some("0912345678".to_string()));
+    assert_eq!(
+        normalize_vn_mobile("0912.345.678"),
+        Some("0912345678".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("0912 345 678"),
+        Some("0912345678".to_string())
+    );
+    assert_eq!(
+        normalize_vn_mobile("(+84) 912-345-678"),
+        Some("0912345678".to_string())
+    );
 
     // Invalid numbers
     assert_eq!(normalize_vn_mobile("0243123456"), None); // Landline
@@ -86,7 +146,10 @@ fn test_normalize_vn_mobile_matrix() {
 
 #[test]
 fn test_normalize_email() {
-    assert_eq!(normalize_email("  Test@Example.COM  "), Some("test@example.com".to_string()));
+    assert_eq!(
+        normalize_email("  Test@Example.COM  "),
+        Some("test@example.com".to_string())
+    );
     assert_eq!(normalize_email("invalid_email"), None);
     assert_eq!(normalize_email("a@b"), None);
     assert_eq!(normalize_email(""), None);
@@ -101,7 +164,8 @@ fn create_test_db() -> Connection {
             name TEXT NOT NULL UNIQUE
         )",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     conn.execute(
         "CREATE TABLE leads (
@@ -119,7 +183,8 @@ fn create_test_db() -> Connection {
             currency TEXT NOT NULL DEFAULT 'VND'
         )",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     conn.execute(
         "CREATE TABLE IF NOT EXISTS lead_categories (
@@ -130,10 +195,16 @@ fn create_test_db() -> Connection {
             FOREIGN KEY (category_id) REFERENCES categories(id) ON DELETE CASCADE
         )",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
-    conn.execute("CREATE INDEX idx_leads_phone ON leads(phone)", []).unwrap();
-    conn.execute("CREATE INDEX idx_leads_email_normalized ON leads(lower(trim(email)))", []).unwrap();
+    conn.execute("CREATE INDEX idx_leads_phone ON leads(phone)", [])
+        .unwrap();
+    conn.execute(
+        "CREATE INDEX idx_leads_email_normalized ON leads(lower(trim(email)))",
+        [],
+    )
+    .unwrap();
 
     conn
 }
@@ -143,7 +214,8 @@ fn test_execute_lead_import_skip_and_error_quarantine() {
     let mut conn = create_test_db();
 
     // Create category 99 so it exists
-    conn.execute("INSERT INTO categories (id, name) VALUES (99, 'VIP')", []).unwrap();
+    conn.execute("INSERT INTO categories (id, name) VALUES (99, 'VIP')", [])
+        .unwrap();
 
     // Insert an existing lead to test deduplication
     conn.execute(
@@ -190,23 +262,30 @@ fn test_execute_lead_import_skip_and_error_quarantine() {
     let mut progress_ticks = 0;
     let summary = execute_lead_import(&mut conn, &options, |_progress| {
         progress_ticks += 1;
-    }).expect("Import should run");
+    })
+    .expect("Import should run");
 
     assert_eq!(summary.total_rows, 4);
     assert_eq!(summary.inserted, 1);
     assert_eq!(summary.skipped_duplicates, 1); // 0912345678 matched Old Lead
     assert_eq!(summary.failed, 2); // 1 missing name, 1 invalid phone without email
     assert_eq!(summary.error_rows.len(), 2);
-    assert!(summary.error_rows[0].reason.contains("Họ và tên không được để trống"));
-    assert!(summary.error_rows[1].reason.contains("không đúng định dạng di động VN"));
+    assert!(summary.error_rows[0]
+        .reason
+        .contains("Họ và tên không được để trống"));
+    assert!(summary.error_rows[1]
+        .reason
+        .contains("không đúng định dạng di động VN"));
     assert!(progress_ticks >= 1);
 
     // Verify category assigned to newly inserted lead
-    let cat_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM lead_categories WHERE category_id = 99",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let cat_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM lead_categories WHERE category_id = 99",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(cat_count, 1);
 
     let _ = std::fs::remove_file(&path);
@@ -259,11 +338,13 @@ fn test_execute_lead_import_overwrite_conflict() {
     assert_eq!(summary.updated, 1);
     assert_eq!(summary.inserted, 0);
 
-    let (name, company, value): (String, String, f64) = conn.query_row(
-        "SELECT name, company, value FROM leads WHERE phone = '0912345678'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    ).unwrap();
+    let (name, company, value): (String, String, f64) = conn
+        .query_row(
+            "SELECT name, company, value FROM leads WHERE phone = '0912345678'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
 
     assert_eq!(name, "Nguyen Updated");
     assert_eq!(company, "New Upgraded Co");
@@ -308,7 +389,8 @@ fn test_generate_and_inspect_excel_template() {
     let path = file.path().with_extension("xlsx");
     std::fs::copy(file.path(), &path).unwrap();
 
-    let inspection = inspect_lead_file(&path, None).expect("Should inspect generated XLSX template");
+    let inspection =
+        inspect_lead_file(&path, None).expect("Should inspect generated XLSX template");
     assert_eq!(inspection.file_type, "excel");
     assert_eq!(inspection.sheets, vec!["Leads".to_string()]);
     assert_eq!(inspection.headers.len(), 8);
@@ -369,11 +451,13 @@ fn test_execute_lead_import_overwrite_preserves_unmapped_fields_and_currency() {
     assert_eq!(summary.updated, 1);
 
     // Verify R2: status 'Won', owner 'Alice', currency 'USD', value 1000.0 are PRESERVED!
-    let (name, status, owner, currency, value): (String, String, String, String, f64) = conn.query_row(
-        "SELECT name, status, owner, currency, value FROM leads WHERE phone = '0912345678'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-    ).unwrap();
+    let (name, status, owner, currency, value): (String, String, String, String, f64) = conn
+        .query_row(
+            "SELECT name, status, owner, currency, value FROM leads WHERE phone = '0912345678'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .unwrap();
 
     assert_eq!(name, "Alice Renamed");
     assert_eq!(status, "Won");
@@ -425,7 +509,9 @@ fn test_category_not_found_rolls_back_transaction() {
     assert!(result.unwrap_err().contains("không tồn tại"));
 
     // Verify 0 leads inserted (transaction rolled back)
-    let lead_count: i64 = conn.query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0)).unwrap();
+    let lead_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(lead_count, 0);
 
     let _ = std::fs::remove_file(&path);
@@ -527,7 +613,8 @@ fn test_progress_emitted_for_skipped_and_failed_rows() {
     let mut progress_calls = Vec::new();
     let summary = execute_lead_import(&mut conn, &options, |p| {
         progress_calls.push(p);
-    }).unwrap();
+    })
+    .unwrap();
 
     assert_eq!(summary.failed, 110);
     // R4: Intermediate progress callbacks (at 50, 100, 110) + final 100% callback
@@ -540,23 +627,59 @@ fn test_progress_emitted_for_skipped_and_failed_rows() {
 #[test]
 fn test_parse_lead_monetary_value_formats() {
     // Vietnamese dotted thousands format (VND)
-    assert_eq!(parse_lead_monetary_value("1.000.000", "VND"), Ok(Some(1_000_000.0)));
-    assert_eq!(parse_lead_monetary_value("50.000", "VND"), Ok(Some(50_000.0)));
-    assert_eq!(parse_lead_monetary_value("1.000.000,50", "VND"), Ok(Some(1_000_000.50)));
+    assert_eq!(
+        parse_lead_monetary_value("1.000.000", "VND"),
+        Ok(Some(1_000_000.0))
+    );
+    assert_eq!(
+        parse_lead_monetary_value("50.000", "VND"),
+        Ok(Some(50_000.0))
+    );
+    assert_eq!(
+        parse_lead_monetary_value("1.000.000,50", "VND"),
+        Ok(Some(1_000_000.50))
+    );
 
     // International comma separated format (USD and VND)
-    assert_eq!(parse_lead_monetary_value("1,000,000.50", "USD"), Ok(Some(1_000_000.50)));
-    assert_eq!(parse_lead_monetary_value("1,000,000", "USD"), Ok(Some(1_000_000.0)));
-    assert_eq!(parse_lead_monetary_value("1,000,000", "VND"), Ok(Some(1_000_000.0)));
+    assert_eq!(
+        parse_lead_monetary_value("1,000,000.50", "USD"),
+        Ok(Some(1_000_000.50))
+    );
+    assert_eq!(
+        parse_lead_monetary_value("1,000,000", "USD"),
+        Ok(Some(1_000_000.0))
+    );
+    assert_eq!(
+        parse_lead_monetary_value("1,000,000", "VND"),
+        Ok(Some(1_000_000.0))
+    );
 
     // Currency symbols matching expected currency
-    assert_eq!(parse_lead_monetary_value("500.000 ₫", "VND"), Ok(Some(500_000.0)));
-    assert_eq!(parse_lead_monetary_value("500000 đ", "VND"), Ok(Some(500_000.0)));
-    assert_eq!(parse_lead_monetary_value("10.000.000 VND", "VND"), Ok(Some(10_000_000.0)));
-    assert_eq!(parse_lead_monetary_value("1000 $", "USD"), Ok(Some(1_000.0)));
+    assert_eq!(
+        parse_lead_monetary_value("500.000 ₫", "VND"),
+        Ok(Some(500_000.0))
+    );
+    assert_eq!(
+        parse_lead_monetary_value("500000 đ", "VND"),
+        Ok(Some(500_000.0))
+    );
+    assert_eq!(
+        parse_lead_monetary_value("10.000.000 VND", "VND"),
+        Ok(Some(10_000_000.0))
+    );
+    assert_eq!(
+        parse_lead_monetary_value("1000 $", "USD"),
+        Ok(Some(1_000.0))
+    );
     assert_eq!(parse_lead_monetary_value("$1000", "USD"), Ok(Some(1_000.0)));
-    assert_eq!(parse_lead_monetary_value("1000 USD", "USD"), Ok(Some(1_000.0)));
-    assert_eq!(parse_lead_monetary_value("2 500 000", "VND"), Ok(Some(2_500_000.0)));
+    assert_eq!(
+        parse_lead_monetary_value("1000 USD", "USD"),
+        Ok(Some(1_000.0))
+    );
+    assert_eq!(
+        parse_lead_monetary_value("2 500 000", "VND"),
+        Ok(Some(2_500_000.0))
+    );
 
     // F1: Rejection of conflicting currency markers
     assert!(parse_lead_monetary_value("1000 $", "VND").is_err());
@@ -601,7 +724,8 @@ fn test_execute_import_rejects_malformed_monetary_value_and_quarantines() {
     let mut file = NamedTempFile::new().unwrap();
     // Row 1: Valid import with VN dotted value
     // Row 2: Overwrite existing lead with malformed monetary value "INVALID_VAL"
-    let csv_content = "Name,Phone,Value\nNew Lead,0922222222,1.000.000\nExisting Lead,0911111111,INVALID_VAL\n";
+    let csv_content =
+        "Name,Phone,Value\nNew Lead,0922222222,1.000.000\nExisting Lead,0911111111,INVALID_VAL\n";
     file.write_all(csv_content.as_bytes()).unwrap();
 
     let path = file.path().with_extension("csv");
@@ -635,22 +759,28 @@ fn test_execute_import_rejects_malformed_monetary_value_and_quarantines() {
     assert_eq!(summary.inserted, 1);
     assert_eq!(summary.failed, 1);
     assert_eq!(summary.error_rows.len(), 1);
-    assert!(summary.error_rows[0].reason.contains("không đúng định dạng số"));
+    assert!(summary.error_rows[0]
+        .reason
+        .contains("không đúng định dạng số"));
 
     // Check newly inserted lead has parsed value 1_000_000.0
-    let new_val: f64 = conn.query_row(
-        "SELECT value FROM leads WHERE phone = '0922222222'",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let new_val: f64 = conn
+        .query_row(
+            "SELECT value FROM leads WHERE phone = '0922222222'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(new_val, 1_000_000.0);
 
     // Verify existing lead value was NOT erased or modified to 0
-    let existing_val: f64 = conn.query_row(
-        "SELECT value FROM leads WHERE phone = '0911111111'",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let existing_val: f64 = conn
+        .query_row(
+            "SELECT value FROM leads WHERE phone = '0911111111'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(existing_val, 5_000_000.0);
 
     let _ = std::fs::remove_file(&path);
@@ -704,19 +834,24 @@ fn test_csv_multiline_notes_and_correct_line_numbers() {
     assert_eq!(summary.error_rows[0].row_number, 6);
 
     // Check Alice's about field preserved exact multiline content
-    let alice_notes: String = conn.query_row(
-        "SELECT about FROM leads WHERE phone = '0912345678'",
-        [],
-        |r| r.get(0),
-    ).unwrap();
-    assert!(alice_notes.contains("First line note\nSecond line with, comma\nThird line with \"quotes\""));
+    let alice_notes: String = conn
+        .query_row(
+            "SELECT about FROM leads WHERE phone = '0912345678'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(alice_notes
+        .contains("First line note\nSecond line with, comma\nThird line with \"quotes\""));
 
     // Check Bob was imported correctly without being affected by Alice's multiline field
-    let bob_name: String = conn.query_row(
-        "SELECT name FROM leads WHERE phone = '0987654321'",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let bob_name: String = conn
+        .query_row(
+            "SELECT name FROM leads WHERE phone = '0987654321'",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
     assert_eq!(bob_name, "Bob Tran");
 
     let _ = std::fs::remove_file(&path);
@@ -735,7 +870,8 @@ fn test_database_write_failure_rolls_back_entire_transaction() {
              SELECT RAISE(ABORT, 'Custom DB constraint violation');
          END;",
         [],
-    ).unwrap();
+    )
+    .unwrap();
 
     let mut file = NamedTempFile::new().unwrap();
     // Row 1: Valid Lead (would succeed if not rolled back)
@@ -777,11 +913,9 @@ fn test_database_write_failure_rolls_back_entire_transaction() {
     assert!(err_msg.contains("Lỗi chèn CSDL"));
 
     // R2: All previous mutations in the batch must be rolled back completely
-    let lead_count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM leads",
-        [],
-        |r| r.get(0),
-    ).unwrap();
+    let lead_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(lead_count, 0, "No leads should remain in DB after rollback");
 
     let _ = std::fs::remove_file(&path);
@@ -853,7 +987,8 @@ fn test_overwrite_updates_currency_with_mapped_value_and_preserves_on_unmapped()
     // Row 2: Overwrites Lead 2 with malformed separator "1..000" (should quarantine, leave 250 USD untouched)
     // Row 3: Overwrites Lead 2 with empty value (should preserve 250.0 USD)
     let mut file = NamedTempFile::new().unwrap();
-    let csv_content = "Name,Phone,Value\nUSD Lead,0911111111,1.000.000\nPreserved Lead,0922222222,1..000\n";
+    let csv_content =
+        "Name,Phone,Value\nUSD Lead,0911111111,1.000.000\nPreserved Lead,0922222222,1..000\n";
     file.write_all(csv_content.as_bytes()).unwrap();
 
     let path = file.path().with_extension("csv");
@@ -886,23 +1021,29 @@ fn test_overwrite_updates_currency_with_mapped_value_and_preserves_on_unmapped()
     let summary = execute_lead_import(&mut conn, &options, |_| {}).unwrap();
     assert_eq!(summary.updated, 1);
     assert_eq!(summary.failed, 1); // "1..000" quarantined!
-    assert!(summary.error_rows[0].reason.contains("chứa ký tự phân cách lặp"));
+    assert!(summary.error_rows[0]
+        .reason
+        .contains("chứa ký tự phân cách lặp"));
 
     // R1: Lead 1 value updated to 1_000_000.0 AND currency updated to VND (not retained as 1,000,000 USD!)
-    let (lead1_val, lead1_curr): (f64, String) = conn.query_row(
-        "SELECT value, currency FROM leads WHERE phone = '0911111111'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).unwrap();
+    let (lead1_val, lead1_curr): (f64, String) = conn
+        .query_row(
+            "SELECT value, currency FROM leads WHERE phone = '0911111111'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(lead1_val, 1_000_000.0);
     assert_eq!(lead1_curr, "VND");
 
     // R2: Lead 2 quarantined due to "1..000", value remains 250.0 and currency remains USD
-    let (lead2_val, lead2_curr): (f64, String) = conn.query_row(
-        "SELECT value, currency FROM leads WHERE phone = '0922222222'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?)),
-    ).unwrap();
+    let (lead2_val, lead2_curr): (f64, String) = conn
+        .query_row(
+            "SELECT value, currency FROM leads WHERE phone = '0922222222'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .unwrap();
     assert_eq!(lead2_val, 250.0);
     assert_eq!(lead2_curr, "USD");
 
@@ -927,7 +1068,9 @@ fn test_canonical_phone_duplicate_matching_across_formats() {
         [],
     ).unwrap();
 
-    let initial_count: i64 = conn.query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0)).unwrap();
+    let initial_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(initial_count, 4);
 
     let mut file = NamedTempFile::new().unwrap();
@@ -967,7 +1110,9 @@ fn test_canonical_phone_duplicate_matching_across_formats() {
     assert_eq!(summary_skip.inserted, 0);
     assert_eq!(summary_skip.skipped_duplicates, 4);
 
-    let post_skip_count: i64 = conn.query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0)).unwrap();
+    let post_skip_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(post_skip_count, 4, "Skip must not increase lead count");
 
     // 2. With Overwrite strategy: all 4 leads must be matched and updated, no new leads inserted
@@ -980,23 +1125,44 @@ fn test_canonical_phone_duplicate_matching_across_formats() {
     assert_eq!(summary_overwrite.updated, 4);
     assert_eq!(summary_overwrite.inserted, 0);
 
-    let post_overwrite_count: i64 = conn.query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0)).unwrap();
-    assert_eq!(post_overwrite_count, 4, "Overwrite must not increase lead count");
+    let post_overwrite_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(
+        post_overwrite_count, 4,
+        "Overwrite must not increase lead count"
+    );
 
     // Verify all 4 names and phones were updated to the incoming values by ID
-    let (name1, phone1): (String, String) = conn.query_row("SELECT name, phone FROM leads WHERE id = 1", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let (name1, phone1): (String, String) = conn
+        .query_row("SELECT name, phone FROM leads WHERE id = 1", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
     assert_eq!(name1, "New Name 1");
     assert_eq!(phone1, "0912345678");
 
-    let (name2, phone2): (String, String) = conn.query_row("SELECT name, phone FROM leads WHERE id = 2", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let (name2, phone2): (String, String) = conn
+        .query_row("SELECT name, phone FROM leads WHERE id = 2", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
     assert_eq!(name2, "New Name 2");
     assert_eq!(phone2, "0912345679");
 
-    let (name3, phone3): (String, String) = conn.query_row("SELECT name, phone FROM leads WHERE id = 3", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let (name3, phone3): (String, String) = conn
+        .query_row("SELECT name, phone FROM leads WHERE id = 3", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
     assert_eq!(name3, "New Name 3");
     assert_eq!(phone3, "0912345680");
 
-    let (name4, phone4): (String, String) = conn.query_row("SELECT name, phone FROM leads WHERE id = 4", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let (name4, phone4): (String, String) = conn
+        .query_row("SELECT name, phone FROM leads WHERE id = 4", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
     assert_eq!(name4, "New Name 4");
     assert_eq!(phone4, "0912345681");
 
@@ -1061,32 +1227,45 @@ fn test_obsolete_identity_keys_cleaned_up_on_overwrite() {
     assert_eq!(summary.failed, 0);
 
     // Verify Alice: id=1 retains her record, updated to phone 0987654321
-    let (alice_name, alice_phone, alice_email): (String, String, String) = conn.query_row(
-        "SELECT name, phone, email FROM leads WHERE id = 1",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    ).unwrap();
+    let (alice_name, alice_phone, alice_email): (String, String, String) = conn
+        .query_row(
+            "SELECT name, phone, email FROM leads WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
     assert_eq!(alice_name, "Alice Updated");
     assert_eq!(alice_phone, "0987654321");
     assert_eq!(alice_email, "alice@example.com");
 
     // Verify Bob: received a distinct NEW ID (id=4), with phone 0912345678 and email bob@example.com
-    let (bob_id, bob_name, bob_phone, bob_email): (i32, String, String, String) = conn.query_row(
-        "SELECT id, name, phone, email FROM leads WHERE email = 'bob@example.com'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-    ).unwrap();
-    assert_ne!(bob_id, 1, "Bob must receive a new distinct ID, not steal Alice's ID");
+    let (bob_id, bob_name, bob_phone, bob_email): (i32, String, String, String) = conn
+        .query_row(
+            "SELECT id, name, phone, email FROM leads WHERE email = 'bob@example.com'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
+    assert_ne!(
+        bob_id, 1,
+        "Bob must receive a new distinct ID, not steal Alice's ID"
+    );
     assert_eq!(bob_name, "Bob");
     assert_eq!(bob_phone, "0912345678");
     assert_eq!(bob_email, "bob@example.com");
 
     // Verify Charlie: id=2 updated to phone 0944444444
-    let charlie_phone: String = conn.query_row("SELECT phone FROM leads WHERE id = 2", [], |r| r.get(0)).unwrap();
+    let charlie_phone: String = conn
+        .query_row("SELECT phone FROM leads WHERE id = 2", [], |r| r.get(0))
+        .unwrap();
     assert_eq!(charlie_phone, "0944444444");
 
     // Verify Dave: id=3 updated by Eve with phone 0933333333
-    let (dave_name, dave_phone): (String, String) = conn.query_row("SELECT name, phone FROM leads WHERE id = 3", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+    let (dave_name, dave_phone): (String, String) = conn
+        .query_row("SELECT name, phone FROM leads WHERE id = 3", [], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
+        .unwrap();
     assert_eq!(dave_name, "Eve Overwriting Dave");
     assert_eq!(dave_phone, "0933333333");
 
@@ -1141,25 +1320,32 @@ fn test_repeated_updates_clean_up_raw_phone_alias() {
     let summary = execute_lead_import(&mut conn, &options, |_| {}).unwrap();
     assert_eq!(summary.updated, 2, "Alice must be updated twice");
     assert_eq!(summary.inserted, 1, "Bob must be inserted as a new lead");
-    assert_eq!(summary.skipped_duplicates, 0, "No duplicate must be skipped");
+    assert_eq!(
+        summary.skipped_duplicates, 0,
+        "No duplicate must be skipped"
+    );
     assert_eq!(summary.failed, 0);
 
     // Verify Alice: id=1 retains her record, updated to phone 0987654321
-    let (alice_name, alice_phone, alice_email): (String, String, String) = conn.query_row(
-        "SELECT name, phone, email FROM leads WHERE id = 1",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    ).unwrap();
+    let (alice_name, alice_phone, alice_email): (String, String, String) = conn
+        .query_row(
+            "SELECT name, phone, email FROM leads WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
     assert_eq!(alice_name, "Alice Updated 2");
     assert_eq!(alice_phone, "0987654321");
     assert_eq!(alice_email, "alice@example.com");
 
     // Verify Bob: received a distinct NEW ID, phone 0912345678 (normalized from +84912345678)
-    let (bob_id, bob_name, bob_phone, bob_email): (i32, String, String, String) = conn.query_row(
-        "SELECT id, name, phone, email FROM leads WHERE email = 'bob@example.com'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-    ).unwrap();
+    let (bob_id, bob_name, bob_phone, bob_email): (i32, String, String, String) = conn
+        .query_row(
+            "SELECT id, name, phone, email FROM leads WHERE email = 'bob@example.com'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
     assert_ne!(bob_id, 1, "Bob must not steal Alice's record");
     assert_eq!(bob_name, "Bob");
     assert_eq!(bob_phone, "0912345678");
@@ -1215,26 +1401,36 @@ fn test_repeated_updates_clean_up_domestic_phone_alias() {
 
     let summary = execute_lead_import(&mut conn, &options, |_| {}).unwrap();
     assert_eq!(summary.updated, 2, "Alice must be updated twice");
-    assert_eq!(summary.inserted, 1, "Charlie must be inserted as a new lead");
-    assert_eq!(summary.skipped_duplicates, 0, "No duplicate must be falsely skipped in batch");
+    assert_eq!(
+        summary.inserted, 1,
+        "Charlie must be inserted as a new lead"
+    );
+    assert_eq!(
+        summary.skipped_duplicates, 0,
+        "No duplicate must be falsely skipped in batch"
+    );
     assert_eq!(summary.failed, 0);
 
     // Verify Alice: id=1 retains her record, updated to phone 0987654321
-    let (alice_name, alice_phone, alice_email): (String, String, String) = conn.query_row(
-        "SELECT name, phone, email FROM leads WHERE id = 1",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    ).unwrap();
+    let (alice_name, alice_phone, alice_email): (String, String, String) = conn
+        .query_row(
+            "SELECT name, phone, email FROM leads WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
     assert_eq!(alice_name, "Alice Updated 2");
     assert_eq!(alice_phone, "0987654321");
     assert_eq!(alice_email, "alice@example.com");
 
     // Verify Charlie: received a distinct NEW ID, phone 0912345678
-    let (charlie_id, charlie_name, charlie_phone, charlie_email): (i32, String, String, String) = conn.query_row(
-        "SELECT id, name, phone, email FROM leads WHERE email = 'charlie@example.com'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
-    ).unwrap();
+    let (charlie_id, charlie_name, charlie_phone, charlie_email): (i32, String, String, String) =
+        conn.query_row(
+            "SELECT id, name, phone, email FROM leads WHERE email = 'charlie@example.com'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .unwrap();
     assert_ne!(charlie_id, 1, "Charlie must not steal Alice's record");
     assert_eq!(charlie_name, "Charlie");
     assert_eq!(charlie_phone, "0912345678");
@@ -1284,26 +1480,32 @@ fn test_inserted_lead_repeated_updates_clean_up_aliases() {
     let summary = execute_lead_import(&mut conn, &options, |_| {}).unwrap();
     assert_eq!(summary.inserted, 2, "Zara and Zoe must both be inserted");
     assert_eq!(summary.updated, 1, "Zara must be updated once");
-    assert_eq!(summary.skipped_duplicates, 0, "No duplicate must be falsely skipped in batch");
+    assert_eq!(
+        summary.skipped_duplicates, 0,
+        "No duplicate must be falsely skipped in batch"
+    );
     assert_eq!(summary.failed, 0);
 
-    let (zara_id, zara_name, zara_phone): (i32, String, String) = conn.query_row(
-        "SELECT id, name, phone FROM leads WHERE email = 'zara@example.com'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    ).unwrap();
+    let (zara_id, zara_name, zara_phone): (i32, String, String) = conn
+        .query_row(
+            "SELECT id, name, phone FROM leads WHERE email = 'zara@example.com'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
     assert_eq!(zara_name, "Zara Updated");
     assert_eq!(zara_phone, "0988888888");
 
-    let (zoe_id, zoe_name, zoe_phone): (i32, String, String) = conn.query_row(
-        "SELECT id, name, phone FROM leads WHERE email = 'zoe@example.com'",
-        [],
-        |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-    ).unwrap();
+    let (zoe_id, zoe_name, zoe_phone): (i32, String, String) = conn
+        .query_row(
+            "SELECT id, name, phone FROM leads WHERE email = 'zoe@example.com'",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .unwrap();
     assert_ne!(zoe_id, zara_id, "Zoe must not overwrite Zara");
     assert_eq!(zoe_name, "Zoe");
     assert_eq!(zoe_phone, "0911111111");
 
     let _ = std::fs::remove_file(&path);
 }
-

@@ -358,7 +358,10 @@ impl FacebookGraphClient for RealFacebookGraphClient {
         });
 
         let mut form = reqwest::multipart::Form::new()
-            .text("recipient", serde_json::json!({ "id": recipient_psid }).to_string())
+            .text(
+                "recipient",
+                serde_json::json!({ "id": recipient_psid }).to_string(),
+            )
             .text("message", message_payload.to_string());
 
         if let Some(tag) = message_tag {
@@ -388,7 +391,13 @@ impl FacebookGraphClient for RealFacebookGraphClient {
             .multipart(form)
             .send()
             .await
-            .map_err(|e| anyhow!("Network error sending attachment to {}: {}", recipient_psid, e))?;
+            .map_err(|e| {
+                anyhow!(
+                    "Network error sending attachment to {}: {}",
+                    recipient_psid,
+                    e
+                )
+            })?;
 
         if !resp.status().is_success() {
             let status = resp.status();

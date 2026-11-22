@@ -50,8 +50,8 @@ pub fn render_template(template: &str, lead_vars: &HashMap<String, String>) -> S
         if ch == '[' {
             // Check for matching ']'
             let mut found_close = None;
-            let mut peek_chars = chars.clone();
-            while let Some((c_idx, c_ch)) = peek_chars.next() {
+            let peek_chars = chars.clone();
+            for (c_idx, c_ch) in peek_chars {
                 if c_ch == ']' {
                     found_close = Some(c_idx);
                     break;

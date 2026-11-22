@@ -46,14 +46,26 @@ pub struct LeadEvidenceContext {
 impl LeadEvidenceContext {
     pub fn to_context_summary(&self) -> String {
         let mut summary = Vec::new();
-        summary.push(format!("- Khách hàng: {} ({})", self.lead_name, self.lead_company));
-        summary.push(format!("- Điện thoại: {} | Email: {}", self.lead_phone, self.lead_email));
-        summary.push(format!("- Trạng thái Lead: {} | Giá trị: {:.0} {}", self.lead_status, self.lead_value, self.lead_currency));
+        summary.push(format!(
+            "- Khách hàng: {} ({})",
+            self.lead_name, self.lead_company
+        ));
+        summary.push(format!(
+            "- Điện thoại: {} | Email: {}",
+            self.lead_phone, self.lead_email
+        ));
+        summary.push(format!(
+            "- Trạng thái Lead: {} | Giá trị: {:.0} {}",
+            self.lead_status, self.lead_value, self.lead_currency
+        ));
 
         if let Some(ref stage) = self.deal_stage {
             let title = self.deal_title.as_deref().unwrap_or("Hợp đồng / Đơn hàng");
             let val = self.deal_value.unwrap_or(self.lead_value);
-            summary.push(format!("- Deal hiện tại: {} (Giai đoạn: {}, Giá trị: {:.0} {})", title, stage, val, self.lead_currency));
+            summary.push(format!(
+                "- Deal hiện tại: {} (Giai đoạn: {}, Giá trị: {:.0} {})",
+                title, stage, val, self.lead_currency
+            ));
         }
 
         if let Some(ref journey) = self.journey_stage {
@@ -65,15 +77,22 @@ impl LeadEvidenceContext {
         }
 
         if !self.categories.is_empty() {
-            summary.push(format!("- Danh mục quan tâm: {}", self.categories.join(", ")));
+            summary.push(format!(
+                "- Danh mục quan tâm: {}",
+                self.categories.join(", ")
+            ));
         }
 
         if !self.known_products.is_empty() {
-            let prods: Vec<String> = self.known_products
+            let prods: Vec<String> = self
+                .known_products
                 .iter()
                 .map(|p| format!("{} ({:.0} {})", p.name, p.price, p.currency))
                 .collect();
-            summary.push(format!("- Sản phẩm / Báo giá niêm yết: {}", prods.join("; ")));
+            summary.push(format!(
+                "- Sản phẩm / Báo giá niêm yết: {}",
+                prods.join("; ")
+            ));
         }
 
         if let Some(ref about) = self.lead_about {
@@ -92,7 +111,10 @@ impl LeadEvidenceContext {
                 } else {
                     "Hệ thống"
                 };
-                summary.push(format!("  [{}] {}: {}", msg.direction, sender, msg.text_content));
+                summary.push(format!(
+                    "  [{}] {}: {}",
+                    msg.direction, sender, msg.text_content
+                ));
             }
         }
 
@@ -202,9 +224,9 @@ impl EvidenceExtractor {
 
         // 5. Fetch Verified Channels
         let mut verified_channels = Vec::new();
-        if let Ok(mut chan_stmt) = conn.prepare(
-            "SELECT DISTINCT channel FROM channel_identities WHERE lead_id = ?1",
-        ) {
+        if let Ok(mut chan_stmt) =
+            conn.prepare("SELECT DISTINCT channel FROM channel_identities WHERE lead_id = ?1")
+        {
             if let Ok(rows) = chan_stmt.query_map([lead_id], |row| row.get::<_, String>(0)) {
                 for r in rows.flatten() {
                     verified_channels.push(r);

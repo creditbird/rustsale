@@ -8,6 +8,7 @@ use super::repository::{
 use super::types::{Channel, ConversationRuntimeStatus, InboxItem, TimelineCursor, TimelinePage};
 use crate::conversation::outreach::AppliedOutreachMessage;
 use crate::conversation::zalo::normalizer::{NormalizedGroupSnapshot, ZaloMutation};
+use crate::conversation::zalo::webhook::{WebhookAttachment, ZaloWebhook, ZaloWebhookMessage};
 use crate::conversation::zalo::{
     DIRECT_MESSAGE_WATERMARK_SCOPE, DIRECT_REACTION_WATERMARK_SCOPE, GROUP_MESSAGE_WATERMARK_SCOPE,
     GROUP_REACTION_WATERMARK_SCOPE,
@@ -47,12 +48,68 @@ pub struct PreparedRecall {
     pub provider_client_message_id: String,
 }
 
+/// Mirrors the webhook's per-message character limit.
+const WEBHOOK_TEXT_MAX_CHARS: usize = 2000;
+
+/// Ids of the attachments stored for a message. A lookup failure only loses the references:
+/// the notification itself must still go out, so it is logged and treated as "none".
+fn webhook_attachments(
+    repository: &ConversationRepository,
+    message_id: i64,
+) -> Vec<WebhookAttachment> {
+    match repository.list_message_attachment_refs(message_id) {
+        Ok(refs) => refs
+            .into_iter()
+            .map(|(attachment_id, kind)| WebhookAttachment {
+                message_id,
+                attachment_id,
+                kind,
+            })
+            .collect(),
+        Err(error) => {
+            tracing::warn!(message_id, %error, "zalo.webhook.attachment_refs_unavailable");
+            Vec::new()
+        }
+    }
+}
+
+fn zalo_webhook_message(
+    message: &crate::conversation::repository::NormalizedMessage,
+    conversation_id: i64,
+    channel_account_id: i64,
+    is_group: bool,
+    attachments: Vec<WebhookAttachment>,
+) -> ZaloWebhookMessage {
+    let sender = message.participant.as_ref();
+    ZaloWebhookMessage {
+        conversation_id,
+        channel_account_id,
+        sender_uid: sender.map(|identity| identity.external_id.clone()),
+        sender_name: sender.and_then(|identity| identity.display_name.clone()),
+        content_type: message.content_type.clone(),
+        text: super::caption::text_or_caption(
+            &message.content_type,
+            message.text_content.as_deref(),
+            &message.content,
+            WEBHOOK_TEXT_MAX_CHARS,
+        ),
+        ts: message
+            .provider_timestamp
+            .clone()
+            .unwrap_or_else(|| message.ingested_at.clone()),
+        is_group,
+        attachments,
+        project_code: None,
+    }
+}
+
 #[derive(Clone)]
 pub struct ConversationService {
     pub repository: Arc<ConversationRepository>,
     pub events: Arc<ConversationEventPublisher>,
     pub stager: ConversationAttachmentStager,
     pub quick_templates: QuickTemplateRepository,
+    zalo_webhook: ZaloWebhook,
 }
 
 impl ConversationService {
@@ -63,12 +120,23 @@ impl ConversationService {
     ) -> Self {
         let stager = ConversationAttachmentStager::new(spool_root, repository.clone());
         let quick_templates = QuickTemplateRepository::new(repository.db_path());
+        // The webhook allowlist file lives next to the database.
+        let zalo_webhook =
+            ZaloWebhook::from_env(std::path::Path::new(repository.db_path()).parent());
         Self {
             repository,
             events,
             stager,
             quick_templates,
+            zalo_webhook,
         }
+    }
+
+    /// Replaces the Zalo webhook (tests and explicit wiring).
+    #[must_use]
+    pub fn with_zalo_webhook(mut self, webhook: ZaloWebhook) -> Self {
+        self.zalo_webhook = webhook;
+        self
     }
 
     pub fn list_quick_templates(
@@ -418,6 +486,9 @@ impl ConversationService {
         account_display_name: Option<&str>,
         event: zca_rs::listener::ListenerEvent,
     ) -> Result<()> {
+        // Only live messages may notify the webhook; history backfill
+        // (`OldMessages`) must never fire it.
+        let is_live_message = matches!(event, zca_rs::listener::ListenerEvent::Message(_));
         for mutation in crate::conversation::zalo::normalizer::normalize_listener_event(
             provider_account_key,
             account_display_name,
@@ -451,6 +522,18 @@ impl ConversationService {
                             anyhow::anyhow!("Failed to update message checkpoint: {error}")
                         })?;
                     if !applied.duplicate {
+                        if is_live_message
+                            && message.direction
+                                == crate::conversation::types::MessageDirection::Inbound
+                        {
+                            self.zalo_webhook.notify(zalo_webhook_message(
+                                &message,
+                                applied.conversation_id,
+                                applied.channel_account_id,
+                                is_group,
+                                webhook_attachments(&self.repository, applied.message_id),
+                            ));
+                        }
                         if let Some(delta) = &applied.delta_event {
                             self.events.publish_delta(delta.clone());
                         }
@@ -690,9 +773,13 @@ impl ConversationService {
     pub fn enqueue_message(
         &self,
         request: &super::types::SendConversationMessageRequest,
-    ) -> Result<super::types::ConversationMessage> {
+    ) -> Result<super::types::ConversationMessage, super::error::ConversationError> {
+        use super::error::{ConversationError, ConversationErrorCode};
         if request.text.trim().is_empty() {
-            anyhow::bail!("message text must not be empty");
+            return Err(ConversationError::new(
+                ConversationErrorCode::InvalidRequest,
+                "message text must not be empty",
+            ));
         }
         let batch_req = super::types::SendConversationBatchRequest {
             conversation_id: request.conversation_id,
@@ -707,10 +794,13 @@ impl ConversationService {
                 },
             }],
         };
-        let res = self
-            .enqueue_batch(&batch_req)
-            .map_err(|e| anyhow::anyhow!(e.message))?;
-        Ok(res.messages.into_iter().next().unwrap())
+        let res = self.enqueue_batch(&batch_req)?;
+        res.messages.into_iter().next().ok_or_else(|| {
+            ConversationError::new(
+                ConversationErrorCode::ProviderFailure,
+                "enqueue produced no message",
+            )
+        })
     }
 
     pub fn recover_startup(&self) -> Result<u64> {
@@ -1379,12 +1469,16 @@ impl ConversationService {
                                 )
                                 .await
                         }
-                        Err(e) => {
-                            Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e))
-                        }
+                        Err(e) => Err(anyhow::anyhow!(
+                            "Failed to read attachment file at {}: {}",
+                            path,
+                            e
+                        )),
                     }
                 } else {
-                    Err(anyhow::anyhow!("Missing local_path for Messenger attachment"))
+                    Err(anyhow::anyhow!(
+                        "Missing local_path for Messenger attachment"
+                    ))
                 }
             } else {
                 let local_path = job
@@ -1418,9 +1512,11 @@ impl ConversationService {
                                 )
                                 .await
                         }
-                        Err(e) => {
-                            Err(anyhow::anyhow!("Failed to read attachment file at {}: {}", path, e))
-                        }
+                        Err(e) => Err(anyhow::anyhow!(
+                            "Failed to read attachment file at {}: {}",
+                            path,
+                            e
+                        )),
                     }
                 } else {
                     let text = job.text_content.as_deref().unwrap_or("");
@@ -2456,5 +2552,114 @@ impl ConversationService {
         conversation_id: i64,
     ) -> Result<Vec<crate::conversation::types::PinnedMessage>> {
         Ok(self.repository.list_pinned_messages(conversation_id)?)
+    }
+}
+
+#[cfg(test)]
+mod webhook_caption_tests {
+    use super::*;
+    use crate::conversation::commands_test::direct_message;
+    use crate::conversation::repository::NormalizedMessage;
+    use crate::conversation::zalo::webhook::build_payload;
+    use serde_json::json;
+
+    fn message(kind: &str, text: Option<&str>, content: serde_json::Value) -> NormalizedMessage {
+        let mut message = direct_message("acc", "m1");
+        message.content_type = kind.to_string();
+        message.text_content = text.map(str::to_string);
+        message.content = content;
+        message
+    }
+
+    fn payload_text(message: &NormalizedMessage) -> String {
+        let webhook = zalo_webhook_message(message, 7, 1, false, Vec::new());
+        build_payload(7, vec![webhook])
+            .map(|p| p.text)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn image_with_caption_sends_type_and_caption() {
+        let m = message("image", None, json!({ "title": " TGBU4673319 cont này " }));
+        assert_eq!(payload_text(&m), "[image] TGBU4673319 cont này");
+    }
+
+    #[test]
+    fn image_without_caption_stays_placeholder() {
+        assert_eq!(payload_text(&message("image", None, json!({}))), "[image]");
+        assert_eq!(
+            payload_text(&message("image", None, json!({ "title": "  " }))),
+            "[image]"
+        );
+    }
+
+    #[test]
+    fn plain_text_is_unchanged() {
+        let m = message("text", Some("xin chào"), json!({ "title": "ignored" }));
+        assert_eq!(payload_text(&m), "xin chào");
+    }
+
+    #[test]
+    fn video_with_caption_sends_type_and_caption() {
+        let m = message("video", None, json!({ "title": "clip" }));
+        assert_eq!(payload_text(&m), "[video] clip");
+    }
+
+    #[test]
+    fn unsupported_title_is_not_used() {
+        let m = message(
+            "unsupported",
+            None,
+            json!({ "title": "https://example.test" }),
+        );
+        assert_eq!(payload_text(&m), "[không đọc được: object]");
+    }
+
+    #[test]
+    fn long_caption_is_cut_to_the_webhook_limit() {
+        let long = "a".repeat(WEBHOOK_TEXT_MAX_CHARS + 50);
+        let m = message("image", None, json!({ "title": long }));
+        let text = payload_text(&m);
+        assert_eq!(
+            text.chars().count(),
+            "[image] ".chars().count() + WEBHOOK_TEXT_MAX_CHARS
+        );
+    }
+
+    #[test]
+    fn stored_attachments_become_webhook_references_with_their_database_ids() {
+        use crate::conversation::commands_test::ServiceHarness;
+        use crate::conversation::repository::NormalizedAttachment;
+        let attachment = |kind: &str| NormalizedAttachment {
+            provider_attachment_id: None,
+            media_type: kind.to_string(),
+            mime_type: "application/octet-stream".to_string(),
+            file_name: None,
+            size_bytes: None,
+            remote_url: Some(format!("https://cdn.example/secret-token-{kind}")),
+            thumbnail_url: None,
+            metadata_json: Some(serde_json::json!({})),
+        };
+        let harness = ServiceHarness::new();
+        let mut message = direct_message("acc", "m-att");
+        message.content_type = "image".to_string();
+        message.attachments = vec![attachment("image"), attachment("file")];
+        let applied = harness
+            .repository
+            .apply_normalized_message(&message)
+            .expect("stored");
+
+        let refs = webhook_attachments(&harness.repository, applied.message_id);
+        let stored = harness
+            .repository
+            .list_message_attachment_refs(applied.message_id)
+            .expect("listed");
+        assert_eq!(refs.len(), 2);
+        assert_eq!(refs[0].kind, "image");
+        assert_eq!(refs[1].kind, "file");
+        assert_eq!(refs[0].attachment_id, stored[0].0);
+        assert_eq!(refs[1].attachment_id, stored[1].0);
+        assert!(refs.iter().all(|r| r.message_id == applied.message_id));
+        assert_ne!(refs[0].attachment_id, refs[1].attachment_id);
     }
 }

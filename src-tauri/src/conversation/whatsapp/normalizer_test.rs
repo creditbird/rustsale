@@ -1510,7 +1510,6 @@ fn test_extract_raw_message_from_proto() {
         remote_jid: Some("84901234567@s.whatsapp.net".to_string()),
         from_me: Some(false),
         participant: Some("84901234567@s.whatsapp.net".to_string()),
-        ..Default::default()
     };
 
     let raw = WhatsAppNormalizer::extract_raw_message(
@@ -1542,7 +1541,6 @@ fn test_extract_raw_message_nested_ephemeral_and_view_once() {
         ephemeral_message: whatsapp_rust::prelude::MessageField::some(
             whatsapp_rust::prelude::wa::message::FutureProofMessage {
                 message: whatsapp_rust::prelude::MessageField::some(inner_text_msg),
-                ..Default::default()
             },
         ),
         ..Default::default()
@@ -1583,7 +1581,6 @@ fn test_extract_raw_message_nested_ephemeral_and_view_once() {
         view_once_message_v2: whatsapp_rust::prelude::MessageField::some(
             whatsapp_rust::prelude::wa::message::FutureProofMessage {
                 message: whatsapp_rust::prelude::MessageField::some(inner_img_msg),
-                ..Default::default()
             },
         ),
         ..Default::default()
@@ -2039,7 +2036,6 @@ fn test_extract_group_message_never_uses_group_title_as_sender_name() {
         remote_jid: Some("120363025342171@g.us".to_string()),
         from_me: Some(false),
         participant: Some("84901234567@s.whatsapp.net".to_string()),
-        ..Default::default()
     };
 
     // Case 1: push_name is None, conv_title is provided ("AI Builders Tech Q&A")
@@ -2087,7 +2083,6 @@ fn test_group_message_sender_jid_no_fallback_to_group_jid() {
         remote_jid: Some("120363025342171@g.us".to_string()),
         from_me: Some(false),
         participant: None,
-        ..Default::default()
     };
 
     let raw = WhatsAppNormalizer::extract_raw_message(
@@ -2116,7 +2111,6 @@ fn test_extract_raw_message_with_web_message_info_participant_override() {
         remote_jid: Some("120363025342171@g.us".to_string()),
         from_me: Some(false),
         participant: None, // key.participant is empty
-        ..Default::default()
     };
 
     // participant_override passed from WebMessageInfo.participant
@@ -2317,7 +2311,6 @@ fn test_group_message_adversarial_participant_is_group_jid() {
         remote_jid: Some("120363025342171@g.us".to_string()),
         from_me: Some(false),
         participant: Some("120363025342171@g.us".to_string()), // Adversarial: key.participant is group JID
-        ..Default::default()
     };
 
     // Case 1: participant_override is group JID
@@ -2613,8 +2606,9 @@ fn test_whatsapp_normalizer_delta_fault_injection_rolls_back_atomically() {
         "CREATE TRIGGER fail_delta_trigger BEFORE INSERT ON conversation_deltas
          BEGIN
              SELECT RAISE(ABORT, 'Fault injection: delta insert failure');
-         END;"
-    ).unwrap();
+         END;",
+    )
+    .unwrap();
 
     let raw = RawWhatsAppMessage {
         id: "msg_fault_inject_001".to_string(),
@@ -2632,7 +2626,10 @@ fn test_whatsapp_normalizer_delta_fault_injection_rolls_back_atomically() {
 
     // Ingest must return error due to delta fault injection
     let res = WhatsAppNormalizer::ingest_incoming_message(&mut conn, 1, &raw);
-    assert!(res.is_err(), "Ingestion must fail-closed when delta recording fails");
+    assert!(
+        res.is_err(),
+        "Ingestion must fail-closed when delta recording fails"
+    );
 
     // 2. Assert fail-closed atomicity: message was NOT written
     let msg_count: i64 = conn
@@ -2646,11 +2643,7 @@ fn test_whatsapp_normalizer_delta_fault_injection_rolls_back_atomically() {
 
     // 3. Assert no partial deltas written
     let delta_count: i64 = conn
-        .query_row(
-            "SELECT count(*) FROM conversation_deltas",
-            [],
-            |r| r.get(0),
-        )
+        .query_row("SELECT count(*) FROM conversation_deltas", [], |r| r.get(0))
         .unwrap();
     assert_eq!(delta_count, 0, "No delta row should exist");
 }

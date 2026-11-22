@@ -138,7 +138,10 @@ fn content_parts(
             };
         }
     }
+    let is_formatted_text = message_type == "webchat"
+        && effective_content.get("action").and_then(Value::as_str) == Some("rtf");
     let content_type = match message_type {
+        "webchat" if is_formatted_text => "text",
         "chat.photo" => "image",
         "chat.video.msg" => "video",
         "chat.voice" => "audio",
@@ -148,16 +151,29 @@ fn content_parts(
         _ => "unsupported",
     };
 
-    let text_content = effective_content
-        .get("caption")
-        .or_else(|| effective_content.get("description"))
-        .or_else(|| effective_content.get("title"))
-        .or_else(|| effective_content.get("text"))
-        .or_else(|| effective_content.get("message"))
-        .or_else(|| effective_content.get("subTitle"))
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.trim().is_empty())
-        .map(|s| s.to_string());
+    let text_content = if is_formatted_text {
+        // Formatted (rtf) text is the customer's own words, kept in `title`.
+        // An empty `description` must not hide it.
+        effective_content
+            .get("title")
+            .and_then(Value::as_str)
+            .filter(|s| !s.trim().is_empty())
+            .map(str::to_string)
+    } else {
+        // Every other kind keeps the historical pick: the first key that is
+        // PRESENT wins, then a blank value means no text. (Changing this would
+        // turn file names, link titles and pin notices into `text_content`.)
+        effective_content
+            .get("caption")
+            .or_else(|| effective_content.get("description"))
+            .or_else(|| effective_content.get("title"))
+            .or_else(|| effective_content.get("text"))
+            .or_else(|| effective_content.get("message"))
+            .or_else(|| effective_content.get("subTitle"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.trim().is_empty())
+            .map(|s| s.to_string())
+    };
 
     let mut attachments = Vec::new();
     match content_type {

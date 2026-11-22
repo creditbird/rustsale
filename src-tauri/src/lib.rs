@@ -18,6 +18,7 @@ pub mod events;
 pub mod facebook;
 pub mod google_maps_jobs;
 pub mod lead_importer;
+mod local_api;
 mod models;
 pub mod notification;
 pub mod scrapers;
@@ -66,6 +67,10 @@ const ALLOWED_DOTENV_KEYS: &[&str] = &[
     "META_APP_SECRET",
     "VITE_FACEBOOK_APP_ID",
     "VITE_FACEBOOK_APP_SECRET",
+    "RUSTSALE_LOCAL_API_TOKEN",
+    "RUSTSALE_LOCAL_API_PORT",
+    "RUSTSALE_ZALO_WEBHOOK_URL",
+    "RUSTSALE_ZALO_WEBHOOK_INCLUDE_GROUPS",
 ];
 
 static DOTENV_INIT: std::sync::Once = std::sync::Once::new();
@@ -93,12 +98,11 @@ pub fn load_dotenv_if_present() {
                         if let Some((key, val)) = trimmed.split_once('=') {
                             let k = key.trim();
                             let mut v = val.trim();
-                            if (v.starts_with('"') && v.ends_with('"'))
-                                || (v.starts_with('\'') && v.ends_with('\''))
+                            if ((v.starts_with('"') && v.ends_with('"'))
+                                || (v.starts_with('\'') && v.ends_with('\'')))
+                                && v.len() >= 2
                             {
-                                if v.len() >= 2 {
-                                    v = &v[1..v.len() - 1];
-                                }
+                                v = &v[1..v.len() - 1];
                             }
                             if !k.is_empty()
                                 && ALLOWED_DOTENV_KEYS.contains(&k)
@@ -350,13 +354,15 @@ pub fn run() {
             tauri::async_runtime::spawn(async move {
                 let _ = ws_startup.load_active_sessions_on_startup().await;
             });
-            app.manage(conversation::commands::ConversationState {
+            let conversation_state = conversation::commands::ConversationState {
                 service: conversation_service.clone(),
                 zalo_supervisor: zalo_supervisor.clone(),
                 facebook_supervisor: facebook_supervisor.clone(),
                 whatsapp_supervisor: whatsapp_supervisor.clone(),
                 whatsapp_login_manager: whatsapp_login_manager.clone(),
-            });
+            };
+            local_api::server::spawn(std::sync::Arc::new(conversation_state.clone()));
+            app.manage(conversation_state);
             conversation_events.clone().spawn_tauri_forwarder(app.handle().clone());
             let notif_service = notification_manager.clone();
             let notif_repo = conversation_repository.clone();

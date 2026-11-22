@@ -1640,7 +1640,8 @@ mod tests {
                 channel: "zalo".to_string(),
                 stage: Some("DISCOVERY".to_string()),
                 subject: None,
-                content: "Xin chào Quý khách {{name}}, chào mừng bạn đến với VIP RustSale!".to_string(),
+                content: "Xin chào Quý khách {{name}}, chào mừng bạn đến với VIP RustSale!"
+                    .to_string(),
                 media_url: Some("https://example.com/banner-vip.png".to_string()),
                 ai_prompt: Some("Thêm giọng điệu trang trọng".to_string()),
                 tags_json: Some("[\"welcome\", \"vip\"]".to_string()),
@@ -1806,8 +1807,12 @@ mod tests {
 
         let templates_after_first = db::get_templates(&conn, None).unwrap();
         assert_eq!(templates_after_first.len(), 2);
-        assert!(templates_after_first.iter().any(|t| t.channel == "zalo" && t.name == "Mẫu Zalo Chào Khách"));
-        assert!(templates_after_first.iter().any(|t| t.channel == "email" && t.name == "Mẫu Email Báo Giá"));
+        assert!(templates_after_first
+            .iter()
+            .any(|t| t.channel == "zalo" && t.name == "Mẫu Zalo Chào Khách"));
+        assert!(templates_after_first
+            .iter()
+            .any(|t| t.channel == "email" && t.name == "Mẫu Email Báo Giá"));
 
         // Re-run the migration queries again to verify idempotency
         conn.execute(
@@ -1845,5 +1850,3 @@ mod tests {
         assert_eq!(templates_after_second.len(), 2);
     }
 }
-
-

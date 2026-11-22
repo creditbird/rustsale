@@ -13,6 +13,12 @@ pub struct ServiceHarness {
     pub service: ConversationService,
 }
 
+impl Default for ServiceHarness {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ServiceHarness {
     pub fn new() -> Self {
         let path = std::env::temp_dir().join(format!(

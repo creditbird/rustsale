@@ -125,10 +125,7 @@ pub fn delete_unified_campaign(
 // Internal Handlers (Testable without Tauri Runtime)
 // ============================================================================
 
-pub fn start_unified_campaign_internal(
-    conn: &Connection,
-    campaign_id: i64,
-) -> Result<(), String> {
+pub fn start_unified_campaign_internal(conn: &Connection, campaign_id: i64) -> Result<(), String> {
     let campaign = crate::db::get_campaign(conn, campaign_id)
         .map_err(|e| format!("DB error: {}", e))?
         .ok_or_else(|| format!("Campaign {} not found", campaign_id))?;
@@ -146,10 +143,7 @@ pub fn start_unified_campaign_internal(
     .map_err(|e| format!("Failed to activate campaign: {}", e))
 }
 
-pub fn pause_unified_campaign_internal(
-    conn: &Connection,
-    campaign_id: i64,
-) -> Result<(), String> {
+pub fn pause_unified_campaign_internal(conn: &Connection, campaign_id: i64) -> Result<(), String> {
     let campaign = crate::db::get_campaign(conn, campaign_id)
         .map_err(|e| format!("DB error: {}", e))?
         .ok_or_else(|| format!("Campaign {} not found", campaign_id))?;
@@ -213,11 +207,9 @@ pub fn enroll_leads_into_campaign_internal(
     for &lead_id in lead_ids {
         // Fetch phone from lead
         let phone: Option<String> = conn
-            .query_row(
-                "SELECT phone FROM leads WHERE id = ?1",
-                [lead_id],
-                |row| row.get(0),
-            )
+            .query_row("SELECT phone FROM leads WHERE id = ?1", [lead_id], |row| {
+                row.get(0)
+            })
             .ok();
 
         // Create initial step execution
@@ -260,8 +252,8 @@ pub fn get_unified_campaign_analytics_internal(
         .map_err(|e| format!("DB error: {}", e))?
         .ok_or_else(|| format!("Campaign {} not found", campaign_id))?;
 
-    let steps = crate::db::get_campaign_steps(conn, campaign_id)
-        .map_err(|e| format!("DB error: {}", e))?;
+    let steps =
+        crate::db::get_campaign_steps(conn, campaign_id).map_err(|e| format!("DB error: {}", e))?;
 
     let total_enrolled: i64 = conn
         .query_row(
@@ -430,9 +422,7 @@ pub fn get_unified_campaign_analytics_internal(
     })
 }
 
-pub fn get_all_unified_campaigns_internal(
-    conn: &Connection,
-) -> Result<Vec<Campaign>, String> {
+pub fn get_all_unified_campaigns_internal(conn: &Connection) -> Result<Vec<Campaign>, String> {
     crate::db::get_all_campaigns(conn).map_err(|e| format!("Failed to get campaigns: {}", e))
 }
 
@@ -460,11 +450,8 @@ pub fn save_unified_campaign_internal(
             .map_err(|e| format!("Failed to update campaign: {}", e))?;
 
             // Replace steps
-            tx.execute(
-                "DELETE FROM campaign_steps WHERE campaign_id = ?1",
-                [id],
-            )
-            .map_err(|e| format!("Failed to clear old campaign steps: {}", e))?;
+            tx.execute("DELETE FROM campaign_steps WHERE campaign_id = ?1", [id])
+                .map_err(|e| format!("Failed to clear old campaign steps: {}", e))?;
 
             id
         }
@@ -501,10 +488,7 @@ pub fn save_unified_campaign_internal(
     Ok(campaign_id)
 }
 
-pub fn delete_unified_campaign_internal(
-    conn: &Connection,
-    campaign_id: i64,
-) -> Result<(), String> {
+pub fn delete_unified_campaign_internal(conn: &Connection, campaign_id: i64) -> Result<(), String> {
     crate::db::delete_campaign(conn, campaign_id)
         .map_err(|e| format!("Failed to delete campaign: {}", e))
 }

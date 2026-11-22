@@ -67,7 +67,11 @@ impl FacebookMessengerSupervisor {
         };
 
         for account in accounts {
-            let page_token = match FacebookTokenVault::get_valid_page_token(&conn, account.id, &account.page_id) {
+            let page_token = match FacebookTokenVault::get_valid_page_token(
+                &conn,
+                account.id,
+                &account.page_id,
+            ) {
                 Ok(t) => t,
                 Err(e) => {
                     warn!(target: "facebook_sync", page_id = %account.page_id, error = %e, "Failed resolving page token during outbox drain");

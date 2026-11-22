@@ -1,4 +1,5 @@
 use crate::conversation::error::{ConversationError, ConversationErrorCode};
+use crate::conversation::events::ConversationMessageDeltaEvent;
 use crate::conversation::reactions::{canonical_reaction_code, mark_reaction_removed};
 pub use crate::conversation::types::AccountConnectionStatus;
 use crate::conversation::types::{
@@ -12,7 +13,6 @@ pub use crate::conversation::zalo::normalizer::{
     NormalizedGroupParticipant, NormalizedGroupSnapshot, NormalizedReaction, NormalizedReceipt,
     NormalizedUndo, ReceiptKind,
 };
-use crate::conversation::events::ConversationMessageDeltaEvent;
 use crate::db::open_db_connection;
 use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, Result};
@@ -140,6 +140,18 @@ pub struct GroupMemberLeadImportResult {
     pub updated_count: usize,
     pub skipped_count: usize,
     pub assigned_category_ids: Vec<i32>,
+}
+
+/// Stored location of one attachment (never serialized to API clients).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttachmentSource {
+    pub id: i64,
+    pub media_type: String,
+    pub mime_type: Option<String>,
+    pub size_bytes: Option<u64>,
+    pub local_path: Option<String>,
+    pub remote_url: Option<String>,
+    pub thumbnail_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1585,13 +1597,7 @@ impl ConversationRepository {
         }
 
         // 2. Unknown rows: Unlinked direct conversations grouped by identity_id (key: "identity:{identity_id}")
-        let unlinked_identities: Vec<(
-            i64,
-            Option<String>,
-            Option<String>,
-            String,
-            bool,
-        )> = {
+        let unlinked_identities: Vec<(i64, Option<String>, Option<String>, String, bool)> = {
             let mut stmt = conn.prepare(
                 "SELECT ci.id,
                         ci.display_name,
@@ -1814,13 +1820,8 @@ impl ConversationRepository {
             }
 
             // Assemble Unknown Items
-            for (
-                identity_id,
-                display_name,
-                avatar_url,
-                external_id,
-                matches_account_name,
-            ) in unlinked_identities
+            for (identity_id, display_name, avatar_url, external_id, matches_account_name) in
+                unlinked_identities
             {
                 let stored_display_name = if matches_account_name {
                     None
@@ -3156,7 +3157,8 @@ impl ConversationRepository {
     ) -> Result<Option<ConversationMessageDeltaEvent>> {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
-        let res = Self::record_message_delta_tx(&tx, conversation_id, lead_id, channel, message_id)?;
+        let res =
+            Self::record_message_delta_tx(&tx, conversation_id, lead_id, channel, message_id)?;
         tx.commit()?;
         Ok(res)
     }
@@ -3190,21 +3192,26 @@ impl ConversationRepository {
              ORDER BY sequence ASC
              LIMIT ?2",
         )?;
-        let rows = stmt.query_map(rusqlite::params![after_sequence as i64, cap as i64], |row| {
-            let seq: i64 = row.get(0)?;
-            let payload_json: String = row.get(1)?;
-            Ok((seq as u64, payload_json))
-        })?;
+        let rows = stmt.query_map(
+            rusqlite::params![after_sequence as i64, cap as i64],
+            |row| {
+                let seq: i64 = row.get(0)?;
+                let payload_json: String = row.get(1)?;
+                Ok((seq as u64, payload_json))
+            },
+        )?;
 
         let mut deltas = Vec::new();
         for row in rows {
             let (seq, payload_json) = row?;
             let mut event: ConversationMessageDeltaEvent = serde_json::from_str(&payload_json)
-                .map_err(|err| rusqlite::Error::FromSqlConversionFailure(
-                    1,
-                    rusqlite::types::Type::Text,
-                    Box::new(err),
-                ))?;
+                .map_err(|err| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        1,
+                        rusqlite::types::Type::Text,
+                        Box::new(err),
+                    )
+                })?;
             event.sequence = seq;
             deltas.push(event);
         }
@@ -3224,6 +3231,55 @@ impl ConversationRepository {
             )
             .optional()?;
         Ok(key)
+    }
+
+    /// Channel account that owns a conversation; `None` if the conversation does not exist.
+    pub fn get_conversation_channel_account_id(&self, conversation_id: i64) -> Result<Option<i64>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let id: Option<i64> = conn
+            .query_row(
+                "SELECT channel_account_id FROM channel_conversations WHERE id = ?1",
+                [conversation_id],
+                |row| row.get(0),
+            )
+            .optional()?;
+        Ok(id)
+    }
+
+    /// `(attachment id, media type)` of a message's attachments, oldest first.
+    pub fn list_message_attachment_refs(&self, message_id: i64) -> Result<Vec<(i64, String)>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, attachment_type FROM message_attachments WHERE message_id = ?1 ORDER BY id",
+        )?;
+        let rows = stmt.query_map([message_id], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+    }
+
+    /// Where the bytes of one attachment can be read from; `None` if the id is unknown.
+    pub fn get_attachment_source(&self, attachment_id: i64) -> Result<Option<AttachmentSource>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let source = conn
+            .query_row(
+                "SELECT id, attachment_type, mime_type, size_bytes, local_path, remote_url, thumbnail_url
+                 FROM message_attachments WHERE id = ?1",
+                [attachment_id],
+                |row| {
+                    Ok(AttachmentSource {
+                        id: row.get(0)?,
+                        media_type: row.get(1)?,
+                        mime_type: row.get(2)?,
+                        size_bytes: row
+                            .get::<_, Option<i64>>(3)?
+                            .and_then(|v| u64::try_from(v).ok()),
+                        local_path: row.get(4)?,
+                        remote_url: row.get(5)?,
+                        thumbnail_url: row.get(6)?,
+                    })
+                },
+            )
+            .optional()?;
+        Ok(source)
     }
 
     pub fn get_channel_account_id(&self, provider_account_key: &str) -> Result<Option<i64>> {
@@ -3260,9 +3316,12 @@ impl ConversationRepository {
             let capabilities = if raw_caps.trim().is_empty() || raw_caps.trim() == "{}" {
                 crate::conversation::types::ConversationCapabilities::default_for_channel(channel)
             } else {
-                let parsed = crate::conversation::types::ConversationCapabilities::from_json(&raw_caps);
+                let parsed =
+                    crate::conversation::types::ConversationCapabilities::from_json(&raw_caps);
                 if parsed.supported_doc_types.is_empty() {
-                    crate::conversation::types::ConversationCapabilities::default_for_channel(channel)
+                    crate::conversation::types::ConversationCapabilities::default_for_channel(
+                        channel,
+                    )
                 } else {
                     parsed
                 }
@@ -3949,8 +4008,9 @@ impl ConversationRepository {
             messages.push(msg);
         }
 
-        crate::conversation::projection::hydrate_messages(&tx, &mut messages)
-            .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+        crate::conversation::projection::hydrate_messages(&tx, &mut messages).map_err(|e| {
+            ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+        })?;
 
         let channel_name: String = tx
             .query_row(
@@ -3975,17 +4035,17 @@ impl ConversationRepository {
                 |r| r.get(0),
             )
             .optional()
-            .map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+            .map_err(|e| {
+                ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+            })?;
 
         let mut delta_events = Vec::new();
         for msg in &messages {
-            let delta = Self::record_message_delta_tx(
-                &tx,
-                msg.conversation_id,
-                lead_id,
-                channel,
-                msg.id,
-            ).map_err(|e| ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string()))?;
+            let delta =
+                Self::record_message_delta_tx(&tx, msg.conversation_id, lead_id, channel, msg.id)
+                    .map_err(|e| {
+                    ConversationError::new(ConversationErrorCode::ProviderFailure, e.to_string())
+                })?;
             if let Some(d) = delta {
                 delta_events.push(d);
             }

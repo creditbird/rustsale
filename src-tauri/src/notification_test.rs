@@ -193,9 +193,7 @@ fn test_rate_limiting_debounces_rapid_burst_and_prunes() {
     assert!(manager.check_and_record_rate_limit(200));
 
     // Populate 70 expired entries (> 3 seconds old)
-    let past_time = Instant::now()
-        .checked_sub(Duration::from_secs(10))
-        .unwrap();
+    let past_time = Instant::now().checked_sub(Duration::from_secs(10)).unwrap();
     {
         let mut map = manager.last_notified.lock().unwrap();
         for i in 1..=70 {
@@ -228,14 +226,14 @@ async fn test_dispatch_desktop_notification_and_test_command() {
         test_res
     );
 
-    let direct_res = dispatch_desktop_notification(&app.handle(), "Test Title", "Test Body");
+    let direct_res = dispatch_desktop_notification(app.handle(), "Test Title", "Test Body");
     assert!(
         direct_res.is_ok(),
         "dispatch_desktop_notification should return Ok: {:?}",
         direct_res
     );
 
-    let plugin_res = show_plugin_notification(&app.handle(), "Fallback Title", "Fallback Body");
+    let plugin_res = show_plugin_notification(app.handle(), "Fallback Title", "Fallback Body");
     assert!(
         plugin_res.is_ok(),
         "show_plugin_notification should return Ok: {:?}",
@@ -255,7 +253,10 @@ fn test_dispatch_notification_deterministic_strategy() {
         },
     );
     assert!(res1.is_ok());
-    assert!(!fallback_called, "Fallback should not be called when primary succeeds");
+    assert!(
+        !fallback_called,
+        "Fallback should not be called when primary succeeds"
+    );
 
     // 2. Primary exits non-zero (Err) -> Fallback is called and succeeds
     let mut fallback_called = false;
@@ -267,7 +268,10 @@ fn test_dispatch_notification_deterministic_strategy() {
         },
     );
     assert!(res2.is_ok());
-    assert!(fallback_called, "Fallback must be called when primary returns non-zero");
+    assert!(
+        fallback_called,
+        "Fallback must be called when primary returns non-zero"
+    );
 
     // 3. Primary fails to spawn / missing binary (Err) -> Fallback is called and succeeds
     let mut fallback_called = false;
@@ -279,7 +283,10 @@ fn test_dispatch_notification_deterministic_strategy() {
         },
     );
     assert!(res3.is_ok());
-    assert!(fallback_called, "Fallback must be called when primary fails to spawn");
+    assert!(
+        fallback_called,
+        "Fallback must be called when primary fails to spawn"
+    );
 
     // 4. Primary fails and Fallback also fails -> Dual failure returns composite Err preserving both contexts
     let res4 = dispatch_notification_strategy(
@@ -288,8 +295,14 @@ fn test_dispatch_notification_deterministic_strategy() {
     );
     assert!(res4.is_err(), "Dual failure must return Err");
     let err_str = res4.unwrap_err();
-    assert!(err_str.contains("primary timed out"), "Error must contain primary failure context");
-    assert!(err_str.contains("plugin delivery failed"), "Error must contain fallback failure context");
+    assert!(
+        err_str.contains("primary timed out"),
+        "Error must contain primary failure context"
+    );
+    assert!(
+        err_str.contains("plugin delivery failed"),
+        "Error must contain fallback failure context"
+    );
 }
 
 #[tokio::test]
@@ -321,7 +334,12 @@ async fn test_bounded_notification_queue_and_concurrency() {
                         let cur = active.fetch_add(1, Ordering::SeqCst) + 1;
                         let mut prev_max = max.load(Ordering::SeqCst);
                         while cur > prev_max {
-                            match max.compare_exchange_weak(prev_max, cur, Ordering::SeqCst, Ordering::SeqCst) {
+                            match max.compare_exchange_weak(
+                                prev_max,
+                                cur,
+                                Ordering::SeqCst,
+                                Ordering::SeqCst,
+                            ) {
                                 Ok(_) => break,
                                 Err(actual) => prev_max = actual,
                             }
@@ -346,9 +364,20 @@ async fn test_bounded_notification_queue_and_concurrency() {
         h.await.expect("worker task should finish cleanly");
     }
 
-    assert_eq!(completed_count.load(Ordering::SeqCst), 10, "All 10 jobs must complete");
-    assert!(max_concurrency.load(Ordering::SeqCst) <= 4, "Concurrency must never exceed 4");
-    assert_eq!(active_workers.load(Ordering::SeqCst), 0, "All worker permits must be released");
+    assert_eq!(
+        completed_count.load(Ordering::SeqCst),
+        10,
+        "All 10 jobs must complete"
+    );
+    assert!(
+        max_concurrency.load(Ordering::SeqCst) <= 4,
+        "Concurrency must never exceed 4"
+    );
+    assert_eq!(
+        active_workers.load(Ordering::SeqCst),
+        0,
+        "All worker permits must be released"
+    );
 }
 
 #[test]
@@ -379,10 +408,10 @@ fn test_notification_settings_sqlite_roundtrip_and_restart() {
     // 3. Reload from SQLite and assert exact persistence
     let loaded = load_notification_settings(&conn);
     assert_eq!(loaded, modified);
-    assert_eq!(loaded.enabled, false);
-    assert_eq!(loaded.sound_enabled, false);
-    assert_eq!(loaded.privacy_mode, true);
-    assert_eq!(loaded.mute_groups, true);
+    assert!(!loaded.enabled);
+    assert!(!loaded.sound_enabled);
+    assert!(loaded.privacy_mode);
+    assert!(loaded.mute_groups);
 
     // 4. Simulate application restart: instantiate default manager, then restore from SQLite
     let fresh_manager = NotificationManager::default();
@@ -430,5 +459,5 @@ async fn test_update_notification_settings_command_persists_to_db() {
     let db_conn = db_state_ref.conn.lock().unwrap();
     let loaded = load_notification_settings(&db_conn);
     assert_eq!(loaded, modified);
-    assert_eq!(loaded.enabled, false);
+    assert!(!loaded.enabled);
 }

@@ -1,14 +1,13 @@
-use std::collections::{HashMap, HashSet};
-use std::path::Path;
 use calamine::{open_workbook_auto, Reader, Sheets};
 use rusqlite::{params, Connection, TransactionBehavior};
+use std::collections::{HashMap, HashSet};
+use std::path::Path;
 
 use crate::lead_importer::inspector::cell_to_string;
 use crate::lead_importer::types::{
     ConflictStrategy, ImportErrorRow, ImportProgress, ImportSummaryResult, LeadImportOptions,
     SourceRow,
 };
-
 
 pub fn normalize_vn_mobile(value: &str) -> Option<String> {
     let raw_trimmed = value.trim();
@@ -131,7 +130,10 @@ fn validate_thousands_grouping(s: &str, sep: char) -> bool {
     true
 }
 
-pub fn parse_lead_monetary_value(value_str: &str, expected_currency: &str) -> Result<Option<f64>, String> {
+pub fn parse_lead_monetary_value(
+    value_str: &str,
+    expected_currency: &str,
+) -> Result<Option<f64>, String> {
     let trimmed = value_str.trim();
     if trimmed.is_empty() {
         return Ok(None);
@@ -194,7 +196,11 @@ pub fn parse_lead_monetary_value(value_str: &str, expected_currency: &str) -> Re
     }
 
     // Reject consecutive separators or invalid mixed sequences (e.g. 1..000, 1,,000, 1.,000)
-    if cleaned.contains("..") || cleaned.contains(",,") || cleaned.contains(".,") || cleaned.contains(",.") {
+    if cleaned.contains("..")
+        || cleaned.contains(",,")
+        || cleaned.contains(".,")
+        || cleaned.contains(",.")
+    {
         return Err(format!(
             "Giá trị giao dịch '{}' chứa ký tự phân cách lặp hoặc không hợp lệ",
             trimmed
@@ -212,7 +218,10 @@ pub fn parse_lead_monetary_value(value_str: &str, expected_currency: &str) -> Re
             // Vietnamese format: 1.000.000,50 -> dot is thousands separator, comma is decimal
             let int_part = &cleaned[..last_comma];
             let dec_part = &cleaned[last_comma + 1..];
-            if !validate_thousands_grouping(int_part, '.') || dec_part.is_empty() || !dec_part.chars().all(|c| c.is_ascii_digit()) {
+            if !validate_thousands_grouping(int_part, '.')
+                || dec_part.is_empty()
+                || !dec_part.chars().all(|c| c.is_ascii_digit())
+            {
                 return Err(format!(
                     "Giá trị giao dịch '{}' không đúng định dạng nhóm hàng nghìn hoặc số thập phân",
                     trimmed
@@ -223,7 +232,10 @@ pub fn parse_lead_monetary_value(value_str: &str, expected_currency: &str) -> Re
             // US format: 1,000,000.50 -> comma is thousands separator, dot is decimal
             let int_part = &cleaned[..last_dot];
             let dec_part = &cleaned[last_dot + 1..];
-            if !validate_thousands_grouping(int_part, ',') || dec_part.is_empty() || !dec_part.chars().all(|c| c.is_ascii_digit()) {
+            if !validate_thousands_grouping(int_part, ',')
+                || dec_part.is_empty()
+                || !dec_part.chars().all(|c| c.is_ascii_digit())
+            {
                 return Err(format!(
                     "Giá trị giao dịch '{}' không đúng định dạng nhóm hàng nghìn hoặc số thập phân",
                     trimmed
@@ -248,7 +260,11 @@ pub fn parse_lead_monetary_value(value_str: &str, expected_currency: &str) -> Re
             let comma_idx = cleaned.find(',').unwrap();
             let int_part = &cleaned[..comma_idx];
             let dec_part = &cleaned[comma_idx + 1..];
-            if int_part.is_empty() || dec_part.is_empty() || !int_part.chars().all(|c| c.is_ascii_digit()) || !dec_part.chars().all(|c| c.is_ascii_digit()) {
+            if int_part.is_empty()
+                || dec_part.is_empty()
+                || !int_part.chars().all(|c| c.is_ascii_digit())
+                || !dec_part.chars().all(|c| c.is_ascii_digit())
+            {
                 return Err(format!(
                     "Giá trị giao dịch '{}' không đúng định dạng số",
                     trimmed
@@ -279,7 +295,11 @@ pub fn parse_lead_monetary_value(value_str: &str, expected_currency: &str) -> Re
             let dot_idx = cleaned.find('.').unwrap();
             let int_part = &cleaned[..dot_idx];
             let dec_part = &cleaned[dot_idx + 1..];
-            if int_part.is_empty() || dec_part.is_empty() || !int_part.chars().all(|c| c.is_ascii_digit()) || !dec_part.chars().all(|c| c.is_ascii_digit()) {
+            if int_part.is_empty()
+                || dec_part.is_empty()
+                || !int_part.chars().all(|c| c.is_ascii_digit())
+                || !dec_part.chars().all(|c| c.is_ascii_digit())
+            {
                 return Err(format!(
                     "Giá trị giao dịch '{}' không đúng định dạng số",
                     trimmed
@@ -386,7 +406,10 @@ where
             )
             .unwrap_or(false);
         if !cat_exists {
-            return Err(format!("Danh mục với ID {} không tồn tại hoặc đã bị xóa.", cat_id));
+            return Err(format!(
+                "Danh mục với ID {} không tồn tại hoặc đã bị xóa.",
+                cat_id
+            ));
         }
     }
 
@@ -468,7 +491,6 @@ where
     }
 
     {
-
         let mut insert_lead_stmt = tx
             .prepare(
                 "INSERT INTO leads (
@@ -571,20 +593,22 @@ where
                 raw_phone.trim().to_string()
             };
 
-            let final_email = normalize_email(&raw_email).unwrap_or_else(|| raw_email.trim().to_string());
-            let parsed_monetary_value = match parse_lead_monetary_value(&raw_value, default_currency) {
-                Ok(val) => val,
-                Err(err) => {
-                    summary.failed += 1;
-                    summary.error_rows.push(ImportErrorRow {
-                        row_number,
-                        raw_data: row.clone(),
-                        reason: err,
-                    });
-                    emit_progress(processed_count);
-                    continue;
-                }
-            };
+            let final_email =
+                normalize_email(&raw_email).unwrap_or_else(|| raw_email.trim().to_string());
+            let parsed_monetary_value =
+                match parse_lead_monetary_value(&raw_value, default_currency) {
+                    Ok(val) => val,
+                    Err(err) => {
+                        summary.failed += 1;
+                        summary.error_rows.push(ImportErrorRow {
+                            row_number,
+                            raw_data: row.clone(),
+                            reason: err,
+                        });
+                        emit_progress(processed_count);
+                        continue;
+                    }
+                };
             let final_value = parsed_monetary_value.unwrap_or(0.0);
 
             // Deduplication check
@@ -598,13 +622,17 @@ where
 
             let mut existing_lead_id: Option<i32> = None;
             if !all_phone_keys.is_empty() {
-                existing_lead_id = all_phone_keys
-                    .iter()
-                    .find_map(|k| phone_to_lead_ids.get(k).and_then(|set| set.iter().copied().next()));
+                existing_lead_id = all_phone_keys.iter().find_map(|k| {
+                    phone_to_lead_ids
+                        .get(k)
+                        .and_then(|set| set.iter().copied().next())
+                });
             }
 
             if existing_lead_id.is_none() && !norm_email.is_empty() {
-                existing_lead_id = email_to_lead_ids.get(&norm_email).and_then(|set| set.iter().copied().next());
+                existing_lead_id = email_to_lead_ids
+                    .get(&norm_email)
+                    .and_then(|set| set.iter().copied().next());
             }
 
             let is_duplicate = existing_lead_id.is_some();
@@ -650,33 +678,49 @@ where
                             .map_err(|e| format!("Lỗi gán danh mục: {}", e))?;
                     }
                     for k in &all_phone_keys {
-                        phone_to_lead_ids.entry(k.clone()).or_default().insert(lead_id);
+                        phone_to_lead_ids
+                            .entry(k.clone())
+                            .or_default()
+                            .insert(lead_id);
                     }
                     if !norm_email.is_empty() {
-                        email_to_lead_ids.entry(norm_email.clone()).or_default().insert(lead_id);
+                        email_to_lead_ids
+                            .entry(norm_email.clone())
+                            .or_default()
+                            .insert(lead_id);
                     }
                     lead_current_identity.insert(
                         lead_id,
                         (
                             all_phone_keys,
-                            if !norm_email.is_empty() { Some(norm_email.clone()) } else { None },
+                            if !norm_email.is_empty() {
+                                Some(norm_email.clone())
+                            } else {
+                                None
+                            },
                         ),
                     );
                     summary.inserted += 1;
                 }
                 ConflictStrategy::Overwrite => {
                     if let Some(lead_id) = existing_lead_id {
-                        let overwrite_status = if options.mapping.status_col.is_some() && !row_status.trim().is_empty() {
+                        let overwrite_status = if options.mapping.status_col.is_some()
+                            && !row_status.trim().is_empty()
+                        {
                             row_status.trim()
                         } else {
                             ""
                         };
-                        let overwrite_owner = if options.mapping.owner_col.is_some() && !row_owner.trim().is_empty() {
+                        let overwrite_owner = if options.mapping.owner_col.is_some()
+                            && !row_owner.trim().is_empty()
+                        {
                             row_owner.trim()
                         } else {
                             ""
                         };
-                        let overwrite_value: Option<f64> = if options.mapping.value_col.is_some() && !raw_value.trim().is_empty() {
+                        let overwrite_value: Option<f64> = if options.mapping.value_col.is_some()
+                            && !raw_value.trim().is_empty()
+                        {
                             parsed_monetary_value
                         } else {
                             None
@@ -720,7 +764,10 @@ where
                                 }
                             }
                             for k in &all_phone_keys {
-                                phone_to_lead_ids.entry(k.clone()).or_default().insert(lead_id);
+                                phone_to_lead_ids
+                                    .entry(k.clone())
+                                    .or_default()
+                                    .insert(lead_id);
                             }
                             current_phone_keys = all_phone_keys;
                         }
@@ -735,7 +782,10 @@ where
                                     }
                                 }
                             }
-                            email_to_lead_ids.entry(norm_email.clone()).or_default().insert(lead_id);
+                            email_to_lead_ids
+                                .entry(norm_email.clone())
+                                .or_default()
+                                .insert(lead_id);
                             current_email = Some(norm_email.clone());
                         }
 
@@ -776,16 +826,26 @@ where
                                 .map_err(|e| format!("Lỗi gán danh mục: {}", e))?;
                         }
                         for k in &all_phone_keys {
-                            phone_to_lead_ids.entry(k.clone()).or_default().insert(lead_id);
+                            phone_to_lead_ids
+                                .entry(k.clone())
+                                .or_default()
+                                .insert(lead_id);
                         }
                         if !norm_email.is_empty() {
-                            email_to_lead_ids.entry(norm_email.clone()).or_default().insert(lead_id);
+                            email_to_lead_ids
+                                .entry(norm_email.clone())
+                                .or_default()
+                                .insert(lead_id);
                         }
                         lead_current_identity.insert(
                             lead_id,
                             (
                                 all_phone_keys,
-                                if !norm_email.is_empty() { Some(norm_email.clone()) } else { None },
+                                if !norm_email.is_empty() {
+                                    Some(norm_email.clone())
+                                } else {
+                                    None
+                                },
                             ),
                         );
                         summary.inserted += 1;
@@ -865,8 +925,8 @@ fn get_mapped_val(row: &[String], col_idx: Option<usize>) -> String {
 }
 
 fn read_all_csv_rows(file_path: &Path) -> Result<Vec<SourceRow>, String> {
-    let file_bytes = std::fs::read(file_path)
-        .map_err(|e| format!("Không thể mở tệp CSV: {}", e))?;
+    let file_bytes =
+        std::fs::read(file_path).map_err(|e| format!("Không thể mở tệp CSV: {}", e))?;
 
     let mut reader = csv::ReaderBuilder::new()
         .has_headers(false)
@@ -881,7 +941,10 @@ fn read_all_csv_rows(file_path: &Path) -> Result<Vec<SourceRow>, String> {
         .map_err(|e| format!("Lỗi đọc dòng CSV: {}", e))?
     {
         record_idx += 1;
-        let base_line = record.position().map(|p| p.line() as usize).unwrap_or(record_idx);
+        let base_line = record
+            .position()
+            .map(|p| p.line() as usize)
+            .unwrap_or(record_idx);
         let start_byte = record.position().map(|p| p.byte() as usize).unwrap_or(0);
 
         // Account for any empty lines skipped by csv-core before the start of this record
@@ -912,7 +975,10 @@ fn read_all_csv_rows(file_path: &Path) -> Result<Vec<SourceRow>, String> {
     Ok(rows)
 }
 
-fn read_all_excel_rows(file_path: &Path, requested_sheet: Option<&str>) -> Result<Vec<SourceRow>, String> {
+fn read_all_excel_rows(
+    file_path: &Path,
+    requested_sheet: Option<&str>,
+) -> Result<Vec<SourceRow>, String> {
     let mut workbook: Sheets<_> = open_workbook_auto(file_path)
         .map_err(|e| format!("Không thể mở bảng tính Excel: {}", e))?;
 
@@ -938,4 +1004,3 @@ fn read_all_excel_rows(file_path: &Path, requested_sheet: Option<&str>) -> Resul
     }
     Ok(rows)
 }
-

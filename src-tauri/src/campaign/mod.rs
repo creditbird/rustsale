@@ -11,4 +11,6 @@ pub use commands::*;
 pub use dispatcher::{DispatchMode, DispatchPayload, DispatchResult, OmnichannelDispatcher};
 pub use evaluator::{ConditionResult, StepConditionEvaluator};
 pub use scheduler::{CampaignScheduler, SchedulerProcessSummary};
-pub use throttling::{AccountRotator, AccountStats, AntiBanThrottler, RotationStrategy, ThrottlingConfig};
+pub use throttling::{
+    AccountRotator, AccountStats, AntiBanThrottler, RotationStrategy, ThrottlingConfig,
+};

@@ -3,18 +3,14 @@ use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
+#[derive(Default)]
 pub enum LlmProvider {
     OpenAi,
     Gemini,
     Claude,
     Ollama,
+    #[default]
     Mock,
-}
-
-impl Default for LlmProvider {
-    fn default() -> Self {
-        Self::Mock
-    }
 }
 
 impl LlmProvider {
@@ -62,7 +58,8 @@ impl LlmConfig {
                     provider: LlmProvider::OpenAi,
                     api_key: Some(key),
                     base_url: std::env::var("OPENAI_BASE_URL").ok(),
-                    model_name: std::env::var("OPENAI_MODEL").unwrap_or_else(|_| "gpt-4o-mini".to_string()),
+                    model_name: std::env::var("OPENAI_MODEL")
+                        .unwrap_or_else(|_| "gpt-4o-mini".to_string()),
                     temperature: 0.7,
                     max_tokens: 1024,
                     timeout_seconds: 15,
@@ -76,7 +73,8 @@ impl LlmConfig {
                     provider: LlmProvider::Gemini,
                     api_key: Some(key),
                     base_url: std::env::var("GEMINI_BASE_URL").ok(),
-                    model_name: std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-1.5-flash".to_string()),
+                    model_name: std::env::var("GEMINI_MODEL")
+                        .unwrap_or_else(|_| "gemini-1.5-flash".to_string()),
                     temperature: 0.7,
                     max_tokens: 1024,
                     timeout_seconds: 15,
@@ -90,7 +88,8 @@ impl LlmConfig {
                     provider: LlmProvider::Claude,
                     api_key: Some(key),
                     base_url: std::env::var("ANTHROPIC_BASE_URL").ok(),
-                    model_name: std::env::var("ANTHROPIC_MODEL").unwrap_or_else(|_| "claude-3-5-haiku-20241022".to_string()),
+                    model_name: std::env::var("ANTHROPIC_MODEL")
+                        .unwrap_or_else(|_| "claude-3-5-haiku-20241022".to_string()),
                     temperature: 0.7,
                     max_tokens: 1024,
                     timeout_seconds: 15,
@@ -104,7 +103,8 @@ impl LlmConfig {
                     provider: LlmProvider::Ollama,
                     api_key: None,
                     base_url: Some(host),
-                    model_name: std::env::var("OLLAMA_MODEL").unwrap_or_else(|_| "llama3.2".to_string()),
+                    model_name: std::env::var("OLLAMA_MODEL")
+                        .unwrap_or_else(|_| "llama3.2".to_string()),
                     temperature: 0.7,
                     max_tokens: 1024,
                     timeout_seconds: 30,
@@ -186,42 +186,46 @@ impl LlmGateway {
     ) -> Result<LlmResponse, String> {
         match self.config.provider {
             LlmProvider::Mock => Ok(self.generate_mock_response(messages, system_prompt)),
-            LlmProvider::OpenAi => {
-                match self.call_openai(messages, system_prompt).await {
-                    Ok(resp) => Ok(resp),
-                    Err(e) => {
-                        eprintln!("[LlmGateway] OpenAI call failed: {}, falling back to offline mode", e);
-                        Ok(self.generate_mock_response(messages, system_prompt))
-                    }
+            LlmProvider::OpenAi => match self.call_openai(messages, system_prompt).await {
+                Ok(resp) => Ok(resp),
+                Err(e) => {
+                    eprintln!(
+                        "[LlmGateway] OpenAI call failed: {}, falling back to offline mode",
+                        e
+                    );
+                    Ok(self.generate_mock_response(messages, system_prompt))
                 }
-            }
-            LlmProvider::Gemini => {
-                match self.call_gemini(messages, system_prompt).await {
-                    Ok(resp) => Ok(resp),
-                    Err(e) => {
-                        eprintln!("[LlmGateway] Gemini call failed: {}, falling back to offline mode", e);
-                        Ok(self.generate_mock_response(messages, system_prompt))
-                    }
+            },
+            LlmProvider::Gemini => match self.call_gemini(messages, system_prompt).await {
+                Ok(resp) => Ok(resp),
+                Err(e) => {
+                    eprintln!(
+                        "[LlmGateway] Gemini call failed: {}, falling back to offline mode",
+                        e
+                    );
+                    Ok(self.generate_mock_response(messages, system_prompt))
                 }
-            }
-            LlmProvider::Claude => {
-                match self.call_claude(messages, system_prompt).await {
-                    Ok(resp) => Ok(resp),
-                    Err(e) => {
-                        eprintln!("[LlmGateway] Claude call failed: {}, falling back to offline mode", e);
-                        Ok(self.generate_mock_response(messages, system_prompt))
-                    }
+            },
+            LlmProvider::Claude => match self.call_claude(messages, system_prompt).await {
+                Ok(resp) => Ok(resp),
+                Err(e) => {
+                    eprintln!(
+                        "[LlmGateway] Claude call failed: {}, falling back to offline mode",
+                        e
+                    );
+                    Ok(self.generate_mock_response(messages, system_prompt))
                 }
-            }
-            LlmProvider::Ollama => {
-                match self.call_ollama(messages, system_prompt).await {
-                    Ok(resp) => Ok(resp),
-                    Err(e) => {
-                        eprintln!("[LlmGateway] Ollama call failed: {}, falling back to offline mode", e);
-                        Ok(self.generate_mock_response(messages, system_prompt))
-                    }
+            },
+            LlmProvider::Ollama => match self.call_ollama(messages, system_prompt).await {
+                Ok(resp) => Ok(resp),
+                Err(e) => {
+                    eprintln!(
+                        "[LlmGateway] Ollama call failed: {}, falling back to offline mode",
+                        e
+                    );
+                    Ok(self.generate_mock_response(messages, system_prompt))
                 }
-            }
+            },
         }
     }
 
@@ -290,7 +294,9 @@ impl LlmGateway {
             .to_string();
 
         let prompt_tokens = json["usage"]["prompt_tokens"].as_u64().map(|v| v as u32);
-        let completion_tokens = json["usage"]["completion_tokens"].as_u64().map(|v| v as u32);
+        let completion_tokens = json["usage"]["completion_tokens"]
+            .as_u64()
+            .map(|v| v as u32);
 
         Ok(LlmResponse {
             content,
@@ -400,7 +406,11 @@ impl LlmGateway {
 
         let mut payload_messages = Vec::new();
         for msg in messages {
-            let role = if msg.role == "assistant" { "assistant" } else { "user" };
+            let role = if msg.role == "assistant" {
+                "assistant"
+            } else {
+                "user"
+            };
             payload_messages.push(serde_json::json!({
                 "role": role,
                 "content": msg.content
