@@ -17,6 +17,7 @@ pub mod conversation;
 pub mod db;
 #[cfg(test)]
 mod db_test;
+pub mod demo_seed;
 pub mod events;
 pub mod facebook;
 pub mod google_maps_jobs;

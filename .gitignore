@@ -52,3 +52,8 @@ anvien-launcher/AnvienLauncher.exe
 anvien-launcher/server-bundle/
 anvien-launcher/logs/
 # anvien:end
+
+# NSH v3 app
+/app/.nsh/
+/native/target/
+/bench/.nsh/
