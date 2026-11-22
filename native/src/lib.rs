@@ -10,6 +10,7 @@ mod deals;
 mod error;
 mod facebook;
 mod host;
+mod import;
 mod leads;
 mod leads_more;
 mod maps;
@@ -30,6 +31,7 @@ fn native(registry: &mut Registry) {
         .module::<leads::Leads>()
         .module::<leads_more::LeadsMore>()
         .module::<deals::Deals>()
+        .module::<import::ImportLeads>()
         .module::<campaigns::Campaigns>()
         .module::<categories::Categories>()
         .module::<facebook::Facebook>()

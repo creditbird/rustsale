@@ -235,11 +235,11 @@
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| IMPORT-01 | IMPORT | Mở hộp thoại chọn file Excel hoặc CSV | LeadImportModal.svelte | src-tauri/src/commands.rs:pick_lead_import_file | Lọc xlsx, xls, csv | Chưa xuất |
-| IMPORT-02 | IMPORT | Đọc sheet và cột, trả về inspection để map | LeadImportModal.svelte | src-tauri/src/commands.rs:inspect_lead_import_file | Chạy trong spawn_blocking | Chưa xuất |
-| IMPORT-03 | IMPORT | Import lead theo mapping, phát progress qua Channel và event | LeadImportModal.svelte | src-tauri/src/commands.rs:execute_lead_import | Vừa gửi Channel vừa emit lead-import-progress | Chưa xuất |
-| IMPORT-04 | IMPORT | Xuất file mẫu Excel hoặc CSV | LeadImportModal.svelte | src-tauri/src/commands.rs:download_lead_import_template | Có sẵn hai mẫu | Chưa xuất |
-| IMPORT-05 | IMPORT | Xuất CSV lead đã chọn qua hộp thoại lưu file | LeadsList.svelte | src-tauri/src/commands.rs:export_leads_csv_file | Gọi qua utils/leadsExportCsv.ts | Chưa xuất |
+| IMPORT-01 | IMPORT | Mở hộp thoại chọn file Excel hoặc CSV | LeadImportModal.svelte | src-tauri/src/commands.rs:pick_lead_import_file | Lọc xlsx, xls, csv | Đã xuất `ImportLeads.pickFile` — bọc, chưa gọi thử (mở hộp thoại hệ điều hành) |
+| IMPORT-02 | IMPORT | Đọc sheet và cột, trả về inspection để map | LeadImportModal.svelte | src-tauri/src/commands.rs:inspect_lead_import_file | Chạy trong spawn_blocking | Đã xuất `ImportLeads.inspectFile` |
+| IMPORT-03 | IMPORT | Import lead theo mapping, phát progress qua Channel và event | LeadImportModal.svelte | src-tauri/src/commands.rs:execute_lead_import | Vừa gửi Channel vừa emit lead-import-progress | Đã xuất `ImportLeads.execute` |
+| IMPORT-04 | IMPORT | Xuất file mẫu Excel hoặc CSV | LeadImportModal.svelte | src-tauri/src/commands.rs:download_lead_import_template | Có sẵn hai mẫu | Đã xuất `ImportLeads.downloadTemplate` — bọc, chưa gọi thử (mở hộp thoại hệ điều hành) |
+| IMPORT-05 | IMPORT | Xuất CSV lead đã chọn qua hộp thoại lưu file | LeadsList.svelte | src-tauri/src/commands.rs:export_leads_csv_file | Gọi qua utils/leadsExportCsv.ts | Đã xuất `ImportLeads.exportCsv` — bọc, chưa gọi thử (mở hộp thoại hệ điều hành) |
 
 ### 2.9 Nhóm SET — 19 command
 

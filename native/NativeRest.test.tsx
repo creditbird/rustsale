@@ -1,7 +1,8 @@
 // `nsh test` runs this in a headless runner linked with the crate: the module is the real one, on a
 // throwaway data folder with the debug seed (3 synthetic leads, 2 deals). No real account or data.
+import { writeFile } from "node:fs/promises";
 import { expect, test } from "nsh/test";
-import { Ai, Campaigns, Facebook, Host, LeadsMore, Zalo } from "rustsale/native";
+import { Ai, Campaigns, Facebook, Host, ImportLeads, LeadsMore, Zalo } from "rustsale/native";
 
 type Row = Record<string, any>;
 const row = (value: unknown) => value as Row;
@@ -198,4 +199,45 @@ test("ai: proposals start empty and invalid reviews or a missing lead reject", a
   expect(await Ai.pendingProposals()).toEqual([]);
   await expect(Ai.reviewProposal(1, "MAYBE", "qa")).rejects.toThrow();
   await expect(Ai.leadEvidenceContext(999_999)).rejects.toThrow();
+});
+
+test("import: inspect a CSV and import its rows as leads", async () => {
+  await Host.start(dir);
+
+  await expect(ImportLeads.inspectFile("/tmp/does-not-exist.csv", null)).rejects.toThrow();
+
+  const csvPath = `/tmp/rustsale-import-rest-${Date.now()}.csv`;
+  await writeFile(csvPath, "name,phone,email\nBulk Imported,0909123456,bulk@example.invalid\n");
+
+  const inspection = row(await ImportLeads.inspectFile(csvPath, null));
+  expect(inspection.file_type).toBe("csv");
+  expect(inspection.headers).toContain("name");
+
+  const summary = row(
+    await ImportLeads.execute({
+      file_path: csvPath,
+      sheet_name: null,
+      has_header: true,
+      header_row_index: 0,
+      mapping: {
+        name_col: 0,
+        company_col: null,
+        phone_col: 1,
+        email_col: 2,
+        status_col: null,
+        value_col: null,
+        address_col: null,
+        about_col: null,
+        owner_col: null
+      },
+      conflict_strategy: "skip",
+      default_category_id: null,
+      default_status: null,
+      default_owner: null,
+      default_currency: null,
+      normalize_phone: true
+    })
+  );
+  expect(summary.inserted + summary.updated).toBeGreaterThanOrEqual(1);
+  expect(rows(await LeadsMore.list()).some((item) => item.name === "Bulk Imported")).toBe(true);
 });
