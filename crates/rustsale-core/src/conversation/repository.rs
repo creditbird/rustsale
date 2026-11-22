@@ -2077,8 +2077,15 @@ impl ConversationRepository {
     }
 
     pub fn mark_conversation_read(&self, key: &str) -> Result<u64> {
+        Ok(self.mark_conversation_read_with_ids(key)?.0)
+    }
+
+    /// Marks the inbound messages behind `key` read and returns how many rows changed plus the
+    /// ids of the conversations that had unread messages, collected in the same transaction.
+    pub fn mark_conversation_read_with_ids(&self, key: &str) -> Result<(u64, Vec<i64>)> {
         let mut conn = open_db_connection(&self.db_path)?;
         let tx = conn.transaction()?;
+        let conversation_ids = Self::unread_conversation_ids(&tx, key)?;
 
         let rows_affected = if let Some(lead_id_str) = key.strip_prefix("lead:") {
             let lead_id: i64 = lead_id_str
@@ -2128,7 +2135,79 @@ impl ConversationRepository {
         };
 
         tx.commit()?;
-        Ok(rows_affected as u64)
+        Ok((rows_affected as u64, conversation_ids))
+    }
+
+    fn unread_conversation_ids(tx: &rusqlite::Transaction<'_>, key: &str) -> Result<Vec<i64>> {
+        let (condition, id) = if let Some(rest) = key.strip_prefix("lead:") {
+            (
+                "conversation_id IN (
+                    SELECT cc.id FROM channel_conversations cc
+                    JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                    JOIN channel_identities ci ON ci.id = cp.identity_id
+                    WHERE ci.lead_id = ?1)",
+                rest,
+            )
+        } else if let Some(rest) = key.strip_prefix("identity:") {
+            (
+                "conversation_id IN (
+                    SELECT cc.id FROM channel_conversations cc
+                    JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                    WHERE cp.identity_id = ?1)",
+                rest,
+            )
+        } else if let Some(rest) = key.strip_prefix("conversation:") {
+            ("conversation_id = ?1", rest)
+        } else {
+            return Ok(Vec::new());
+        };
+        let id: i64 = id
+            .parse()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        let sql = format!(
+            "SELECT DISTINCT conversation_id FROM messages
+             WHERE direction = 'inbound' AND status != 'read' AND {condition}
+             ORDER BY conversation_id"
+        );
+        let mut stmt = tx.prepare(&sql)?;
+        let ids = stmt
+            .query_map([id], |row| row.get::<_, i64>(0))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(ids)
+    }
+
+    /// Lead and channel of conversation `conversation_id` for an invalidation event, absent when
+    /// the conversation does not exist.
+    pub fn lookup_conversation_invalidation_info(
+        &self,
+        conversation_id: i64,
+    ) -> Result<Option<(Option<i64>, Channel)>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let row: Option<(Option<i64>, String)> = conn
+            .query_row(
+                "SELECT ci.lead_id, ca.channel
+                 FROM channel_conversations cc
+                 JOIN channel_accounts ca ON ca.id = cc.channel_account_id
+                 LEFT JOIN conversation_participants cp ON cp.conversation_id = cc.id
+                 LEFT JOIN channel_identities ci ON ci.id = cp.identity_id
+                 WHERE cc.id = ?1
+                 ORDER BY (ci.lead_id IS NOT NULL) DESC, ci.lead_id DESC
+                 LIMIT 1",
+                [conversation_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((lead_id, channel_str)) = row else {
+            return Ok(None);
+        };
+        let channel = Channel::from_str(&channel_str).map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(
+                1,
+                rusqlite::types::Type::Text,
+                Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, e)),
+            )
+        })?;
+        Ok(Some((lead_id, channel)))
     }
 
     pub fn link_identity(&self, identity_id: i64, lead_id: i64) -> Result<i64> {

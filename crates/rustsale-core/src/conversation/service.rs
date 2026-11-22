@@ -309,8 +309,26 @@ impl ConversationService {
         Ok(self.repository.list_inbox()?)
     }
 
+    /// Marks the inbound messages behind `key` read and tells every screen: one
+    /// `conversation-invalidated` event (reason `metadata`) per conversation whose unread count
+    /// changed. Nothing is published when no row changed.
     pub fn mark_conversation_read(&self, key: &str) -> Result<u64> {
-        Ok(self.repository.mark_conversation_read(key)?)
+        let (rows, conversation_ids) = self.repository.mark_conversation_read_with_ids(key)?;
+        for conversation_id in conversation_ids {
+            if let Some((lead_id, channel)) = self
+                .repository
+                .lookup_conversation_invalidation_info(conversation_id)?
+            {
+                self.events.publish(ConversationInvalidatedEvent {
+                    conversation_id,
+                    lead_id,
+                    channel,
+                    reason: ConversationInvalidationReason::Metadata,
+                    message_id: None,
+                });
+            }
+        }
+        Ok(rows)
     }
 
     pub fn get_contact_timeline(

@@ -330,7 +330,7 @@ subscription on the native module. Payloads are serde types in core.
 
 | Event | Payload | Source |
 |---|---|---|
-| `conversation-invalidated` | `ConversationInvalidatedEvent { conversation_id, lead_id, channel, reason, message_id }`; on broadcast lag `{ reason: "ReconcileRequired", skipped }` | conversation/events.rs |
+| `conversation-invalidated` | `ConversationInvalidatedEvent { conversation_id, lead_id, channel, reason, message_id }`; on broadcast lag `{ reason: "ReconcileRequired", skipped }`. Also emitted by `mark_conversation_read` (one per conversation whose unread count changed, `reason: "metadata"`, `message_id: null`; none when no message changed). The UI listens to this name, not to `conversation-updated`, which does not exist | conversation/events.rs |
 | `conversation-message-delta` | `ConversationMessageDeltaEvent { sequence, conversation_id, lead_id, channel, message, emitted_at_ms }` | conversation/events.rs |
 | `conversation-delta-lagged` | `{ skipped }` -> UI must call `resume_conversation_deltas(after_sequence, limit)` | conversation/events.rs |
 | `google-maps-scrape-job-event` | scrape job event (`google_maps_jobs::types`) | google_maps_jobs/events.rs |
