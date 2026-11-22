@@ -18,6 +18,7 @@ mod ports;
 mod runtime;
 mod settings;
 mod templates;
+mod util;
 mod zalo;
 
 use nsh_core::prelude::*;
@@ -40,6 +41,7 @@ fn native(registry: &mut Registry) {
         .module::<maps::GoogleMaps>()
         .module::<templates::Templates>()
         .module::<settings::Settings>()
+        .module::<util::Util>()
         .module::<zalo::Zalo>();
 }
 

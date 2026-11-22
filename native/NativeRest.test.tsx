@@ -2,7 +2,7 @@
 // throwaway data folder with the debug seed (3 synthetic leads, 2 deals). No real account or data.
 import { writeFile } from "node:fs/promises";
 import { expect, test } from "nsh/test";
-import { Ai, Campaigns, Facebook, Host, ImportLeads, LeadsMore, Zalo } from "rustsale/native";
+import { Ai, Campaigns, Facebook, Host, ImportLeads, LeadsMore, Util, Zalo } from "rustsale/native";
 
 type Row = Record<string, any>;
 const row = (value: unknown) => value as Row;
@@ -240,4 +240,11 @@ test("import: inspect a CSV and import its rows as leads", async () => {
   );
   expect(summary.inserted + summary.updated).toBeGreaterThanOrEqual(1);
   expect(rows(await LeadsMore.list()).some((item) => item.name === "Bulk Imported")).toBe(true);
+});
+
+test("util: greeting and hardware id", async () => {
+  expect(await Util.greet("Bulk")).toBe("Hello, Bulk! You've been greeted from Rust!");
+  const hardware = row(await Util.hardwareId());
+  expect(hardware.hardware_id.length).toBeGreaterThan(10);
+  expect(typeof hardware.hostname).toBe("string");
 });

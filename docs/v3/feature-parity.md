@@ -282,9 +282,9 @@
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| UTIL-01 | UTIL | Command demo mẫu của Tauri | Không có | src-tauri/src/lib.rs:greet | Vẫn đăng ký trong invoke_handler | Chưa xuất |
-| UTIL-02 | UTIL | Sinh hardware ID hash cho license | LicenseModal.svelte | src-tauri/src/commands.rs:get_hardware_id | Hash OS, arch, hostname, user | Chưa xuất |
-| UTIL-03 | UTIL | Lưu ảnh từ URL hoặc base64 qua hộp thoại chọn chỗ lưu | ImageGalleryModal.svelte, ImageMessageContent.svelte, FileMessageContent.svelte | src-tauri/src/commands.rs:save_image_file | Gọi qua utils/imageExport.ts | Chưa xuất |
+| UTIL-01 | UTIL | Command demo mẫu của Tauri | Không có | src-tauri/src/lib.rs:greet | Vẫn đăng ký trong invoke_handler | Đã xuất `Util.greet` |
+| UTIL-02 | UTIL | Sinh hardware ID hash cho license | LicenseModal.svelte | src-tauri/src/commands.rs:get_hardware_id | Hash OS, arch, hostname, user | Đã xuất `Util.hardwareId` |
+| UTIL-03 | UTIL | Lưu ảnh từ URL hoặc base64 qua hộp thoại chọn chỗ lưu | ImageGalleryModal.svelte, ImageMessageContent.svelte, FileMessageContent.svelte | src-tauri/src/commands.rs:save_image_file | Gọi qua utils/imageExport.ts | Đã xuất `Util.saveImage` — bọc, chưa gọi thử (mở hộp thoại hệ điều hành) |
 
 **Đối chiếu:** tổng 22 + 47 + 25 + 22 + 5 + 16 + 5 + 5 + 19 + 8 + 3 = **177**.
 
