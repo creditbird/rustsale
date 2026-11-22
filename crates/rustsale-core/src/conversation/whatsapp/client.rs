@@ -528,6 +528,9 @@ impl WhatsAppClient for RealWhatsAppClient {
     }
 }
 
+#[cfg(test)]
+pub use mock_client::*;
+
 /// Test-only doubles. Compiled solely under `cfg(test)` so a production binary never
 /// contains a mock WhatsApp client.
 #[cfg(test)]
@@ -868,6 +871,3 @@ mod mock_client {
         }
     }
 }
-
-#[cfg(test)]
-pub use mock_client::*;
