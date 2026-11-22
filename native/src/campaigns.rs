@@ -2,7 +2,7 @@
 //! multi-channel campaign center.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, on_blocking, on_core, state_of};
+use crate::runtime::{body, id32, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::campaign::commands as unified;
@@ -30,16 +30,6 @@ fn lead_ids(values: Vec<f64>) -> Result<Vec<i32>, CoreApiError> {
             }
         })
         .collect()
-}
-
-/// A JS number as an `i32` row id, refusing values an `i32` cannot hold instead of wrapping them
-/// onto another row.
-fn id32(value: f64) -> Result<i32, CoreApiError> {
-    if value.is_finite() && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) {
-        Ok(value as i32)
-    } else {
-        Err(CoreApiError::invalid("id is out of range"))
-    }
 }
 
 /// An optional JS number as a `u32`.

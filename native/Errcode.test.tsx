@@ -23,4 +23,6 @@ test("native errors reach TSX with a code and a clean message", async () => {
   await expectError(Ai.leadEvidenceContext(4_294_967_297), "invalid_request");
   await expectError(Zalo.verifySession("qa-errcode-missing"), "not_found");
   await expectError(Templates.testSmtpConnection("127.0.0.1", 1), "internal");
+  await expectError(Templates.deleteSmtpServer(4_294_967_297), "invalid_request");
+  await expectError(Templates.deleteEmailTemplate(4_294_967_297), "invalid_request");
 });

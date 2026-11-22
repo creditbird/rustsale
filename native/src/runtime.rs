@@ -203,6 +203,16 @@ pub(crate) fn limit(value: Option<f64>) -> u32 {
     }
 }
 
+/// A JS number as an `i32` row id, refusing values an `i32` cannot hold instead of wrapping
+/// them onto another row.
+pub(crate) fn id32(value: f64) -> Result<i32, CoreApiError> {
+    if value.is_finite() && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) {
+        Ok(value as i32)
+    } else {
+        Err(CoreApiError::invalid("id is out of range"))
+    }
+}
+
 /// The state of type `S` of the running core.
 pub(crate) fn state_of<S: Send + Sync + 'static>(
     handle: &AppHandle,
@@ -251,5 +261,19 @@ mod tests {
             assert!(dir.ends_with(DEV_DATA_FOLDER));
             assert!(check_data_dir(&dir).is_ok());
         }
+    }
+
+    #[test]
+    fn row_ids_must_fit_an_i32() {
+        assert_eq!(
+            id32(4_294_967_297.0).map_err(|error| error.code),
+            Err("invalid_request".to_string())
+        );
+        assert!(id32(f64::NAN).is_err());
+        assert!(id32(f64::INFINITY).is_err());
+        assert_eq!(id32(0.0).ok(), Some(0));
+        assert_eq!(id32(-1.0).ok(), Some(-1));
+        assert_eq!(id32(f64::from(i32::MAX)).ok(), Some(i32::MAX));
+        assert_eq!(id32(f64::from(i32::MIN)).ok(), Some(i32::MIN));
     }
 }

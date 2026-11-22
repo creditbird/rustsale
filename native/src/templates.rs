@@ -1,7 +1,7 @@
 //! Email templates, the multi-channel template centre and SMTP accounts.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, on_blocking, on_core, state_of};
+use crate::runtime::{args, body, id32, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -94,7 +94,8 @@ impl Templates {
     }
 
     /// Deletes email template `id`.
-    pub async fn delete_email_template(id: i32) -> Result<JsonValue, JsError> {
+    pub async fn delete_email_template(id: f64) -> Result<JsonValue, JsError> {
+        let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_email_template(id, state)?)
@@ -211,7 +212,8 @@ impl Templates {
     }
 
     /// Deletes SMTP server `id`.
-    pub async fn delete_smtp_server(id: i32) -> Result<JsonValue, JsError> {
+    pub async fn delete_smtp_server(id: f64) -> Result<JsonValue, JsError> {
+        let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_smtp_server(id, state)?)
@@ -226,5 +228,25 @@ impl Templates {
             Ok::<_, CoreApiError>(commands::test_smtp_connection(host, port).await?)
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Templates;
+
+    #[tokio::test]
+    async fn oversized_template_ids_are_invalid_requests() {
+        for result in [
+            Templates::delete_smtp_server(4_294_967_297.0).await,
+            Templates::delete_email_template(4_294_967_297.0).await,
+        ] {
+            let error = match result {
+                Ok(_) => panic!("an id past i32 must be refused"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code(), Some("invalid_request"));
+            assert_eq!(error.message(), "id is out of range");
+        }
     }
 }
