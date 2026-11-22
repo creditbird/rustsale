@@ -527,6 +527,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn browser_manager_allows_configured_sessions() {
+        let automation = Arc::new(FakeAutomation::new());
+        let manager = BrowserManager::with_automation(2, automation);
+        manager.start(true).await.unwrap();
+
+        let first = tokio::time::timeout(Duration::from_secs(1), manager.acquire())
+            .await
+            .expect("first session should be granted immediately")
+            .unwrap();
+        let second = tokio::time::timeout(Duration::from_secs(1), manager.acquire())
+            .await
+            .expect("the configured second session should be granted")
+            .unwrap();
+        drop((first, second));
+        manager.close().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn acquire_times_out_when_session_leaked() {
+        let automation = Arc::new(FakeAutomation::new());
+        let manager = BrowserManager::with_automation(1, automation)
+            .with_acquire_timeout(Duration::from_millis(50));
+        manager.start(true).await.unwrap();
+        let _held = manager.acquire().await.unwrap();
+
+        let error = match manager.acquire().await {
+            Ok(_) => panic!("a leaked session must not wait forever"),
+            Err(error) => error,
+        };
+
+        assert!(
+            error.message.contains("timed out"),
+            "unexpected error: {error}"
+        );
+        drop(_held);
+        manager.close().await.unwrap();
+    }
+
+    #[tokio::test]
     async fn browser_manager_serializes_session_ownership() {
         let automation = Arc::new(FakeAutomation::new());
         let manager = Arc::new(BrowserManager::with_automation(1, automation));

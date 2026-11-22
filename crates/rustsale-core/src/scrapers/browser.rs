@@ -618,10 +618,13 @@ pub struct BrowserManager {
     supervisor: Mutex<Option<Arc<BrowserSupervisor>>>,
     session: Mutex<Option<Arc<BrowserSession>>>,
     session_permit: Arc<Semaphore>,
+    acquire_timeout: Duration,
 }
 
+const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(30);
+
 impl BrowserManager {
-    pub fn new(_max_sessions: usize) -> Self {
+    pub fn new(max_sessions: usize) -> Self {
         Self {
             sidecar_path: default_sidecar_path(),
             profile_dir: std::env::temp_dir().join("rustsale-cloakbrowser-profile"),
@@ -629,11 +632,12 @@ impl BrowserManager {
             automation: Mutex::new(None),
             supervisor: Mutex::new(None),
             session: Mutex::new(None),
-            session_permit: Arc::new(Semaphore::new(1)),
+            session_permit: Arc::new(Semaphore::new(max_sessions.max(1))),
+            acquire_timeout: DEFAULT_ACQUIRE_TIMEOUT,
         }
     }
 
-    pub fn with_automation(_max_sessions: usize, automation: Arc<dyn BrowserAutomation>) -> Self {
+    pub fn with_automation(max_sessions: usize, automation: Arc<dyn BrowserAutomation>) -> Self {
         Self {
             sidecar_path: PathBuf::new(),
             profile_dir: std::env::temp_dir().join("rustsale-cloakbrowser-test-profile"),
@@ -641,8 +645,14 @@ impl BrowserManager {
             automation: Mutex::new(None),
             supervisor: Mutex::new(None),
             session: Mutex::new(None),
-            session_permit: Arc::new(Semaphore::new(1)),
+            session_permit: Arc::new(Semaphore::new(max_sessions.max(1))),
+            acquire_timeout: DEFAULT_ACQUIRE_TIMEOUT,
         }
+    }
+
+    pub fn with_acquire_timeout(mut self, timeout: Duration) -> Self {
+        self.acquire_timeout = timeout;
+        self
     }
 
     pub fn with_port(mut self, port: u16) -> Self {
@@ -742,12 +752,24 @@ impl BrowserManager {
     }
 
     pub async fn acquire(&self) -> BrowserResult<SessionGuard> {
-        let permit = self
-            .session_permit
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|_| disconnected_error("browser session semaphore is closed"))?;
+        // A leaked guard must surface as a retryable error, not hang a unit
+        // forever (C21).
+        let permit = tokio::time::timeout(
+            self.acquire_timeout,
+            self.session_permit.clone().acquire_owned(),
+        )
+        .await
+        .map_err(|_| {
+            scrape_error(
+                ScrapeErrorKind::BrowserStartup,
+                format!(
+                    "timed out after {} ms waiting for a browser session",
+                    duration_millis(self.acquire_timeout)
+                ),
+                true,
+            )
+        })?
+        .map_err(|_| disconnected_error("browser session semaphore is closed"))?;
         let session = self.session.lock().await.clone().ok_or_else(|| {
             scrape_error(
                 ScrapeErrorKind::BrowserStartup,
