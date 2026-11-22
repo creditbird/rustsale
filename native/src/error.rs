@@ -49,13 +49,16 @@ impl CoreApiError {
 impl From<String> for CoreApiError {
     fn from(message: String) -> Self {
         let lower = message.to_lowercase();
-        let code = if lower.contains("no such table")
+        let schema_fault = lower.contains("no such table")
             || lower.contains("no such column")
-            || lower.contains("no such index")
-        {
-            // A schema fault is the app's bug, not a missing record the caller can fix.
-            "internal"
-        } else if lower.contains("not found")
+            || lower.contains("no such index");
+        if schema_fault {
+            // A schema fault is the app's bug, not a missing record the caller can fix. The raw
+            // message can carry the statement, so it stays in the log and JS only sees the kind.
+            eprintln!("[rustsale] database schema error: {message}");
+            return Self::new("internal", "database error");
+        }
+        let code = if lower.contains("not found")
             || lower.contains("no such")
             || lower.contains("returned no rows")
             || lower.contains("does not exist")
@@ -177,6 +180,16 @@ mod tests {
             "internal"
         );
         assert_eq!(CoreApiError::from("no such file").code, "not_found");
+    }
+
+    #[test]
+    fn schema_faults_do_not_leak_sql_to_js() {
+        let error = CoreApiError::from(
+            "Failed to query leads: no such column: phone (SELECT id, phone FROM leads WHERE tenant_id = 7)",
+        );
+        assert_eq!(error.code, "internal");
+        assert_eq!(error.message, "database error");
+        assert!(!error.message.contains("SELECT"));
     }
 
     #[test]
