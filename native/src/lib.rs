@@ -7,6 +7,7 @@ mod conversation_actions;
 mod conversations;
 mod deals;
 mod error;
+mod facebook;
 mod host;
 mod leads;
 mod leads_more;
@@ -29,6 +30,7 @@ fn native(registry: &mut Registry) {
         .module::<deals::Deals>()
         .module::<campaigns::Campaigns>()
         .module::<categories::Categories>()
+        .module::<facebook::Facebook>()
         .module::<conversations::Conversations>()
         .module::<conversation_actions::ConversationActions>()
         .module::<maps::GoogleMaps>()

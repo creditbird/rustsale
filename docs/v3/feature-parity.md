@@ -204,22 +204,22 @@
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| FB-01 | FB | Liệt kê page Facebook đã kết nối | FacebookAccountsSettings.svelte, FacebookHub.svelte | src-tauri/src/commands.rs:get_managed_facebook_accounts | Kèm token status, runtime | Chưa xuất |
-| FB-02 | FB | Xóa tài khoản hoặc page Facebook | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:delete_facebook_account | Xóa token trong vault | Chưa xuất |
-| FB-03 | FB | Lưu token hoặc page Facebook mới, hoặc cập nhật | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:save_managed_facebook_account | Hỗ trợ OAuth và nhập tay | Chưa xuất |
-| FB-04 | FB | Lấy danh sách page từ token Facebook | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:fetch_facebook_pages_from_token | Gọi Graph API | Chưa xuất |
-| FB-05 | FB | Tạo bài đăng Facebook hẹn giờ hoặc nháp | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:schedule_facebook_post | Có media, link, scheduling mode | Chưa xuất |
-| FB-06 | FB | Đẩy bài đăng Facebook vào hàng đợi xuất bản ngay | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:publish_facebook_post_now | Chỉ nhận draft, failed, queued, overdue_prompt | Chưa xuất |
-| FB-07 | FB | Liệt kê bài đăng Facebook | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_facebook_scheduled_posts | Lọc theo page, tối đa 100 | Chưa xuất |
-| FB-08 | FB | Hủy bài đăng Facebook chưa xuất bản | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:cancel_facebook_scheduled_post | Xóa bản ghi draft, queued, overdue_prompt | Chưa xuất |
-| FB-09 | FB | Tạo rule tự động trả lời bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:create_comment_automation | Có keyword, match mode, auto like, reply công khai và riêng | Chưa xuất |
-| FB-10 | FB | Liệt kê rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_comment_automations | Lọc theo page | Chưa xuất |
-| FB-11 | FB | Sửa rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:update_comment_automation | Cập nhật toàn bộ trường | Chưa xuất |
-| FB-12 | FB | Xóa rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:delete_comment_automation | Xóa cứng | Chưa xuất |
-| FB-13 | FB | Đọc log đã trả lời bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_comment_logs | Lọc theo page và rule | Chưa xuất |
-| FB-14 | FB | Đọc sức khỏe token và page Facebook | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:get_facebook_page_health | Kiểm tra token, quyền, page | Chưa xuất |
-| FB-15 | FB | Đồng bộ hội thoại Messenger từ Graph API | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:sync_facebook_conversations | Theo page hoặc toàn bộ | Chưa xuất |
-| FB-16 | FB | Nhận event webhook Messenger vào SQLite, kiểm tra page hợp lệ | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:ingest_facebook_webhook_events | Chỉ nhận event đúng page đã cấu hình | Chưa xuất |
+| FB-01 | FB | Liệt kê page Facebook đã kết nối | FacebookAccountsSettings.svelte, FacebookHub.svelte | src-tauri/src/commands.rs:get_managed_facebook_accounts | Kèm token status, runtime | Đã xuất `Facebook.accounts` |
+| FB-02 | FB | Xóa tài khoản hoặc page Facebook | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:delete_facebook_account | Xóa token trong vault | Đã xuất `Facebook.deleteAccount` |
+| FB-03 | FB | Lưu token hoặc page Facebook mới, hoặc cập nhật | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:save_managed_facebook_account | Hỗ trợ OAuth và nhập tay | Đã xuất `Facebook.saveAccount` — bọc, chưa gọi thử (cần token Meta thật) |
+| FB-04 | FB | Lấy danh sách page từ token Facebook | FacebookAccountsSettings.svelte | src-tauri/src/commands.rs:fetch_facebook_pages_from_token | Gọi Graph API | Đã xuất `Facebook.discoverPages` — bọc, chưa gọi thử (cần token Meta thật) |
+| FB-05 | FB | Tạo bài đăng Facebook hẹn giờ hoặc nháp | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:schedule_facebook_post | Có media, link, scheduling mode | Đã xuất `Facebook.schedulePost` |
+| FB-06 | FB | Đẩy bài đăng Facebook vào hàng đợi xuất bản ngay | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:publish_facebook_post_now | Chỉ nhận draft, failed, queued, overdue_prompt | Đã xuất `Facebook.publishPostNow` |
+| FB-07 | FB | Liệt kê bài đăng Facebook | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_facebook_scheduled_posts | Lọc theo page, tối đa 100 | Đã xuất `Facebook.scheduledPosts` |
+| FB-08 | FB | Hủy bài đăng Facebook chưa xuất bản | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:cancel_facebook_scheduled_post | Xóa bản ghi draft, queued, overdue_prompt | Đã xuất `Facebook.cancelScheduledPost` |
+| FB-09 | FB | Tạo rule tự động trả lời bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:create_comment_automation | Có keyword, match mode, auto like, reply công khai và riêng | Đã xuất `Facebook.createCommentAutomation` |
+| FB-10 | FB | Liệt kê rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_comment_automations | Lọc theo page | Đã xuất `Facebook.commentAutomations` |
+| FB-11 | FB | Sửa rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:update_comment_automation | Cập nhật toàn bộ trường | Đã xuất `Facebook.updateCommentAutomation` |
+| FB-12 | FB | Xóa rule tự động bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:delete_comment_automation | Xóa cứng | Đã xuất `Facebook.deleteCommentAutomation` |
+| FB-13 | FB | Đọc log đã trả lời bình luận | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:list_comment_logs | Lọc theo page và rule | Đã xuất `Facebook.commentLogs` |
+| FB-14 | FB | Đọc sức khỏe token và page Facebook | FacebookHub.svelte | src-tauri/src/facebook/commands.rs:get_facebook_page_health | Kiểm tra token, quyền, page | Đã xuất `Facebook.pageHealth` |
+| FB-15 | FB | Đồng bộ hội thoại Messenger từ Graph API | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:sync_facebook_conversations | Theo page hoặc toàn bộ | Đã xuất `Facebook.syncConversations` — bọc, chưa gọi thử (cần page đã kết nối) |
+| FB-16 | FB | Nhận event webhook Messenger vào SQLite, kiểm tra page hợp lệ | ConversationWorkspace.svelte | src-tauri/src/conversation/commands.rs:ingest_facebook_webhook_events | Chỉ nhận event đúng page đã cấu hình | Đã xuất `Facebook.ingestWebhookEvents` |
 
 ### 2.7 Nhóm AI — 5 command
 

@@ -1,7 +1,7 @@
 // `nsh test` runs this in a headless runner linked with the crate: the module is the real one, on a
 // throwaway data folder with the debug seed (3 synthetic leads, 2 deals). No real account or data.
 import { expect, test } from "nsh/test";
-import { Campaigns, Host, LeadsMore, Zalo } from "rustsale/native";
+import { Campaigns, Facebook, Host, LeadsMore, Zalo } from "rustsale/native";
 
 type Row = Record<string, any>;
 const row = (value: unknown) => value as Row;
@@ -163,4 +163,32 @@ test("zalo: account list is empty and a missing session rejects", async () => {
   await Host.start(dir);
   expect(await Zalo.accounts()).toEqual([]);
   await expect(Zalo.verifySession("missing-imei")).rejects.toThrow();
+});
+
+test("facebook: empty lists, rejected tokens and missing page errors", async () => {
+  await Host.start(dir);
+  expect(await Facebook.accounts()).toEqual([]);
+  expect(await Facebook.scheduledPosts(null)).toEqual([]);
+  expect(await Facebook.commentAutomations(null)).toEqual([]);
+  expect(await Facebook.commentLogs(null, 10)).toEqual([]);
+
+  await expect(
+    Facebook.saveAccount({ pageId: "  ", accessToken: "" })
+  ).rejects.toThrow();
+  await expect(Facebook.discoverPages("   ", null)).rejects.toThrow();
+  await expect(Facebook.pageHealth("missing-page")).rejects.toThrow();
+  await expect(Facebook.syncConversations("missing-page")).rejects.toThrow();
+  expect(await Facebook.ingestWebhookEvents("missing-page", [])).toBe(0);
+  await expect(
+    Facebook.schedulePost({
+      draft_group_id: null,
+      channel_account_id: 1,
+      page_id: "missing-page",
+      post_type: "text",
+      message: "Bulk post",
+      link_url: null,
+      media_paths: [],
+      scheduled_publish_time: null
+    })
+  ).rejects.toThrow();
 });
