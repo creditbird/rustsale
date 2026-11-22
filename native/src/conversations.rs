@@ -1,10 +1,11 @@
 //! The conversation inbox, timelines and channel runtime.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, id64, limit, on_blocking, on_core, state_of};
+use crate::runtime::{args, body, checked_id64, id64, limit, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::conversation::commands::{self, ConversationState};
+use rustsale_core::conversation::types::TimelineCursor;
 use rustsale_core::paging::inbox::{InboxQuery, list_conversation_inbox_page};
 
 /// Conversations of the four channels: inbox, timelines and channel runtime.
@@ -45,9 +46,13 @@ impl Conversations {
         before: Option<JsonValue>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
-        let before = match before {
+        let before: Option<TimelineCursor> = match before {
             None | Some(JsonValue::Null) => None,
-            Some(value) => Some(body(value)?),
+            Some(value) => {
+                let mut cursor: TimelineCursor = body(value)?;
+                cursor.message_id = checked_id64(cursor.message_id)?;
+                Some(cursor)
+            }
         };
         let limit = limit(limit_);
         let conversation = id64(conversation_id)?;

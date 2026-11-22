@@ -3,17 +3,20 @@
 //! by the tests; channel-bound commands stay with the conversation runtime.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, id64, limit, on_blocking, state_of};
+use crate::runtime::{
+    args, body, checked_id64, checked_optional_id64, id64, limit, on_blocking, state_of,
+};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::conversation::commands::{self, ConversationState};
 use rustsale_core::conversation::types::{
-    Channel, CreateConversationQuickTemplateRequest, DeleteConversationQuickTemplateRequest,
-    DeleteConversationRequest, LinkIdentityRequest, ListConversationMentionCandidatesRequest,
-    ListConversationQuickTemplatesRequest, MarkConversationQuickTemplateUsedRequest,
-    PinMessageRequest, RelinkLeadRequest, SendConversationBatchRequest,
-    SendConversationMessageRequest, TimelineCursor, UnlinkIdentityRequest, UnlinkLeadRequest,
-    UnpinMessageRequest, UpdateConversationQuickTemplateRequest,
+    Channel, ConversationSendPartContent, CreateConversationQuickTemplateRequest,
+    DeleteConversationQuickTemplateRequest, DeleteConversationRequest, LinkIdentityRequest,
+    ListConversationMentionCandidatesRequest, ListConversationQuickTemplatesRequest,
+    MarkConversationQuickTemplateUsedRequest, PinMessageRequest, RelinkLeadRequest,
+    SendConversationBatchRequest, SendConversationMessageRequest, TimelineCursor,
+    UnlinkIdentityRequest, UnlinkLeadRequest, UnpinMessageRequest,
+    UpdateConversationQuickTemplateRequest,
 };
 
 /// A JS number as a delta sequence; negative and non-finite values start at 0.
@@ -36,8 +39,20 @@ fn count(value: Option<f64>) -> Option<usize> {
 fn cursor(before: Option<JsonValue>) -> Result<Option<TimelineCursor>, CoreApiError> {
     match before {
         None | Some(JsonValue::Null) => Ok(None),
-        Some(value) => body(value).map(Some),
+        Some(value) => {
+            let mut cursor: TimelineCursor = body(value)?;
+            cursor.message_id = checked_id64(cursor.message_id)?;
+            Ok(Some(cursor))
+        }
     }
+}
+
+/// Checks the one target of a delete request serde accepted.
+fn check_delete(request: &mut DeleteConversationRequest) -> Result<(), CoreApiError> {
+    request.conversation_id = checked_optional_id64(request.conversation_id)?;
+    request.identity_id = checked_optional_id64(request.identity_id)?;
+    request.lead_id = checked_optional_id64(request.lead_id)?;
+    Ok(())
 }
 
 /// The conversation commands that run without a connected account.
@@ -87,7 +102,9 @@ impl ConversationActions {
 
     /// Links identity `request` (`{ identityId, leadId }`) to its lead.
     pub async fn link_identity(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: LinkIdentityRequest = body(request)?;
+        let mut request: LinkIdentityRequest = body(request)?;
+        request.identity_id = checked_id64(request.identity_id)?;
+        request.lead_id = checked_id64(request.lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::link_conversation_identity(state, request)?)
@@ -97,7 +114,8 @@ impl ConversationActions {
 
     /// Unlinks identity `request` (`{ identityId }`); its messages stay.
     pub async fn unlink_identity(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: UnlinkIdentityRequest = body(request)?;
+        let mut request: UnlinkIdentityRequest = body(request)?;
+        request.identity_id = checked_id64(request.identity_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::unlink_conversation_identity(state, request)?)
@@ -107,7 +125,8 @@ impl ConversationActions {
 
     /// Unlinks lead `request` (`{ leadId }`) from its conversations; the conversations stay.
     pub async fn unlink_lead(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: UnlinkLeadRequest = body(request)?;
+        let mut request: UnlinkLeadRequest = body(request)?;
+        request.lead_id = checked_id64(request.lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::unlink_conversation_lead(state, request)?)
@@ -117,7 +136,9 @@ impl ConversationActions {
 
     /// Moves the link of `request` (`{ sourceLeadId, targetLeadId }`) to another lead.
     pub async fn relink_lead(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: RelinkLeadRequest = body(request)?;
+        let mut request: RelinkLeadRequest = body(request)?;
+        request.source_lead_id = checked_id64(request.source_lead_id)?;
+        request.target_lead_id = checked_id64(request.target_lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::relink_conversation_lead(state, request)?)
@@ -127,7 +148,10 @@ impl ConversationActions {
 
     /// Queues one message from `request` in the outbox; the channel supervisor delivers it.
     pub async fn send_message(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: SendConversationMessageRequest = body(request)?;
+        let mut request: SendConversationMessageRequest = body(request)?;
+        request.conversation_id = checked_id64(request.conversation_id)?;
+        request.channel_account_id = checked_id64(request.channel_account_id)?;
+        request.reply_to_message_id = checked_optional_id64(request.reply_to_message_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::send_conversation_message(state, request)?)
@@ -138,7 +162,23 @@ impl ConversationActions {
     /// Queues a message of several parts from `request` in the outbox; only the `HUMAN_AGENT` tag
     /// is accepted.
     pub async fn send_batch(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: SendConversationBatchRequest = body(request)?;
+        let mut request: SendConversationBatchRequest = body(request)?;
+        request.conversation_id = checked_id64(request.conversation_id)?;
+        request.reply_to_message_id = checked_optional_id64(request.reply_to_message_id)?;
+        for part in &mut request.parts {
+            match &mut part.content {
+                ConversationSendPartContent::Text { mentions, .. } => {
+                    for mention in mentions {
+                        mention.target_identity_id =
+                            checked_optional_id64(mention.target_identity_id)?;
+                    }
+                }
+                ConversationSendPartContent::Forward { source_message_id } => {
+                    *source_message_id = checked_id64(*source_message_id)?;
+                }
+                _ => {}
+            }
+        }
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::send_conversation_batch(state, request)?)
@@ -149,7 +189,8 @@ impl ConversationActions {
     /// Deletes one conversation from `request` (`{ conversationId? | identityId? | leadId? }`): exactly
     /// one of the three must be given.
     pub async fn delete_conversation(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: DeleteConversationRequest = body(request)?;
+        let mut request: DeleteConversationRequest = body(request)?;
+        check_delete(&mut request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_conversation(state, request)?)
@@ -159,7 +200,10 @@ impl ConversationActions {
 
     /// Deletes every conversation in `requests`, each shaped as `deleteConversation` takes it.
     pub async fn delete_conversations(requests: JsonValue) -> Result<JsonValue, JsError> {
-        let requests: Vec<DeleteConversationRequest> = body(requests)?;
+        let mut requests: Vec<DeleteConversationRequest> = body(requests)?;
+        for request in &mut requests {
+            check_delete(request)?;
+        }
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_conversations_batch(state, requests)?)
@@ -199,7 +243,8 @@ impl ConversationActions {
     /// Replaces quick reply template `request` (`{ id, shortcut, title, bodyText, category?,
     /// isActive? }`).
     pub async fn update_quick_template(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: UpdateConversationQuickTemplateRequest = body(request)?;
+        let mut request: UpdateConversationQuickTemplateRequest = body(request)?;
+        request.id = checked_id64(request.id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::update_conversation_quick_template(
@@ -211,7 +256,8 @@ impl ConversationActions {
 
     /// Deletes quick reply template `request` (`{ id }`).
     pub async fn delete_quick_template(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: DeleteConversationQuickTemplateRequest = body(request)?;
+        let mut request: DeleteConversationQuickTemplateRequest = body(request)?;
+        request.id = checked_id64(request.id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_conversation_quick_template(
@@ -223,7 +269,8 @@ impl ConversationActions {
 
     /// Counts one more use of quick reply template `request` (`{ id }`).
     pub async fn mark_quick_template_used(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: MarkConversationQuickTemplateUsedRequest = body(request)?;
+        let mut request: MarkConversationQuickTemplateUsedRequest = body(request)?;
+        request.id = checked_id64(request.id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::mark_conversation_quick_template_used(
@@ -247,7 +294,9 @@ impl ConversationActions {
 
     /// The members `request` (`{ conversationId, sourceMessageId?, query?, limit? }`) can mention.
     pub async fn mention_candidates(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: ListConversationMentionCandidatesRequest = body(request)?;
+        let mut request: ListConversationMentionCandidatesRequest = body(request)?;
+        request.conversation_id = checked_id64(request.conversation_id)?;
+        request.source_message_id = checked_optional_id64(request.source_message_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::list_conversation_mention_candidates(
@@ -259,7 +308,9 @@ impl ConversationActions {
 
     /// Pins message `request` (`{ conversationId, messageId, pinnedBy? }`).
     pub async fn pin_message(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: PinMessageRequest = body(request)?;
+        let mut request: PinMessageRequest = body(request)?;
+        request.conversation_id = checked_id64(request.conversation_id)?;
+        request.message_id = checked_id64(request.message_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::pin_conversation_message(state, request)?)
@@ -269,7 +320,9 @@ impl ConversationActions {
 
     /// Unpins message `request` (`{ conversationId, messageId }`).
     pub async fn unpin_message(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: UnpinMessageRequest = body(request)?;
+        let mut request: UnpinMessageRequest = body(request)?;
+        request.conversation_id = checked_id64(request.conversation_id)?;
+        request.message_id = checked_id64(request.message_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::unpin_conversation_message(state, request)?)

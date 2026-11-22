@@ -2,7 +2,10 @@
 //! reactions, forwarding, attachments, sync, WhatsApp login and group members.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, id64, limit, on_blocking, on_core, state_of};
+use crate::runtime::{
+    body, checked_id64, checked_ids32, checked_ids64, checked_optional_id64, id64, limit,
+    on_blocking, on_core, state_of,
+};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, BatchImportGroupMembersRequest, DbState};
@@ -44,7 +47,8 @@ impl ConversationNetwork {
     /// Opens a direct conversation from `request` (`{ channelAccountId, phoneOrExternalId,
     /// displayName?, initialMessage }`) and resolves its first message.
     pub async fn start_direct(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: StartDirectConversationRequest = body(request)?;
+        let mut request: StartDirectConversationRequest = body(request)?;
+        request.channel_account_id = checked_id64(request.channel_account_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::start_direct_conversation(state, request)?)
@@ -72,7 +76,8 @@ impl ConversationNetwork {
     /// Stages a clipboard image from `request` (`{ conversationId, fileName, mimeType,
     /// base64Data }`) and resolves its metadata.
     pub async fn stage_clipboard_image(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: StageConversationClipboardImageRequest = body(request)?;
+        let mut request: StageConversationClipboardImageRequest = body(request)?;
+        request.conversation_id = checked_id64(request.conversation_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(
@@ -129,7 +134,8 @@ impl ConversationNetwork {
 
     /// Recalls sent message `request` (`{ messageId }`) and resolves the updated message.
     pub async fn recall_message(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: RecallMessageRequest = body(request)?;
+        let mut request: RecallMessageRequest = body(request)?;
+        request.message_id = checked_id64(request.message_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::recall_conversation_message(state, request).await?)
@@ -140,7 +146,8 @@ impl ConversationNetwork {
     /// Adds or removes reaction `request` (`{ messageId, reaction, active, count?,
     /// clientMutationId }`) on a message; resolves the mutation result.
     pub async fn set_reaction(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: SetConversationReactionRequest = body(request)?;
+        let mut request: SetConversationReactionRequest = body(request)?;
+        request.message_id = checked_id64(request.message_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::set_conversation_reaction(state, request).await?)
@@ -152,7 +159,9 @@ impl ConversationNetwork {
     /// targetConversationIds }`) to several conversations; resolves the operation with per-target
     /// results.
     pub async fn forward_message(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: ForwardConversationMessageRequest = body(request)?;
+        let mut request: ForwardConversationMessageRequest = body(request)?;
+        request.source_message_id = checked_id64(request.source_message_id)?;
+        request.target_conversation_ids = checked_ids64(request.target_conversation_ids)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::forward_conversation_message(state, request)?)
@@ -163,7 +172,8 @@ impl ConversationNetwork {
     /// Retries one failed target of a forward from `request` (`{ clientOperationId,
     /// targetConversationId }`) and resolves that target's result.
     pub async fn retry_forward_target(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: RetryConversationForwardTargetRequest = body(request)?;
+        let mut request: RetryConversationForwardTargetRequest = body(request)?;
+        request.target_conversation_id = checked_id64(request.target_conversation_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::retry_conversation_forward_target(
@@ -190,7 +200,12 @@ impl ConversationNetwork {
     /// Imports group members from `request` (`{ conversationId, members, categoryIds,
     /// newCategoryName?, groupTitle, skipExisting? }`) as leads and resolves the counts.
     pub async fn import_group_members(request: JsonValue) -> Result<JsonValue, JsError> {
-        let request: BatchImportGroupMembersRequest = body(request)?;
+        let mut request: BatchImportGroupMembersRequest = body(request)?;
+        request.conversation_id = checked_id64(request.conversation_id)?;
+        request.category_ids = checked_ids32(request.category_ids)?;
+        for member in &mut request.members {
+            member.identity_id = checked_optional_id64(member.identity_id)?;
+        }
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::batch_import_group_members_to_leads(
