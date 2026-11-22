@@ -1033,6 +1033,15 @@ pub fn create_outreach_template(
     Ok(last_id)
 }
 
+/// An UPDATE that matched no row means the target does not exist (any more).
+fn ensure_row_changed(changed: usize) -> Result<()> {
+    if changed == 0 {
+        Err(rusqlite::Error::QueryReturnedNoRows)
+    } else {
+        Ok(())
+    }
+}
+
 pub fn update_outreach_template(
     conn: &Connection,
     id: i32,
@@ -1040,11 +1049,11 @@ pub fn update_outreach_template(
     content: &str,
     image_url: Option<&str>,
 ) -> Result<()> {
-    conn.execute(
+    let changed = conn.execute(
         "UPDATE outreach_templates SET name = ?1, content = ?2, image_url = ?3 WHERE id = ?4",
         rusqlite::params![name, content, image_url, id],
     )?;
-    Ok(())
+    ensure_row_changed(changed)
 }
 
 pub fn delete_outreach_template(conn: &Connection, id: i32) -> Result<()> {
@@ -1191,7 +1200,7 @@ pub fn save_smtp_server(conn: &Connection, server: &crate::models::SmtpServer) -
 
     if let Some(id) = server.id {
         if id > 0 {
-            conn.execute(
+            let changed = conn.execute(
                 "UPDATE smtp_servers SET name = ?1, host = ?2, port = ?3, username = ?4,
                     password = CASE WHEN trim(?5) = '' THEN password ELSE ?5 END,
                     from_email = ?6, from_name = ?7, security = ?8 WHERE id = ?9",
@@ -1207,6 +1216,7 @@ pub fn save_smtp_server(conn: &Connection, server: &crate::models::SmtpServer) -
                     id,
                 ],
             )?;
+            ensure_row_changed(changed)?;
             return Ok(id);
         }
     }
@@ -1311,11 +1321,11 @@ pub fn update_email_template(
     subject: &str,
     content: &str,
 ) -> Result<()> {
-    conn.execute(
+    let changed = conn.execute(
         "UPDATE email_templates SET name = ?1, subject = ?2, content = ?3 WHERE id = ?4",
         rusqlite::params![name, subject, content, id],
     )?;
-    Ok(())
+    ensure_row_changed(changed)
 }
 
 pub fn delete_email_template(conn: &Connection, id: i32) -> Result<()> {
@@ -2285,7 +2295,7 @@ pub fn update_template(
         conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
             row.get(0)
         })?;
-    conn.execute(
+    let changed = conn.execute(
         "UPDATE templates
          SET folder_id = ?1, name = ?2, channel = ?3, stage = ?4, subject = ?5,
              content = ?6, media_url = ?7, ai_prompt = ?8, tags_json = ?9, updated_at = ?10
@@ -2304,7 +2314,7 @@ pub fn update_template(
             input.id
         ],
     )?;
-    Ok(())
+    ensure_row_changed(changed)
 }
 
 #[allow(dead_code)]

@@ -2,7 +2,7 @@
 // throwaway data folder. Every case is one fault Alice's UI2 QA found; each name starts with the
 // item of the ui2-core brief.
 import { expect, test } from "nsh/test";
-import { ConversationActions, Host, Templates } from "rustsale/native";
+import { ConversationActions, Deals, Host, Leads, Templates } from "rustsale/native";
 
 const dir = `/tmp/rustsale-v3-nsh-test-ui2-core-${Date.now()}`;
 
@@ -44,5 +44,32 @@ test("ui2 item2: a template with an unknown channel is invalid_request", async (
       content: "hi"
     }),
     "invalid_request"
+  );
+});
+
+test("ui2 item3: editing a row that no longer exists is not_found, never a silent success", async () => {
+  await Host.start(dir);
+  await expectError(Leads.updateStatus(987654, "Qualified"), "not_found", "lead 987654 not found");
+  await expectError(Deals.updateStage(987654, "Won"), "not_found", "deal 987654 not found");
+  await expectError(
+    Templates.updateTemplate({
+      id: 987654,
+      folder_id: null,
+      name: "Gone",
+      channel: "zalo",
+      stage: null,
+      subject: null,
+      content: "x",
+      media_url: null,
+      ai_prompt: null,
+      tags_json: null
+    }),
+    "not_found",
+    "template 987654 not found"
+  );
+  await expectError(
+    Templates.updateEmailTemplate(987654, "Gone", "s", "c"),
+    "not_found",
+    "email template 987654 not found"
   );
 });
