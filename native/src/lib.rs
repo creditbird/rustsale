@@ -1,6 +1,7 @@
 //! RustSale v3 native module: what `App.tsx` imports from `rustsale/native`.
 //! The only place TSX reaches `rustsale-core`.
 
+mod campaigns;
 mod categories;
 mod conversation_actions;
 mod conversations;
@@ -25,6 +26,7 @@ fn native(registry: &mut Registry) {
         .module::<leads::Leads>()
         .module::<leads_more::LeadsMore>()
         .module::<deals::Deals>()
+        .module::<campaigns::Campaigns>()
         .module::<categories::Categories>()
         .module::<conversations::Conversations>()
         .module::<conversation_actions::ConversationActions>()

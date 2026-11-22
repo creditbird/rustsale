@@ -137,31 +137,31 @@
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| CAMP-01 | CAMP | Liệt kê mẫu outreach Zalo | ZaloOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_outreach_templates | Kèm ảnh đại diện mẫu | Chưa xuất |
-| CAMP-02 | CAMP | Tạo mẫu outreach Zalo kèm ảnh | ZaloOutreach.svelte | src-tauri/src/commands.rs:create_outreach_template | Lưu image_url | Chưa xuất |
-| CAMP-03 | CAMP | Sửa mẫu outreach Zalo | ZaloOutreach.svelte | src-tauri/src/commands.rs:update_outreach_template | Ghi đè nội dung và ảnh | Chưa xuất |
-| CAMP-04 | CAMP | Xóa mẫu outreach Zalo | ZaloOutreach.svelte | src-tauri/src/commands.rs:delete_outreach_template | Xóa cứng | Chưa xuất |
-| CAMP-05 | CAMP | Gửi outreach Zalo cho danh sách lead, phát event tiến độ | LeadDetails.svelte | src-tauri/src/commands.rs:send_zalo_outreach | Lọc lead thiếu số; phát outreach-progress, outreach-log, outreach-complete | Chưa xuất |
-| CAMP-06 | CAMP | Chạy chiến dịch outreach Zalo hàng loạt với delay và ảnh | ZaloOutreach.svelte | src-tauri/src/commands.rs:start_zalo_outreach | Có burst delay và inter-message delay | Chưa xuất |
+| CAMP-01 | CAMP | Liệt kê mẫu outreach Zalo | ZaloOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:get_outreach_templates | Kèm ảnh đại diện mẫu | Đã xuất `Campaigns.outreachTemplates` |
+| CAMP-02 | CAMP | Tạo mẫu outreach Zalo kèm ảnh | ZaloOutreach.svelte | src-tauri/src/commands.rs:create_outreach_template | Lưu image_url | Đã xuất `Campaigns.createOutreachTemplate` |
+| CAMP-03 | CAMP | Sửa mẫu outreach Zalo | ZaloOutreach.svelte | src-tauri/src/commands.rs:update_outreach_template | Ghi đè nội dung và ảnh | Đã xuất `Campaigns.updateOutreachTemplate` |
+| CAMP-04 | CAMP | Xóa mẫu outreach Zalo | ZaloOutreach.svelte | src-tauri/src/commands.rs:delete_outreach_template | Xóa cứng | Đã xuất `Campaigns.deleteOutreachTemplate` |
+| CAMP-05 | CAMP | Gửi outreach Zalo cho danh sách lead, phát event tiến độ | LeadDetails.svelte | src-tauri/src/commands.rs:send_zalo_outreach | Lọc lead thiếu số; phát outreach-progress, outreach-log, outreach-complete | Đã xuất `Campaigns.sendZaloOutreach` — bọc, chưa gọi thử (cần tài khoản Zalo thật) |
+| CAMP-06 | CAMP | Chạy chiến dịch outreach Zalo hàng loạt với delay và ảnh | ZaloOutreach.svelte | src-tauri/src/commands.rs:start_zalo_outreach | Có burst delay và inter-message delay | Đã xuất `Campaigns.startZaloOutreach` — bọc, chưa gọi thử (cần tài khoản Zalo thật) |
 | CAMP-07 | CAMP | Lệnh gửi chiến dịch Zalo kiểu cũ | Không có | src-tauri/src/commands.rs:send_zalo_campaign | Không thấy frontend gọi; giữ để tương thích | Không xuất (lệnh cũ, TSX không được thấy; thay bằng luồng mới) |
 | CAMP-08 | CAMP | Đọc lead của chiến dịch cũ | Không có | src-tauri/src/commands.rs:get_campaign_leads | Chỉ service còn dùng; UI dùng LEAD-01 | Không xuất (lệnh cũ, TSX không được thấy; thay bằng luồng mới) |
-| CAMP-09 | CAMP | Gửi email hàng loạt qua SMTP, phát event tiến độ | EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:send_email_outreach | Chạy tokio nền; thay biến tên, công ty, email, số điện thoại | Chưa xuất |
-| CAMP-10 | CAMP | Tạo chiến dịch WhatsApp với rate limit và quiet hours | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:create_whatsapp_campaign | Lưu tài khoản, delay, burst, giờ yên tĩnh | Chưa xuất |
-| CAMP-11 | CAMP | Nạp danh sách người nhận cho chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:populate_whatsapp_campaign_recipients | Chuẩn hóa số E.164, render template | Chưa xuất |
-| CAMP-12 | CAMP | Chạy worker gửi chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:start_whatsapp_campaign | Spawn run_campaign_worker | Chưa xuất |
-| CAMP-13 | CAMP | Tạm dừng chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:pause_whatsapp_campaign | Đổi trạng thái trong DB | Chưa xuất |
-| CAMP-14 | CAMP | Tiếp tục chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:resume_whatsapp_campaign | Worker đọc lại trạng thái | Chưa xuất |
-| CAMP-15 | CAMP | Hủy chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:cancel_whatsapp_campaign | Dừng worker | Chưa xuất |
-| CAMP-16 | CAMP | Đọc một chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:get_whatsapp_campaign | Kèm counters | Chưa xuất |
-| CAMP-17 | CAMP | Liệt kê chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:list_whatsapp_campaigns | Lọc theo trạng thái ở UI | Chưa xuất |
-| CAMP-18 | CAMP | Liệt kê người nhận và trạng thái gửi | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:get_whatsapp_campaign_recipients | Có skip reason và lỗi cuối | Chưa xuất |
-| CAMP-19 | CAMP | Đặt chiến dịch đa kênh sang ACTIVE | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:start_unified_campaign | Chỉ đổi status, không tự gửi | Chưa xuất |
-| CAMP-20 | CAMP | Đặt chiến dịch đa kênh sang PAUSED | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:pause_unified_campaign | Chỉ đổi status | Chưa xuất |
-| CAMP-21 | CAMP | Ghi danh lead vào bước đầu của chiến dịch | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:enroll_leads_into_campaign | Tạo campaign_execution PENDING, cần có bước | Chưa xuất |
-| CAMP-22 | CAMP | Tính analytics theo bước và tỷ lệ phản hồi/chuyển đổi | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:get_unified_campaign_analytics | Đọc campaign_executions và deals | Chưa xuất |
-| CAMP-23 | CAMP | Liệt kê chiến dịch đa kênh | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:get_all_unified_campaigns | Trả campaign và metadata | Chưa xuất |
-| CAMP-24 | CAMP | Lưu chiến dịch và toàn bộ bước trong một transaction | CampaignCenter.svelte, SequenceBuilder.svelte | src-tauri/src/campaign/commands.rs:save_unified_campaign | Xóa bước cũ rồi ghi lại | Chưa xuất |
-| CAMP-25 | CAMP | Xóa chiến dịch đa kênh | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:delete_unified_campaign | Xóa cứng | Chưa xuất |
+| CAMP-09 | CAMP | Gửi email hàng loạt qua SMTP, phát event tiến độ | EmailOutreach.svelte, LeadDetails.svelte | src-tauri/src/commands.rs:send_email_outreach | Chạy tokio nền; thay biến tên, công ty, email, số điện thoại | Đã xuất `Campaigns.sendEmailOutreach` — bọc, chưa gọi thử (cần SMTP thật) |
+| CAMP-10 | CAMP | Tạo chiến dịch WhatsApp với rate limit và quiet hours | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:create_whatsapp_campaign | Lưu tài khoản, delay, burst, giờ yên tĩnh | Đã xuất `Campaigns.createWhatsappCampaign` |
+| CAMP-11 | CAMP | Nạp danh sách người nhận cho chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:populate_whatsapp_campaign_recipients | Chuẩn hóa số E.164, render template | Đã xuất `Campaigns.populateWhatsappCampaignRecipients` |
+| CAMP-12 | CAMP | Chạy worker gửi chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:start_whatsapp_campaign | Spawn run_campaign_worker | Đã xuất `Campaigns.startWhatsappCampaign` — bọc, chưa gọi thử (cần tài khoản WhatsApp thật) |
+| CAMP-13 | CAMP | Tạm dừng chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:pause_whatsapp_campaign | Đổi trạng thái trong DB | Đã xuất `Campaigns.pauseWhatsappCampaign` |
+| CAMP-14 | CAMP | Tiếp tục chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:resume_whatsapp_campaign | Worker đọc lại trạng thái | Đã xuất `Campaigns.resumeWhatsappCampaign` |
+| CAMP-15 | CAMP | Hủy chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:cancel_whatsapp_campaign | Dừng worker | Đã xuất `Campaigns.cancelWhatsappCampaign` |
+| CAMP-16 | CAMP | Đọc một chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:get_whatsapp_campaign | Kèm counters | Đã xuất `Campaigns.whatsappCampaign` |
+| CAMP-17 | CAMP | Liệt kê chiến dịch WhatsApp | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:list_whatsapp_campaigns | Lọc theo trạng thái ở UI | Đã xuất `Campaigns.whatsappCampaigns` |
+| CAMP-18 | CAMP | Liệt kê người nhận và trạng thái gửi | WhatsAppOutreach.svelte | src-tauri/src/conversation/commands.rs:get_whatsapp_campaign_recipients | Có skip reason và lỗi cuối | Đã xuất `Campaigns.whatsappCampaignRecipients` |
+| CAMP-19 | CAMP | Đặt chiến dịch đa kênh sang ACTIVE | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:start_unified_campaign | Chỉ đổi status, không tự gửi | Đã xuất `Campaigns.startUnifiedCampaign` |
+| CAMP-20 | CAMP | Đặt chiến dịch đa kênh sang PAUSED | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:pause_unified_campaign | Chỉ đổi status | Đã xuất `Campaigns.pauseUnifiedCampaign` |
+| CAMP-21 | CAMP | Ghi danh lead vào bước đầu của chiến dịch | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:enroll_leads_into_campaign | Tạo campaign_execution PENDING, cần có bước | Đã xuất `Campaigns.enrollLeadsIntoCampaign` |
+| CAMP-22 | CAMP | Tính analytics theo bước và tỷ lệ phản hồi/chuyển đổi | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:get_unified_campaign_analytics | Đọc campaign_executions và deals | Đã xuất `Campaigns.unifiedCampaignAnalytics` |
+| CAMP-23 | CAMP | Liệt kê chiến dịch đa kênh | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:get_all_unified_campaigns | Trả campaign và metadata | Đã xuất `Campaigns.unifiedCampaigns` |
+| CAMP-24 | CAMP | Lưu chiến dịch và toàn bộ bước trong một transaction | CampaignCenter.svelte, SequenceBuilder.svelte | src-tauri/src/campaign/commands.rs:save_unified_campaign | Xóa bước cũ rồi ghi lại | Đã xuất `Campaigns.saveUnifiedCampaign` |
+| CAMP-25 | CAMP | Xóa chiến dịch đa kênh | CampaignCenter.svelte | src-tauri/src/campaign/commands.rs:delete_unified_campaign | Xóa cứng | Đã xuất `Campaigns.deleteUnifiedCampaign` |
 
 ### 2.4 Nhóm SCRAPE — 22 command
 
