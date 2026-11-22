@@ -40,6 +40,11 @@ pub trait ScrapeUnitProcessor: Send + Sync {
     async fn action_health(&self, job: &ScrapeJob) -> Result<GoogleMapsPageHealth, ScrapeJobError>;
     async fn relaunch_for_action(&self, job: &ScrapeJob) -> Result<(), ScrapeJobError>;
     async fn shutdown(&self) -> Result<(), ScrapeJobError>;
+    /// Closes the browser only if it belongs to `job_id`. Cancelling a job
+    /// that is not active must not close another job's browser (A8).
+    async fn shutdown_for(&self, _job_id: &str) -> Result<(), ScrapeJobError> {
+        self.shutdown().await
+    }
     /// Runs enrichment and import after the last unit. Implementations must
     /// stop promptly once `cancellation` fires (pause/cancel), leaving no work
     /// item half-claimed (A6).
@@ -289,6 +294,7 @@ impl ScrapeJobRunner {
                 .filter(|active| active.job_id == job_id)
                 .map(|active| active.cancellation.clone())
         };
+        let was_active = cancellation.is_some();
         if let Some(cancellation) = cancellation {
             cancellation.cancel();
         }
@@ -296,11 +302,24 @@ impl ScrapeJobRunner {
         self.events
             .publish_job(&cancelled, "Scrape job cancelled")
             .await;
-        self.processor
-            .shutdown()
-            .await
-            .map_err(|error| anyhow!(error))?;
-        self.wait_for_idle(Duration::from_secs(5)).await?;
+        // A job that is not the active one owns no browser. Shutting the
+        // processor down anyway closed the browser of whatever job *was*
+        // running and then waited five seconds for an idle slot that could not
+        // arrive (A8).
+        if was_active {
+            self.processor
+                .shutdown()
+                .await
+                .map_err(|error| anyhow!(error))?;
+            self.wait_for_idle(Duration::from_secs(5)).await?;
+        } else {
+            // Never global-shut-down: that closed whatever job *was* running
+            // and then waited five seconds for an idle slot (A8).
+            self.processor
+                .shutdown_for(job_id)
+                .await
+                .map_err(|error| anyhow!(error))?;
+        }
         Ok(cancelled)
     }
 
@@ -869,6 +888,7 @@ mod tests {
         gate: Option<Arc<Notify>>,
         gate_used: AtomicBool,
         shutdowns: AtomicUsize,
+        shutdown_for_calls: StdMutex<Vec<String>>,
         finalize_calls: AtomicUsize,
         finalize_waits_for_cancel: AtomicBool,
         shutdown_probe: StdMutex<Option<(Arc<ScrapeJobRepository>, String)>>,
@@ -890,6 +910,7 @@ mod tests {
                 gate: None,
                 gate_used: AtomicBool::new(false),
                 shutdowns: AtomicUsize::new(0),
+                shutdown_for_calls: StdMutex::new(Vec::new()),
                 finalize_calls: AtomicUsize::new(0),
                 finalize_waits_for_cancel: AtomicBool::new(false),
                 shutdown_probe: StdMutex::new(None),
@@ -1018,6 +1039,14 @@ mod tests {
                 let status = repository.get_job(&job_id).await.unwrap().unwrap().status;
                 *self.status_seen_on_shutdown.lock().unwrap() = Some(status);
             }
+            Ok(())
+        }
+
+        async fn shutdown_for(&self, job_id: &str) -> Result<(), ScrapeJobError> {
+            self.shutdown_for_calls
+                .lock()
+                .unwrap()
+                .push(job_id.to_string());
             Ok(())
         }
     }
@@ -1263,6 +1292,61 @@ mod tests {
             runner.wait_for_idle(Duration::from_secs(1)).await.unwrap();
         }
         next.expect("cancel should release the active runner before returning");
+        runner.wait_for_idle(Duration::from_secs(1)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancel_inactive_job_does_not_touch_active_job() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("cancel-active", ScrapeMode::Keyword),
+            vec![unit(
+                "cancel-active",
+                "cancel-active-unit",
+                "active",
+                "keyword",
+            )],
+        )
+        .await;
+        create_job_with_units(
+            &repository,
+            job("cancel-inactive", ScrapeMode::Keyword),
+            vec![unit(
+                "cancel-inactive",
+                "cancel-inactive-unit",
+                "inactive",
+                "keyword",
+            )],
+        )
+        .await;
+        let gate = Arc::new(Notify::new());
+        let processor = Arc::new(FakeProcessor::blocking(vec![success()], gate.clone()));
+        let runner = runner(repository, processor.clone());
+
+        runner.start("cancel-active").await.unwrap();
+        processor.wait_started().await;
+
+        let started = std::time::Instant::now();
+        let cancelled = runner.cancel("cancel-inactive").await.unwrap();
+
+        assert_eq!(cancelled.status, ScrapeJobStatus::Cancelled);
+        assert_eq!(
+            processor.shutdowns.load(Ordering::SeqCst),
+            0,
+            "cancelling an inactive job must not shut down the active browser"
+        );
+        assert_eq!(
+            processor.shutdown_for_calls.lock().unwrap().as_slice(),
+            ["cancel-inactive"]
+        );
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "inactive cancel waited for an idle slot it does not own"
+        );
+
+        gate.notify_waiters();
+        runner.cancel("cancel-active").await.unwrap();
         runner.wait_for_idle(Duration::from_secs(1)).await.unwrap();
     }
 
@@ -2360,7 +2444,11 @@ mod tests {
         let cancelled = runner.cancel("cancel-action-job").await.unwrap();
 
         assert_eq!(cancelled.status, ScrapeJobStatus::Cancelled);
-        assert_eq!(processor.shutdowns.load(Ordering::SeqCst), 2);
+        assert_eq!(processor.shutdowns.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            processor.shutdown_for_calls.lock().unwrap().as_slice(),
+            ["cancel-action-job"]
+        );
     }
 
     #[tokio::test]

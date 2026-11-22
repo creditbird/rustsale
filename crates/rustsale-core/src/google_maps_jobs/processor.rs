@@ -390,6 +390,19 @@ impl ScrapeUnitProcessor for GoogleMapsUnitProcessor {
         Ok(())
     }
 
+    async fn shutdown_for(&self, job_id: &str) -> Result<(), ScrapeJobError> {
+        let mut active = self.active_browser.lock().await;
+        if active
+            .as_ref()
+            .is_some_and(|active| active.job_id == job_id)
+        {
+            if let Some(active) = active.take() {
+                active.manager.close().await?;
+            }
+        }
+        Ok(())
+    }
+
     async fn finalize(
         &self,
         job: &ScrapeJob,
