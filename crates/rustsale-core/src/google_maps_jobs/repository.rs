@@ -950,7 +950,9 @@ impl ScrapeJobRepository {
                 return Ok(None);
             }
             // Failed units mean the job did not cover everything: never report
-            // it as a clean completion (A2).
+            // it as a clean completion (A2). The count is written back in the
+            // same UPDATE so the final event reports what was really lost, even
+            // when the denormalized counter had drifted from the unit rows.
             let failed_units: i64 = tx.query_row(
                 "SELECT COUNT(*) FROM google_maps_scrape_units
                  WHERE job_id=?1 AND status='failed'",
@@ -966,10 +968,11 @@ impl ScrapeJobRepository {
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_jobs
                  SET status=?3, completed_at=?1, updated_at=?1,
+                     failed_units=?4,
                      action_required=NULL, event_sequence=event_sequence + 1,
                      version=version + 1
                  WHERE id=?2 AND status='running'",
-                params![now, job_id, final_status],
+                params![now, job_id, final_status, failed_units],
             )?;
             if changed != 1 {
                 tx.commit()?;

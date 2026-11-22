@@ -532,24 +532,52 @@ impl ScrapeJobRunner {
                         partial_error_kind.as_deref(),
                         json!({"failed_units": partial.failed_units}),
                     );
-                } else if let Some(completed) =
+                } else if let Some(finished) =
                     self.repository.complete_job_if_exhausted(job_id).await?
                 {
-                    self.events
-                        .publish_job(&completed, "Scrape job completed")
-                        .await;
-                    log_scrape_event(
-                        "job_completed",
-                        Some(&completed.id),
-                        None,
-                        Some(&format!("{:?}", completed.stage).to_ascii_lowercase()),
-                        None,
-                        None,
-                        json!({
-                            "businesses_discovered": completed.businesses_discovered,
-                            "leads_created": completed.leads_created,
-                        }),
-                    );
+                    if finished.status == ScrapeJobStatus::Partial {
+                        // A failed unit row can reach this path before the
+                        // job's failed_units counter (e.g. after a crash), so
+                        // the returned status—not the earlier snapshot—decides
+                        // what was achieved.
+                        self.events
+                            .publish_job(
+                                &finished,
+                                format!(
+                                    "Scrape job completed partially: {} unit(s) failed",
+                                    finished.failed_units
+                                ),
+                            )
+                            .await;
+                        let error_kind = finished
+                            .last_error_kind
+                            .map(|kind| format!("{kind:?}").to_ascii_lowercase());
+                        log_scrape_event(
+                            "job_partial",
+                            Some(&finished.id),
+                            None,
+                            Some(&format!("{:?}", finished.stage).to_ascii_lowercase()),
+                            None,
+                            error_kind.as_deref(),
+                            json!({"failed_units": finished.failed_units}),
+                        );
+                    } else {
+                        self.events
+                            .publish_job(&finished, "Scrape job completed")
+                            .await;
+                        log_scrape_event(
+                            "job_completed",
+                            Some(&finished.id),
+                            None,
+                            Some(&format!("{:?}", finished.stage).to_ascii_lowercase()),
+                            None,
+                            None,
+                            json!({
+                                "businesses_discovered": finished.businesses_discovered,
+                                "leads_created": finished.leads_created,
+                            }),
+                        );
+                    }
                 }
                 return Ok(());
             };
@@ -2161,6 +2189,115 @@ mod tests {
             ScrapeJobStatus::Partial,
             "coverage was truncated by the budget, so the job is partial"
         );
+    }
+
+    /// `complete_job_if_exhausted` can still end a job `Partial` when a unit
+    /// failed without the denormalized `failed_units` counter noticing (for
+    /// example a crash between the unit write and the job counter update).
+    /// The finalize path used to announce that outcome as "Scrape job
+    /// completed"; the event must name the partial result and the failed
+    /// cells instead.
+    #[tokio::test]
+    async fn finalizing_with_a_failed_unit_emits_a_partial_completion_event() {
+        let repository = repository();
+        let mut failed = unit(
+            "partial-finalize-job",
+            "partial-finalize-unit",
+            "first",
+            "keyword",
+        );
+        failed.status = ScrapeUnitStatus::Failed;
+        create_job_with_units(
+            &repository,
+            job("partial-finalize-job", ScrapeMode::Keyword),
+            vec![failed],
+        )
+        .await;
+        let events = Arc::new(ScrapeEventPublisher::new(64));
+        let mut receiver = events.subscribe();
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repository.clone(),
+            Arc::new(FakeProcessor::new(Vec::new())),
+            events,
+            RetryPolicy::for_tests(),
+        ));
+
+        runner.start("partial-finalize-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        let stored = repository
+            .get_job("partial-finalize-job")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ScrapeJobStatus::Partial);
+        assert_eq!(stored.failed_units, 1);
+
+        let mut partial_events = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            if event.status == ScrapeJobStatus::Partial {
+                partial_events.push(event);
+            }
+        }
+        let event = partial_events.last().expect("partial completion event");
+        assert_eq!(event.failed_units, 1);
+        assert!(
+            event.message.to_ascii_lowercase().contains("partial"),
+            "partial jobs must not be announced as completed: {}",
+            event.message
+        );
+        assert!(
+            event.message.contains('1'),
+            "the partial message must carry the failed cell count: {}",
+            event.message
+        );
+        assert_ne!(event.message, "Scrape job completed");
+    }
+
+    #[tokio::test]
+    async fn finalizing_a_fully_processed_job_emits_a_completed_event() {
+        let repository = repository();
+        let mut completed = unit(
+            "completed-finalize-job",
+            "completed-finalize-unit",
+            "first",
+            "keyword",
+        );
+        completed.status = ScrapeUnitStatus::Completed;
+        create_job_with_units(
+            &repository,
+            job("completed-finalize-job", ScrapeMode::Keyword),
+            vec![completed],
+        )
+        .await;
+        let events = Arc::new(ScrapeEventPublisher::new(64));
+        let mut receiver = events.subscribe();
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repository.clone(),
+            Arc::new(FakeProcessor::new(Vec::new())),
+            events,
+            RetryPolicy::for_tests(),
+        ));
+
+        runner.start("completed-finalize-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        let stored = repository
+            .get_job("completed-finalize-job")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(stored.status, ScrapeJobStatus::Completed);
+
+        let mut completed_events = Vec::new();
+        while let Ok(event) = receiver.try_recv() {
+            if event.status == ScrapeJobStatus::Completed {
+                completed_events.push(event);
+            }
+        }
+        let event = completed_events.last().expect("completed event");
+        assert_eq!(event.message, "Scrape job completed");
+        assert_eq!(event.failed_units, 0);
     }
 
     #[tokio::test]
