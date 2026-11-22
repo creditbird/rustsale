@@ -333,8 +333,11 @@ impl ScrapeJobRunner {
         };
         let cancellation =
             cancellation.ok_or_else(|| anyhow!("scrape job {job_id} is not the active job"))?;
-        cancellation.cancel();
+        // Persist first: if the write fails the runner must keep going. The
+        // claim path refuses a job that is no longer `running` (A4), so the
+        // short window before the token is cancelled cannot claim new work.
         let paused = self.repository.pause_job(job_id).await?;
+        cancellation.cancel();
         self.events.publish_job(&paused, "Scrape job paused").await;
         self.processor
             .shutdown()
@@ -1348,6 +1351,56 @@ mod tests {
         gate.notify_waiters();
         runner.cancel("cancel-active").await.unwrap();
         runner.wait_for_idle(Duration::from_secs(1)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pause_database_failure_does_not_cancel_active_runner() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("pause-fail", ScrapeMode::Keyword),
+            vec![unit("pause-fail", "pause-fail-unit", "blocking", "keyword")],
+        )
+        .await;
+        let gate = Arc::new(Notify::new());
+        let processor = Arc::new(FakeProcessor::blocking(vec![success()], gate.clone()));
+        let runner = runner(repository.clone(), processor.clone());
+
+        runner.start("pause-fail").await.unwrap();
+        processor.wait_started().await;
+
+        // Force the pause write to fail: the job is no longer running, so
+        // `pause_job` rejects it after the runner already looked it up.
+        let running = repository.get_job("pause-fail").await.unwrap().unwrap();
+        repository
+            .transition_job(
+                "pause-fail",
+                running.version,
+                ScrapeJobStatus::Interrupted,
+                TransitionCause::System,
+            )
+            .await
+            .unwrap();
+
+        let error = runner.pause("pause-fail").await.unwrap_err();
+        assert!(
+            error.to_string().contains("pause"),
+            "unexpected pause error: {error}"
+        );
+        let cancelled = {
+            let active = runner.active.lock().await;
+            active
+                .as_ref()
+                .map(|active| active.cancellation.is_cancelled())
+        };
+        assert_eq!(
+            cancelled,
+            Some(false),
+            "a failed pause must not cancel the runner token"
+        );
+
+        gate.notify_waiters();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
     }
 
     async fn fatal_error_stops_later_unit(mode: ScrapeMode, unit_type: &str) {
