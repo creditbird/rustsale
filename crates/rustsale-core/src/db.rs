@@ -505,6 +505,11 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
         tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_google_maps_units_job_created
+             ON google_maps_scrape_units(job_id, status, created_at, id)",
+            [],
+        )?;
+        tx.execute(
             "CREATE INDEX IF NOT EXISTS idx_google_maps_results_job_import
              ON google_maps_scrape_results(job_id, import_status, enrichment_status)",
             [],

@@ -626,18 +626,30 @@ impl ScrapeJobRepository {
         self.with_connection(move |mut conn| {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = chrono::Utc::now().to_rfc3339();
+            let job_running: i64 = tx.query_row(
+                "SELECT EXISTS(
+                     SELECT 1 FROM google_maps_scrape_jobs WHERE id=?1 AND status='running'
+                 )",
+                params![job_id],
+                |row| row.get(0),
+            )?;
+            if job_running == 0 {
+                tx.commit()?;
+                return Ok(None);
+            }
+            // A UNION ALL keeps each branch in index order, so the outer ORDER
+            // BY needs no temporary sort (B15). The transaction is Immediate,
+            // so the job-status check and the claim stay atomic (A4).
             let unit_id: Option<String> = tx
                 .query_row(
-                    "SELECT id FROM google_maps_scrape_units
-                     WHERE job_id=?1
-                       AND EXISTS (
-                           SELECT 1 FROM google_maps_scrape_jobs
-                           WHERE id=?1 AND status='running'
-                       )
-                       AND (
-                           status='pending'
-                           OR (status='retry_scheduled' AND (next_retry_at IS NULL OR next_retry_at <= ?2))
-                       )
+                    "SELECT id, created_at FROM (
+                         SELECT id, created_at FROM google_maps_scrape_units
+                         WHERE job_id=?1 AND status='pending'
+                         UNION ALL
+                         SELECT id, created_at FROM google_maps_scrape_units
+                         WHERE job_id=?1 AND status='retry_scheduled'
+                           AND (next_retry_at IS NULL OR next_retry_at <= ?2)
+                     )
                      ORDER BY created_at ASC, id ASC
                      LIMIT 1",
                     params![job_id, now],
@@ -659,8 +671,8 @@ impl ScrapeJobRepository {
             if changed != 1 {
                 return Err(anyhow!("unit claim lost a concurrency race"));
             }
-            let unit = load_unit(&tx, &unit_id)?
-                .ok_or_else(|| anyhow!("claimed unit was not found"))?;
+            let unit =
+                load_unit(&tx, &unit_id)?.ok_or_else(|| anyhow!("claimed unit was not found"))?;
             tx.commit()?;
             Ok(Some(unit))
         })
@@ -1828,6 +1840,49 @@ mod tests {
         assert_eq!(name, "Coffee Shop");
         assert_eq!(enrichment_status, "found");
         assert_eq!(import_status, "imported");
+    }
+
+    /// B15: claiming the next unit must walk the job index in order, not sort
+    /// the whole pending set on every claim.
+    #[tokio::test]
+    async fn claim_query_plan_uses_ordered_index_without_temp_sort() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Queued))
+            .await
+            .unwrap();
+        let connection = context.connection();
+        let mut statement = connection
+            .prepare(
+                "EXPLAIN QUERY PLAN
+                 SELECT id, created_at FROM (
+                     SELECT id, created_at FROM google_maps_scrape_units
+                     WHERE job_id='job-1' AND status='pending'
+                     UNION ALL
+                     SELECT id, created_at FROM google_maps_scrape_units
+                     WHERE job_id='job-1' AND status='retry_scheduled'
+                       AND (next_retry_at IS NULL OR next_retry_at <= '2026-01-01T00:00:00Z')
+                 )
+                 ORDER BY created_at ASC, id ASC
+                 LIMIT 1",
+            )
+            .unwrap();
+        let details = statement
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            !details.iter().any(|detail| detail.contains("TEMP B-TREE")),
+            "claim still sorts: {details:?}"
+        );
+        assert!(
+            details
+                .iter()
+                .any(|detail| detail.contains("idx_google_maps_units_job_created")),
+            "claim does not use the ordered index: {details:?}"
+        );
     }
 
     /// A2: units failed by `fail_job` must be counted, a user retry must be
