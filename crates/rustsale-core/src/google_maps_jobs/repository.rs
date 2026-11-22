@@ -1533,7 +1533,11 @@ fn upsert_result(tx: &Transaction<'_>, result: &ScrapeResult) -> Result<usize> {
             source_unit_id=excluded.source_unit_id,
             place_id=COALESCE(excluded.place_id, google_maps_scrape_results.place_id),
             canonical_url=COALESCE(excluded.canonical_url, google_maps_scrape_results.canonical_url),
-            name=excluded.name,
+            name=CASE
+                WHEN length(trim(excluded.name)) >= length(trim(google_maps_scrape_results.name))
+                    THEN excluded.name
+                ELSE google_maps_scrape_results.name
+            END,
             phone=COALESCE(excluded.phone, google_maps_scrape_results.phone),
             normalized_phone=COALESCE(excluded.normalized_phone, google_maps_scrape_results.normalized_phone),
             email=COALESCE(excluded.email, google_maps_scrape_results.email),
@@ -1545,11 +1549,31 @@ fn upsert_result(tx: &Transaction<'_>, result: &ScrapeResult) -> Result<usize> {
             latitude=COALESCE(excluded.latitude, google_maps_scrape_results.latitude),
             longitude=COALESCE(excluded.longitude, google_maps_scrape_results.longitude),
             inside_requested_area=COALESCE(excluded.inside_requested_area, google_maps_scrape_results.inside_requested_area),
-            detail_status=excluded.detail_status,
-            enrichment_status=excluded.enrichment_status,
-            import_status=excluded.import_status,
-            last_error_kind=excluded.last_error_kind,
-            last_error_message=excluded.last_error_message,
+            detail_status=CASE
+                WHEN google_maps_scrape_results.detail_status IN ('completed', 'failed')
+                    THEN google_maps_scrape_results.detail_status
+                ELSE excluded.detail_status
+            END,
+            enrichment_status=CASE
+                WHEN google_maps_scrape_results.enrichment_status IN
+                    ('found', 'not_found', 'failed', 'running', 'skipped_outside_area')
+                    THEN google_maps_scrape_results.enrichment_status
+                ELSE excluded.enrichment_status
+            END,
+            import_status=CASE
+                WHEN google_maps_scrape_results.import_status IN
+                    ('imported', 'duplicate', 'rejected', 'skipped_outside_area')
+                    THEN google_maps_scrape_results.import_status
+                ELSE excluded.import_status
+            END,
+            last_error_kind=CASE
+                WHEN excluded.detail_status='completed' THEN NULL
+                ELSE COALESCE(excluded.last_error_kind, google_maps_scrape_results.last_error_kind)
+            END,
+            last_error_message=CASE
+                WHEN excluded.detail_status='completed' THEN NULL
+                ELSE COALESCE(excluded.last_error_message, google_maps_scrape_results.last_error_message)
+            END,
             last_seen_at=excluded.last_seen_at",
         params![
             result.id,
@@ -1745,6 +1769,65 @@ mod tests {
             error.to_string().contains("depth") || error.to_string().contains("out of range"),
             "unexpected error: {error}"
         );
+    }
+
+    /// B10: a second sighting of the same place must not roll a result back from
+    /// imported/found to pending, and a shorter name must not replace a fuller one.
+    #[tokio::test]
+    async fn upsert_does_not_reset_imported_status() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Queued))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![sample_unit(
+                    "unit-1",
+                    "keyword:coffee",
+                    ScrapeUnitStatus::Pending,
+                )],
+            )
+            .await
+            .unwrap();
+
+        let mut first = sample_result();
+        first.name = "Coffee Shop".to_string();
+        first.enrichment_status = "found".to_string();
+        first.import_status = "imported".to_string();
+        context
+            .repository
+            .upsert_results("job-1", vec![first.clone()])
+            .await
+            .unwrap();
+
+        let mut second = first;
+        second.id = "result-2".to_string();
+        second.name = "Coffee".to_string();
+        second.enrichment_status = "pending".to_string();
+        second.import_status = "pending".to_string();
+        context
+            .repository
+            .upsert_results("job-1", vec![second])
+            .await
+            .unwrap();
+
+        let connection = context.connection();
+        let (name, enrichment_status, import_status): (String, String, String) = connection
+            .query_row(
+                "SELECT name, enrichment_status, import_status
+                 FROM google_maps_scrape_results
+                 WHERE job_id='job-1' AND dedup_key='place:place-1'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "Coffee Shop");
+        assert_eq!(enrichment_status, "found");
+        assert_eq!(import_status, "imported");
     }
 
     /// A2: units failed by `fail_job` must be counted, a user retry must be
