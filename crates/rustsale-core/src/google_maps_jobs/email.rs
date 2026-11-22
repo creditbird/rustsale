@@ -735,6 +735,11 @@ fn is_disallowed_ipv6(address: Ipv6Addr) -> bool {
     if let Some(mapped) = address.to_ipv4_mapped() {
         return is_disallowed_ipv4(mapped);
     }
+    // NAT64 and 6to4 addresses embed an IPv4 destination. Checking only the
+    // IPv6 wrapper let them tunnel a private or loopback target (B13).
+    if let Some(embedded) = embedded_ipv4(address) {
+        return is_disallowed_ipv4(embedded);
+    }
     let segments = address.segments();
     address.is_unspecified()
         || address.is_loopback()
@@ -743,6 +748,32 @@ fn is_disallowed_ipv6(address: Ipv6Addr) -> bool {
         || (segments[0] & 0xffc0) == 0xfe80
         || (segments[0] & 0xffc0) == 0xfec0
         || (segments[0] == 0x2001 && segments[1] == 0x0db8)
+}
+
+/// IPv4 address carried inside a NAT64 (64:ff9b::/96) or 6to4 (2002::/16)
+/// wrapper, if the wrapper is one of those well-known formats.
+fn embedded_ipv4(address: Ipv6Addr) -> Option<Ipv4Addr> {
+    let segments = address.segments();
+    if segments[0] == 0x0064
+        && segments[1] == 0xff9b
+        && segments[2..6].iter().all(|segment| *segment == 0)
+    {
+        return Some(Ipv4Addr::new(
+            (segments[6] >> 8) as u8,
+            segments[6] as u8,
+            (segments[7] >> 8) as u8,
+            segments[7] as u8,
+        ));
+    }
+    if segments[0] == 0x2002 {
+        return Some(Ipv4Addr::new(
+            (segments[1] >> 8) as u8,
+            segments[1] as u8,
+            (segments[2] >> 8) as u8,
+            segments[2] as u8,
+        ));
+    }
+    None
 }
 
 fn validate_url(url: &Url) -> Result<(), ScrapeJobError> {
@@ -1086,6 +1117,27 @@ mod tests {
         assert!(!is_disallowed_destination(IpAddr::V4(Ipv4Addr::new(
             93, 184, 216, 34
         ))));
+    }
+
+    #[test]
+    fn blocks_nat64_and_6to4_embedding_private_v4() {
+        for address in [
+            "64:ff9b::7f00:1",
+            "64:ff9b::c0a8:101",
+            "2002:c0a8:0101::",
+            "2002:7f00:0001::",
+        ] {
+            assert!(
+                is_disallowed_destination(address.parse().unwrap()),
+                "accepted {address}"
+            );
+        }
+        for address in ["64:ff9b::5db8:d822", "2002:5db8:d822::"] {
+            assert!(
+                !is_disallowed_destination(address.parse().unwrap()),
+                "rejected public address {address}"
+            );
+        }
     }
 
     #[tokio::test]
