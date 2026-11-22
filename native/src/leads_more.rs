@@ -1,7 +1,7 @@
 //! The remaining lead commands: outreach paging, the full list, the activity log and lead edits.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, limit, on_blocking, state_of};
+use crate::runtime::{args, body, id32, limit, on_blocking, optional_id32, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -83,11 +83,12 @@ impl LeadsMore {
     /// `next_cursor`, `limit` 0 or absent means the core default.
     pub async fn outreach_page(
         filters: Option<JsonValue>,
-        cursor: Option<i32>,
+        cursor: Option<f64>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
         let filters: OutreachFilters = args(filters)?;
         let limit = limit(limit_);
+        let cursor = optional_id32(cursor)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_outreach_leads_page(
@@ -110,10 +111,14 @@ impl LeadsMore {
     /// Every lead id matching `filters` (same shape as `outreachPage`), without `excludedLeadIds`.
     pub async fn outreach_ids(
         filters: Option<JsonValue>,
-        excluded_lead_ids: Option<Vec<i32>>,
+        excluded_lead_ids: Option<Vec<f64>>,
     ) -> Result<JsonValue, JsError> {
         let filters: OutreachFilters = args(filters)?;
-        let excluded = excluded_lead_ids.unwrap_or_default();
+        let excluded = excluded_lead_ids
+            .unwrap_or_default()
+            .into_iter()
+            .map(id32)
+            .collect::<Result<Vec<_>, _>>()?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::resolve_outreach_lead_ids(
@@ -142,10 +147,11 @@ impl LeadsMore {
     }
 
     /// The full activity log of lead `leadId`, newest first.
-    pub async fn activities(lead_id: i32) -> Result<JsonValue, JsError> {
+    pub async fn activities(lead_id: f64) -> Result<JsonValue, JsError> {
+        let lead = id32(lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
-            Ok::<_, CoreApiError>(commands::get_activities(lead_id, state)?)
+            Ok::<_, CoreApiError>(commands::get_activities(lead, state)?)
         })
         .await
     }
@@ -203,7 +209,8 @@ impl LeadsMore {
     }
 
     /// Deletes lead `id` with its activities and deals; a missing id is not an error.
-    pub async fn delete(id: i32) -> Result<JsonValue, JsError> {
+    pub async fn delete(id: f64) -> Result<JsonValue, JsError> {
+        let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_lead(id, state)?)

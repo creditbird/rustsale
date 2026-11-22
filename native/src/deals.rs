@@ -1,7 +1,7 @@
 //! Deals of the pipeline: the list, stage moves and create/delete.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, on_blocking, state_of};
+use crate::runtime::{body, id32, on_blocking, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -37,7 +37,8 @@ impl Deals {
     }
 
     /// Moves deal `id` to `stage`; the core accepts any stage string.
-    pub async fn update_stage(id: i32, stage: String) -> Result<JsonValue, JsError> {
+    pub async fn update_stage(id: f64, stage: String) -> Result<JsonValue, JsError> {
+        let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::update_deal_stage(id, stage, state)?)
@@ -64,7 +65,8 @@ impl Deals {
     }
 
     /// Deletes deal `id`; a missing id is not an error.
-    pub async fn delete(id: i32) -> Result<JsonValue, JsError> {
+    pub async fn delete(id: f64) -> Result<JsonValue, JsError> {
+        let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_deal(id, state)?)

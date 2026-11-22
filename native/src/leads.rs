@@ -1,7 +1,7 @@
 //! Leads, categories and the lead activity log.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, limit, on_blocking, state_of};
+use crate::runtime::{args, body, id32, limit, on_blocking, optional_id32, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -61,28 +61,26 @@ impl Leads {
 
     /// Like `page`, for the leads of category `categoryId`.
     pub async fn by_category_page(
-        category_id: i32,
+        category_id: f64,
         query: Option<JsonValue>,
         cursor: Option<String>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
         let query: LeadQuery = args(query)?;
         let limit = limit(limit_);
+        let category = id32(category_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(get_leads_by_category_page(
-                state,
-                category_id,
-                query,
-                cursor,
-                limit,
+                state, category, query, cursor, limit,
             )?)
         })
         .await
     }
 
     /// One lead by id. Rejects with `not_found` when there is none.
-    pub async fn details(id: i32) -> Result<JsonValue, JsError> {
+    pub async fn details(id: f64) -> Result<JsonValue, JsError> {
+        let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_lead_details(id, state)?)
@@ -114,7 +112,8 @@ impl Leads {
     }
 
     /// Sets the pipeline status of lead `id`.
-    pub async fn update_status(id: i32, status: String) -> Result<JsonValue, JsError> {
+    pub async fn update_status(id: f64, status: String) -> Result<JsonValue, JsError> {
+        let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::update_lead_status(id, status, state)?)
@@ -125,14 +124,15 @@ impl Leads {
     /// One page of the activity log, newest first: of lead `leadId`, or of all leads when absent.
     /// Resolves `{ items, total, nextCursor }`.
     pub async fn activities_page(
-        lead_id: Option<i32>,
+        lead_id: Option<f64>,
         cursor: Option<String>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
         let limit = limit(limit_);
+        let lead = optional_id32(lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
-            Ok::<_, CoreApiError>(get_activities_page(state, lead_id, cursor, limit)?)
+            Ok::<_, CoreApiError>(get_activities_page(state, lead, cursor, limit)?)
         })
         .await
     }

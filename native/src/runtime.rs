@@ -228,6 +228,11 @@ pub(crate) fn id64(value: f64) -> Result<i64, CoreApiError> {
     }
 }
 
+/// An absent JS number as `None`, or a present one as a checked `i32` row id.
+pub(crate) fn optional_id32(value: Option<f64>) -> Result<Option<i32>, CoreApiError> {
+    value.map(id32).transpose()
+}
+
 /// An absent JS number as `None`, or a present one as a checked `i64` row id.
 pub(crate) fn optional_id64(value: Option<f64>) -> Result<Option<i64>, CoreApiError> {
     value.map(id64).transpose()
@@ -325,6 +330,9 @@ mod tests {
 
     #[test]
     fn optional_ids_keep_an_absent_value() {
+        assert_eq!(optional_id32(None).ok(), Some(None));
+        assert_eq!(optional_id32(Some(5.0)).ok(), Some(Some(5)));
+        assert!(optional_id32(Some(5.5)).is_err());
         assert_eq!(optional_id64(None).ok(), Some(None));
         assert_eq!(optional_id64(Some(5.0)).ok(), Some(Some(5)));
         assert!(optional_id64(Some(5.5)).is_err());

@@ -1,7 +1,7 @@
 //! Email templates, the multi-channel template centre and SMTP accounts.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, id32, on_blocking, on_core, state_of};
+use crate::runtime::{args, body, id32, id64, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -46,6 +46,15 @@ impl From<SmtpInput> for SmtpServer {
     }
 }
 
+/// A JS number as a TCP port: whole, not negative and at most 65535.
+fn smtp_port(value: f64) -> Result<i32, CoreApiError> {
+    if value.is_finite() && value.fract() == 0.0 && (0.0..=65_535.0).contains(&value) {
+        Ok(value as i32)
+    } else {
+        Err(CoreApiError::invalid("port is out of range"))
+    }
+}
+
 /// Email templates, multi-channel templates with their folders, and SMTP accounts. Records keep the
 /// core's field names (snake_case).
 #[module]
@@ -79,11 +88,12 @@ impl Templates {
 
     /// Replaces the subject and body of email template `id`.
     pub async fn update_email_template(
-        id: i32,
+        id: f64,
         name: String,
         subject: String,
         content: String,
     ) -> Result<JsonValue, JsError> {
+        let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::update_email_template(
@@ -115,7 +125,8 @@ impl Templates {
     }
 
     /// Template `id`, or `null` when there is none.
-    pub async fn template(id: i64) -> Result<JsonValue, JsError> {
+    pub async fn template(id: f64) -> Result<JsonValue, JsError> {
+        let id = id64(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_template_by_id(id, state)?)
@@ -146,7 +157,8 @@ impl Templates {
     }
 
     /// Deletes multi-channel template `id`.
-    pub async fn delete_template(id: i64) -> Result<JsonValue, JsError> {
+    pub async fn delete_template(id: f64) -> Result<JsonValue, JsError> {
+        let id = id64(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_template(id, state)?)
@@ -173,7 +185,8 @@ impl Templates {
     }
 
     /// Deletes template folder `id`; its templates stay, without a folder.
-    pub async fn delete_folder(id: i64) -> Result<JsonValue, JsError> {
+    pub async fn delete_folder(id: f64) -> Result<JsonValue, JsError> {
+        let id = id64(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_template_folder(id, state)?)
@@ -182,7 +195,8 @@ impl Templates {
     }
 
     /// Counts one more use of template `id`.
-    pub async fn increment_usage(id: i64) -> Result<JsonValue, JsError> {
+    pub async fn increment_usage(id: f64) -> Result<JsonValue, JsError> {
+        let id = id64(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::increment_template_usage(id, state)?)
@@ -223,7 +237,8 @@ impl Templates {
 
     /// Opens a TCP connection to `host:port` and resolves the core's message. It touches the
     /// network, so screens call it only on an explicit test.
-    pub async fn test_smtp_connection(host: String, port: i32) -> Result<JsonValue, JsError> {
+    pub async fn test_smtp_connection(host: String, port: f64) -> Result<JsonValue, JsError> {
+        let port = smtp_port(port)?;
         on_core(move |_h| async move {
             Ok::<_, CoreApiError>(commands::test_smtp_connection(host, port).await?)
         })
