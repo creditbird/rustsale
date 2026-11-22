@@ -1,7 +1,7 @@
 //! The conversation inbox, timelines and channel runtime.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, limit, on_blocking, on_core, state_of};
+use crate::runtime::{args, body, id64, limit, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::conversation::commands::{self, ConversationState};
@@ -50,11 +50,12 @@ impl Conversations {
             Some(value) => Some(body(value)?),
         };
         let limit = limit(limit_);
+        let conversation = id64(conversation_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_conversation_timeline(
                 state,
-                conversation_id as i64,
+                conversation,
                 before,
                 limit,
             )?)

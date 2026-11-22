@@ -4,8 +4,12 @@ import { expect, test } from "nsh/test";
 import {
   Ai,
   Campaigns,
+  ConversationActions,
   ConversationNetwork,
+  Conversations,
+  Desktop,
   Facebook,
+  GoogleMapsMore,
   Host,
   ImportLeads,
   Templates,
@@ -46,4 +50,43 @@ test("native errors reach TSX with a code and a clean message", async () => {
     "not_found"
   );
   await expectError(ImportLeads.inspectFile("/tmp/qa-errcode-missing.csv", null), "not_found");
+});
+
+test("native ids must be whole and non-negative before any row is touched", async () => {
+  await Host.start(dir);
+  const campaignId = Number(
+    await Campaigns.saveUnifiedCampaign(
+      {
+        id: null,
+        name: "QA int4",
+        description: null,
+        channel_type: "zalo",
+        status: "DRAFT",
+        audience_filter_json: null,
+        schedule_config_json: null,
+        created_at: "",
+        updated_at: ""
+      },
+      []
+    )
+  );
+  expect(campaignId).toBeGreaterThan(0);
+
+  for (const bad of [1.5, -1, Number.NaN, 2 ** 53 + 2]) {
+    await expectError(Campaigns.deleteUnifiedCampaign(bad), "invalid_request");
+  }
+  const campaigns = (await Campaigns.unifiedCampaigns()) as Array<{ id?: number | null }>;
+  expect(campaigns.some((row) => row.id === campaignId)).toBe(true);
+
+  await expectError(Ai.reviewProposal(1.5, "APPROVED", "qa"), "invalid_request");
+  await expectError(ConversationNetwork.groupMembers(1.5), "invalid_request");
+  await expectError(GoogleMapsMore.resolveBounds(-1), "invalid_request");
+  await expectError(Facebook.publishPostNow(1.5), "invalid_request");
+  await expectError(
+    ConversationActions.contactTimeline(1.5, ["zalo"], null, 0),
+    "invalid_request"
+  );
+  await expectError(ConversationActions.pinnedMessages(Number.NaN), "invalid_request");
+  await expectError(Conversations.timeline(1.5, null, 0), "invalid_request");
+  await expectError(Desktop.setActiveConversationFocus(1.5, true, 0), "invalid_request");
 });

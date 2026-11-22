@@ -1,7 +1,7 @@
 //! The AI copilot: intent, reply suggestions, proposals and the lead evidence context.
 
 use crate::error::CoreApiError;
-use crate::runtime::{id32, on_blocking, on_core, state_of};
+use crate::runtime::{id32, id64, on_blocking, on_core, optional_id64, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::ai::commands as ai;
@@ -10,11 +10,6 @@ use rustsale_core::commands::DbState;
 /// A JS number as a lead id, refusing anything that is not a whole, non-negative `i32`.
 fn lead_id(value: f64) -> Result<i32, CoreApiError> {
     id32(value)
-}
-
-/// A JS number as a row id; anything not finite becomes 0, which the core reports as missing.
-fn id(value: f64) -> i64 {
-    if value.is_finite() { value as i64 } else { 0 }
 }
 
 /// The local AI copilot. The two generation calls use the provider the core was configured with
@@ -43,7 +38,7 @@ impl Ai {
         custom_prompt: Option<String>,
     ) -> Result<JsonValue, JsError> {
         let lead = lead_id(lead_id_)?;
-        let conversation = conversation_id.filter(|n| n.is_finite()).map(|n| n as i64);
+        let conversation = optional_id64(conversation_id)?;
         on_core(move |h| async move {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(
@@ -70,7 +65,7 @@ impl Ai {
         status: String,
         reviewer: String,
     ) -> Result<JsonValue, JsError> {
-        let proposal = id(proposal_id);
+        let proposal = id64(proposal_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(ai::review_ai_proposal(proposal, status, reviewer, state)?)

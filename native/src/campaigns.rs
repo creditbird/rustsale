@@ -2,7 +2,7 @@
 //! multi-channel campaign center.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, id32, on_blocking, on_core, state_of};
+use crate::runtime::{body, id32, id64, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::campaign::commands as unified;
@@ -12,11 +12,6 @@ use rustsale_core::conversation::whatsapp::campaign::{
     CampaignRecipientInput, CreateCampaignRequest,
 };
 use rustsale_core::models::{Campaign, CampaignStep};
-
-/// A JS number as a database id; anything not finite becomes 0, which the core reports as missing.
-fn id(value: f64) -> i64 {
-    if value.is_finite() { value as i64 } else { 0 }
-}
 
 /// JS numbers as lead ids, refusing anything that is not a whole, non-negative `i32`.
 fn lead_ids(values: Vec<f64>) -> Result<Vec<i32>, CoreApiError> {
@@ -183,7 +178,7 @@ impl Campaigns {
         template: Option<String>,
     ) -> Result<JsonValue, JsError> {
         let recipients: Vec<CampaignRecipientInput> = body(recipients)?;
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::populate_whatsapp_campaign_recipients(
@@ -195,7 +190,7 @@ impl Campaigns {
 
     /// Starts the worker of WhatsApp campaign `campaignId`.
     pub async fn start_whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::start_whatsapp_campaign(state, campaign).await?)
@@ -205,7 +200,7 @@ impl Campaigns {
 
     /// Pauses WhatsApp campaign `campaignId`.
     pub async fn pause_whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::pause_whatsapp_campaign(state, campaign)?)
@@ -215,7 +210,7 @@ impl Campaigns {
 
     /// Resumes a paused WhatsApp campaign `campaignId`.
     pub async fn resume_whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::resume_whatsapp_campaign(state, campaign)?)
@@ -225,7 +220,7 @@ impl Campaigns {
 
     /// Cancels WhatsApp campaign `campaignId`.
     pub async fn cancel_whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::cancel_whatsapp_campaign(state, campaign)?)
@@ -235,7 +230,7 @@ impl Campaigns {
 
     /// One WhatsApp campaign with its counters.
     pub async fn whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::get_whatsapp_campaign(state, campaign)?)
@@ -258,7 +253,7 @@ impl Campaigns {
         limit_: Option<f64>,
         offset: Option<f64>,
     ) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         let limit = optional_u32(limit_);
         let offset = optional_u32(offset);
         on_blocking(move |h| {
@@ -272,7 +267,7 @@ impl Campaigns {
 
     /// Sets unified campaign `campaignId` active. It only changes the status; the scheduler sends.
     pub async fn start_unified_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(unified::start_unified_campaign(campaign, state)?)
@@ -282,7 +277,7 @@ impl Campaigns {
 
     /// Pauses unified campaign `campaignId`.
     pub async fn pause_unified_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(unified::pause_unified_campaign(campaign, state)?)
@@ -296,7 +291,7 @@ impl Campaigns {
         campaign_id: f64,
         lead_ids_: Vec<f64>,
     ) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         let leads = lead_ids(lead_ids_)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -307,7 +302,7 @@ impl Campaigns {
 
     /// Per-step analytics of unified campaign `campaignId`, with response and conversion rates.
     pub async fn unified_campaign_analytics(campaign_id: f64) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(unified::get_unified_campaign_analytics(campaign, state)?)
@@ -344,7 +339,7 @@ impl Campaigns {
 
     /// Deletes unified campaign `campaignId` and its steps.
     pub async fn delete_unified_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
-        let campaign = id(campaign_id);
+        let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(unified::delete_unified_campaign(campaign, state)?)

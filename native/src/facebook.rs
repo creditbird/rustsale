@@ -1,7 +1,7 @@
 //! Facebook Pages: accounts, scheduled posts, comment automations, page health and Messenger sync.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, on_blocking, on_core, state_of};
+use crate::runtime::{body, id64, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -11,11 +11,6 @@ use rustsale_core::facebook::commands as fb;
 use rustsale_core::facebook::commands::{
     CreateCommentAutomationRequest, CreateFacebookPostRequest, UpdateCommentAutomationRequest,
 };
-
-/// A JS number as a database id; anything not finite becomes 0.
-fn id(value: f64) -> i64 {
-    if value.is_finite() { value as i64 } else { 0 }
-}
 
 /// An optional JS number as a result limit.
 fn count(value: Option<f64>) -> Option<i64> {
@@ -87,7 +82,7 @@ impl Facebook {
 
     /// Queues post `postId` for immediate publishing; resolves whether it changed.
     pub async fn publish_post_now(post_id: f64) -> Result<JsonValue, JsError> {
-        let post = id(post_id);
+        let post = id64(post_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(fb::publish_facebook_post_now(state, post)?)
@@ -106,7 +101,7 @@ impl Facebook {
 
     /// Cancels draft or queued post `postId`; resolves whether it existed.
     pub async fn cancel_scheduled_post(post_id: f64) -> Result<JsonValue, JsError> {
-        let post = id(post_id);
+        let post = id64(post_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(fb::cancel_facebook_scheduled_post(state, post)?)
@@ -148,7 +143,7 @@ impl Facebook {
 
     /// Deletes comment automation rule `id`; resolves whether it existed.
     pub async fn delete_comment_automation(rule_id: f64) -> Result<JsonValue, JsError> {
-        let rule = id(rule_id);
+        let rule = id64(rule_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(fb::delete_comment_automation(state, rule)?)

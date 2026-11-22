@@ -214,6 +214,25 @@ pub(crate) fn id32(value: f64) -> Result<i32, CoreApiError> {
     }
 }
 
+/// The largest whole number a JS number holds exactly (2^53).
+const MAX_SAFE_ID: f64 = 9_007_199_254_740_992.0;
+
+/// A JS number as an `i64` row id. Row ids are whole, not negative and no larger than a JS number
+/// holds exactly, so NaN, infinities, fractions, negatives and values past 2^53 are refused instead
+/// of being truncated or rounded onto another row.
+pub(crate) fn id64(value: f64) -> Result<i64, CoreApiError> {
+    if value.is_finite() && value.fract() == 0.0 && (0.0..=MAX_SAFE_ID).contains(&value) {
+        Ok(value as i64)
+    } else {
+        Err(CoreApiError::invalid("id is out of range"))
+    }
+}
+
+/// An absent JS number as `None`, or a present one as a checked `i64` row id.
+pub(crate) fn optional_id64(value: Option<f64>) -> Result<Option<i64>, CoreApiError> {
+    value.map(id64).transpose()
+}
+
 /// The state of type `S` of the running core.
 pub(crate) fn state_of<S: Send + Sync + 'static>(
     handle: &AppHandle,
@@ -280,5 +299,34 @@ mod tests {
         assert!(id32(1.5).is_err());
         assert!(id32(-0.5).is_err());
         assert!(id32(f64::NEG_INFINITY).is_err());
+    }
+
+    #[test]
+    fn row_ids_must_be_whole_non_negative_and_exact_in_js() {
+        assert_eq!(id64(0.0).ok(), Some(0));
+        assert_eq!(id64(42.0).ok(), Some(42));
+        assert_eq!(id64(MAX_SAFE_ID).ok(), Some(9_007_199_254_740_992));
+        for bad in [
+            -1.0,
+            1.5,
+            -0.5,
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            MAX_SAFE_ID + 2.0,
+        ] {
+            assert_eq!(
+                id64(bad).map_err(|error| error.code),
+                Err("invalid_request".to_string()),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn optional_ids_keep_an_absent_value() {
+        assert_eq!(optional_id64(None).ok(), Some(None));
+        assert_eq!(optional_id64(Some(5.0)).ok(), Some(Some(5)));
+        assert!(optional_id64(Some(5.5)).is_err());
     }
 }

@@ -2,7 +2,7 @@
 //! reactions, forwarding, attachments, sync, WhatsApp login and group members.
 
 use crate::error::CoreApiError;
-use crate::runtime::{body, limit, on_blocking, on_core, state_of};
+use crate::runtime::{body, id64, limit, on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, BatchImportGroupMembersRequest, DbState};
@@ -12,11 +12,6 @@ use rustsale_core::conversation::types::{
     SetConversationReactionRequest, StageConversationClipboardImageRequest,
     StartDirectConversationRequest,
 };
-
-/// A JS number as a database id; anything not finite becomes 0.
-fn id(value: f64) -> i64 {
-    if value.is_finite() { value as i64 } else { 0 }
-}
 
 /// A JS number as a sticker id, refusing values a `u32` cannot hold.
 fn sticker_id(value: f64) -> Result<u32, CoreApiError> {
@@ -63,7 +58,7 @@ impl ConversationNetwork {
         conversation_id: f64,
         paths: Vec<String>,
     ) -> Result<JsonValue, JsError> {
-        let conversation = id(conversation_id);
+        let conversation = id64(conversation_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(
@@ -107,7 +102,7 @@ impl ConversationNetwork {
         query: String,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
-        let conversation = id(conversation_id);
+        let conversation = id64(conversation_id)?;
         let size = limit(limit_);
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -121,7 +116,7 @@ impl ConversationNetwork {
     /// One Zalo sticker by id, as the chat of conversation `conversationId` sees it; `null` when
     /// Zalo has no such sticker.
     pub async fn sticker_detail(conversation_id: f64, sticker: f64) -> Result<JsonValue, JsError> {
-        let conversation = id(conversation_id);
+        let conversation = id64(conversation_id)?;
         let sticker = sticker_id(sticker)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -181,7 +176,7 @@ impl ConversationNetwork {
     /// The members of group conversation `conversationId` with their lead and categories. The
     /// name keeps the v2 `unrestricted` meaning: the group may have more than the page shows.
     pub async fn group_members(conversation_id: f64) -> Result<JsonValue, JsError> {
-        let conversation = id(conversation_id);
+        let conversation = id64(conversation_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_group_members_unrestricted(
@@ -208,7 +203,7 @@ impl ConversationNetwork {
     /// Pulls the member profiles of group `conversationId` from the channel runtime and resolves
     /// the scan result.
     pub async fn deep_scan_group_members(conversation_id: f64) -> Result<JsonValue, JsError> {
-        let conversation = id(conversation_id);
+        let conversation = id64(conversation_id)?;
         on_core(move |h| async move {
             let db = state_of::<DbState>(&h)?;
             let state = state_of::<ConversationState>(&h)?;
@@ -222,7 +217,7 @@ impl ConversationNetwork {
     /// Backfills up to five pages of the Zalo group history of `conversationId`; resolves how many
     /// messages were added.
     pub async fn sync_zalo_group_history(conversation_id: f64) -> Result<JsonValue, JsError> {
-        let conversation = id(conversation_id);
+        let conversation = id64(conversation_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(
@@ -243,7 +238,7 @@ impl ConversationNetwork {
 
     /// Downloads attachment `attachmentId` into the local spool and resolves its record.
     pub async fn download_attachment(attachment_id: f64) -> Result<JsonValue, JsError> {
-        let attachment = id(attachment_id);
+        let attachment = id64(attachment_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(
@@ -285,7 +280,7 @@ impl ConversationNetwork {
     pub async fn disconnect_whatsapp_account(
         channel_account_id: f64,
     ) -> Result<JsonValue, JsError> {
-        let account = id(channel_account_id);
+        let account = id64(channel_account_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::disconnect_whatsapp_account(state, account).await?)

@@ -2,7 +2,7 @@
 //! catalog and the job retries.
 
 use crate::error::CoreApiError;
-use crate::runtime::{limit, on_blocking, on_core, state_of};
+use crate::runtime::{id64, limit, on_blocking, on_core, optional_id64, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::administrative_catalog::commands::{
@@ -10,11 +10,6 @@ use rustsale_core::administrative_catalog::commands::{
 };
 use rustsale_core::commands;
 use rustsale_core::google_maps_jobs::commands::{self as jobs, GoogleMapsJobState};
-
-/// A JS number as a geoname id; anything not finite becomes 0, which the catalog reports missing.
-fn id(value: f64) -> i64 {
-    if value.is_finite() { value as i64 } else { 0 }
-}
 
 /// Google Maps planning and catalog commands that were left out of the job module.
 #[module]
@@ -80,7 +75,7 @@ impl GoogleMapsMore {
         parent_id: Option<f64>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
-        let parent = parent_id.filter(|n| n.is_finite()).map(|n| n as i64);
+        let parent = optional_id64(parent_id)?;
         let size = limit(limit_) as usize;
         on_core(move |h| async move {
             let state = state_of::<AdministrativeCatalogState>(&h)?;
@@ -109,7 +104,7 @@ impl GoogleMapsMore {
 
     /// The geographic bounds of geoname `geonameId` from the catalog cache.
     pub async fn resolve_bounds(geoname_id: f64) -> Result<JsonValue, JsError> {
-        let geoname = id(geoname_id);
+        let geoname = id64(geoname_id)?;
         on_core(move |h| async move {
             let state = state_of::<AdministrativeCatalogState>(&h)?;
             Ok::<_, CoreApiError>(catalog::resolve_administrative_bounds(state, geoname).await?)

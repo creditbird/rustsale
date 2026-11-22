@@ -3,7 +3,7 @@
 //! by the tests; channel-bound commands stay with the conversation runtime.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, limit, on_blocking, state_of};
+use crate::runtime::{args, body, id64, limit, on_blocking, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::conversation::commands::{self, ConversationState};
@@ -15,11 +15,6 @@ use rustsale_core::conversation::types::{
     SendConversationMessageRequest, TimelineCursor, UnlinkIdentityRequest, UnlinkLeadRequest,
     UnpinMessageRequest, UpdateConversationQuickTemplateRequest,
 };
-
-/// A JS number as an id; anything not finite is 0, which the core then reports as missing.
-fn id(value: f64) -> i64 {
-    if value.is_finite() { value as i64 } else { 0 }
-}
 
 /// A JS number as a delta sequence; negative and non-finite values start at 0.
 fn sequence(value: f64) -> u64 {
@@ -62,14 +57,11 @@ impl ConversationActions {
         let channels: Vec<Channel> = args(channels)?;
         let before = cursor(before)?;
         let limit = limit(limit_);
+        let lead = id64(lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_contact_timeline(
-                state,
-                id(lead_id),
-                channels,
-                before,
-                limit,
+                state, lead, channels, before, limit,
             )?)
         })
         .await
@@ -83,13 +75,11 @@ impl ConversationActions {
     ) -> Result<JsonValue, JsError> {
         let before = cursor(before)?;
         let limit = limit(limit_);
+        let identity = id64(identity_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_identity_timeline(
-                state,
-                id(identity_id),
-                before,
-                limit,
+                state, identity, before, limit,
             )?)
         })
         .await
@@ -289,11 +279,12 @@ impl ConversationActions {
 
     /// The pinned messages of conversation `conversationId`, newest first.
     pub async fn pinned_messages(conversation_id: f64) -> Result<JsonValue, JsError> {
+        let conversation = id64(conversation_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::list_conversation_pinned_messages(
                 state,
-                id(conversation_id),
+                conversation,
             )?)
         })
         .await
