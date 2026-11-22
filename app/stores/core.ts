@@ -42,28 +42,25 @@ export function codeOf(e: unknown): string {
   return typeof code === "string" && code !== "" ? code : "internal";
 }
 
-function textOf(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
+/** The sentence for each native code. The core's own English message is never shown. */
+export const MESSAGE_FOR_CODE: Record<string, string> = {
+  invalid_request: "Dữ liệu chưa hợp lệ. Kiểm tra lại các ô đã nhập rồi thử lại.",
+  not_found: "Mục này không còn nữa, danh sách đã được làm mới.",
+  conflict: "Dữ liệu vừa được thay đổi ở nơi khác, đã làm mới.",
+  unavailable: "Dịch vụ tạm thời chưa sẵn sàng. Thử lại sau ít giây.",
+  internal: "Có lỗi khi xử lý. Thử lại nhé.",
+};
 
 /**
  * Sorts a thrown error by what the person can do:
- * invalid_request is theirs to fix (the core's message says what), not_found means the list is out
- * of date (refresh it), and everything else (internal, unavailable, conflict, unknown) is retried.
+ * invalid_request is theirs to fix, not_found and conflict mean the list is out of date (refresh it),
+ * and everything else (internal, unavailable, unknown) is retried. `say` replaces the sentence of a
+ * code for one action (for example, a send that has no connected channel).
  */
-export function failure(e: unknown): Failure {
+export function failure(e: unknown, say: Partial<Record<string, string>> = {}): Failure {
   const code = codeOf(e);
-  if (code === "invalid_request") {
-    return { code, action: "fix", message: `Dữ liệu chưa hợp lệ: ${textOf(e)}` };
-  }
-  if (code === "not_found") {
-    return { code, action: "refresh", message: "Mục này không còn nữa, danh sách đã được làm mới." };
-  }
-  if (code === "conflict") {
-    return { code, action: "refresh", message: "Dữ liệu vừa được thay đổi ở nơi khác, đã làm mới." };
-  }
-  if (code === "unavailable") {
-    return { code, action: "retry", message: "Dịch vụ tạm thời chưa sẵn sàng. Thử lại sau ít giây." };
-  }
-  return { code, action: "retry", message: "Có lỗi khi xử lý. Thử lại nhé." };
+  const message = say[code] ?? MESSAGE_FOR_CODE[code] ?? MESSAGE_FOR_CODE.internal;
+  if (code === "invalid_request") return { code, action: "fix", message };
+  if (code === "not_found" || code === "conflict") return { code, action: "refresh", message };
+  return { code, action: "retry", message };
 }

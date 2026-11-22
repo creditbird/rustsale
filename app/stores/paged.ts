@@ -57,5 +57,8 @@ export function pager<T>(
     }
   };
 
-  return { items, total, ready, loading, reload, more };
+  /** Changes the rows already loaded in place (for example a badge), without asking the core. */
+  const patch = (change: (rows: T[]) => T[]): void => { items.set(change(items())); };
+
+  return { items, total, ready, loading, reload, more, patch };
 }

@@ -38,8 +38,8 @@ export function notify(text: string, tone: ToastTone = "info", retry?: () => voi
  * `fix` shows the core's message, `refresh` runs `refresh` and says the data moved,
  * `retry` offers the retry. Resolves the sorted failure.
  */
-export function report(e: unknown, handlers: { refresh?: () => void; retry?: () => void } = {}): Failure {
-  const f = failure(e);
+export function report(e: unknown, handlers: { refresh?: () => void; retry?: () => void; say?: Partial<Record<string, string>> } = {}): Failure {
+  const f = failure(e, handlers.say);
   if (f.action === "refresh") {
     notify(f.message, "warning");
     handlers.refresh?.();

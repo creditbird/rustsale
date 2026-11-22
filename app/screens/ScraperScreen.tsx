@@ -1,4 +1,4 @@
-import { List, signal, Text, View } from "nsh";
+import { List, cleanup, signal, Text, View } from "nsh";
 import { Button as Base } from "nsh/base";
 import { GoogleMaps, Host } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Skeleton } from "../ui";
@@ -106,8 +106,8 @@ export function ScraperScreen() {
   const show = (job: Job) => { selected.set(job); void places.reload(); };
 
   // Progress arrives as core events; re-read the list instead of guessing the payload.
-  const stop = Host.onEvent((name) => { if (name === "scrape-job-event") void refresh(); });
-  void stop;
+  const stop = Host.onEvent((name) => { if (name === "google-maps-scrape-job-event") void refresh(); });
+  cleanup(stop);
 
   void refresh();
   void checkRuntime();

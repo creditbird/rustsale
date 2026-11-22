@@ -1,9 +1,10 @@
-import { List, signal, Text, View } from "nsh";
+import { List, cleanup, signal, Text, View } from "nsh";
 import { Button as Base } from "nsh/base";
 import { ConversationActions, Conversations, Host } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Skeleton } from "../ui";
 import { startCore, type Page } from "../stores/core";
 import { pager } from "../stores/paged";
+import { bodyOf, hhmm, mergeMessages, type TimelineMessage } from "../stores/format";
 import { notify, report } from "../stores/toast";
 
 interface InboxItem {
@@ -14,16 +15,14 @@ interface InboxItem {
   unreadCount: number;
   replyTargets: { channel: string; channelAccountId: number; conversationId: number }[];
 }
-interface Message {
-  id: number;
-  direction: string;
-  textContent: string | null;
-  occurredAt: string;
-  status: string;
-}
-interface TimelinePage { items: Message[]; nextBefore: unknown | null }
+type Message = TimelineMessage;
+interface TimelinePage { items: Message[]; nextCursor?: unknown | null; nextBefore?: unknown | null }
 
-const hhmm = (iso: string) => (iso.length >= 16 ? iso.slice(11, 16) : "");
+const SEND_SAYS = {
+  unavailable: "Chưa gửi được: kênh chưa đăng nhập hoặc chưa bật. Nội dung vẫn được giữ, thử lại sau khi kết nối kênh.",
+  not_found: "Chưa gửi được: tài khoản kênh này không còn nữa. Nội dung vẫn được giữ.",
+  invalid_request: "Chưa gửi được: kênh này chưa được hỗ trợ. Nội dung vẫn được giữ.",
+};
 
 function Bubble(props: { row: () => Message }) {
   const r = props.row;
@@ -31,7 +30,7 @@ function Bubble(props: { row: () => Message }) {
   return (
     <View class={`px-4 py-1 ${out() ? "items-end" : "items-start"}`}>
       <View class={`max-w-[70%] rounded-(--radius) px-3 py-2 ${out() ? "bg-bubble-out" : "bg-bubble-in"}`}>
-        <Text class={`text-sm ${out() ? "text-bubble-out-foreground" : "text-bubble-in-foreground"}`}>{r().textContent ?? ""}</Text>
+        <Text class={`text-sm ${out() ? "text-bubble-out-foreground" : "text-bubble-in-foreground"}`}>{bodyOf(r())}</Text>
         <Text class="mt-1 self-end text-xs text-bubble-out-meta">{hhmm(r().occurredAt)}</Text>
       </View>
     </View>
@@ -40,7 +39,9 @@ function Bubble(props: { row: () => Message }) {
 
 /**
  * Conversations: the inbox (cursor paged in the core) on the left, the chosen timeline on the right.
- * The timeline is newest first from the core; it is stored oldest first and older pages load as you scroll up.
+ * Messages are kept oldest first: the newest is at the bottom and an older page loads above it as
+ * you scroll up. The core answers by itself when something changes (`conversation-invalidated`,
+ * `conversation-message-delta`), so nothing here has to be reopened.
  */
 export function ConversationScreen() {
   const current = signal<InboxItem | null>(null);
@@ -61,6 +62,15 @@ export function ConversationScreen() {
   );
 
   const target = (c: InboxItem) => c.replyTargets[0] ?? null;
+  const cursorOf = (page: TimelinePage) => page.nextCursor ?? page.nextBefore ?? null;
+
+  /** Shows the badge as read at once; the core catches up (and says so with an event). */
+  const markRead = (c: InboxItem) => {
+    if (c.unreadCount <= 0) return;
+    inbox.patch((rows) => rows.map((r) => (r.key === c.key ? { ...r, unreadCount: 0 } : r)));
+    current.set({ ...c, unreadCount: 0 });
+    void Conversations.markRead(c.key).catch(() => { void inbox.reload(); });
+  };
 
   const loadTimeline = async (c: InboxItem) => {
     const t = target(c);
@@ -73,12 +83,25 @@ export function ConversationScreen() {
     try {
       const page = (await Conversations.timeline(t.conversationId, null, 50)) as TimelinePage;
       if (mine !== opened) return;
-      before = page.nextBefore ?? null;
-      messages.set(page.items.slice().reverse());
+      before = cursorOf(page);
+      messages.set(mergeMessages([], page.items));
       timelineReady.set(true);
-      if (c.unreadCount > 0) void Conversations.markRead(c.key).then(() => inbox.reload()).catch(() => undefined);
+      markRead(c);
     } catch (e) {
       if (mine === opened) report(e, { refresh: () => { current.set(null); void inbox.reload(); }, retry: () => { void loadTimeline(c); } });
+    }
+  };
+  /** Pulls the newest page again and folds it in, leaving older messages and the scroll where they are. */
+  const refreshTimeline = async (c: InboxItem) => {
+    const t = target(c);
+    if (!t) return;
+    const mine = opened;
+    try {
+      const page = (await Conversations.timeline(t.conversationId, null, 50)) as TimelinePage;
+      if (mine !== opened) return;
+      messages.set(mergeMessages(messages(), page.items));
+    } catch {
+      // The next event or a reopen tries again; a failed background refresh is not worth a toast.
     }
   };
   const older = async () => {
@@ -90,8 +113,8 @@ export function ConversationScreen() {
     try {
       const page = (await Conversations.timeline(t.conversationId, before, 50)) as TimelinePage;
       if (mine !== opened) return;
-      before = page.nextBefore ?? null;
-      messages.set(page.items.slice().reverse().concat(messages()));
+      before = cursorOf(page);
+      messages.set(mergeMessages(messages(), page.items));
     } catch (e) {
       if (mine === opened) report(e, { retry: () => { void older(); } });
     } finally {
@@ -109,23 +132,44 @@ export function ConversationScreen() {
     sending.set(true);
     try {
       await ConversationActions.sendMessage({ conversationId: t.conversationId, channelAccountId: t.channelAccountId, text });
-      draft.set("");
-      await loadTimeline(c);
     } catch (e) {
-      report(e, { retry: () => { void send(); } });
-    } finally {
+      // The composer keeps the text and no bubble is added: nothing was sent.
+      report(e, { say: SEND_SAYS, retry: () => { void send(); } });
       sending.set(false);
+      return;
     }
+    draft.set("");
+    sending.set(false);
+    await refreshTimeline(c);
   };
 
-  // The core says when a conversation changed; reload what is on screen.
-  const stop = Host.onEvent((name) => {
-    if (name !== "conversation-updated") return;
-    void inbox.reload();
+  let inboxTimer: ReturnType<typeof setTimeout> | null = null;
+  const reloadInboxSoon = () => {
+    if (inboxTimer !== null) clearTimeout(inboxTimer);
+    inboxTimer = setTimeout(() => { inboxTimer = null; void inbox.reload(); }, 150);
+  };
+  const conversationOf = (payload: unknown): number | null => {
+    const id = (payload as { conversationId?: unknown } | null)?.conversationId;
+    return typeof id === "number" ? id : null;
+  };
+  // The core says when a conversation changed: fold a delta in, refetch on an invalidation.
+  const stop = Host.onEvent((name, payload) => {
+    if (name !== "conversation-invalidated" && name !== "conversation-message-delta") return;
+    reloadInboxSoon();
     const c = current();
-    if (c) void loadTimeline(c);
+    const t = c ? target(c) : null;
+    if (!c || !t || conversationOf(payload) !== t.conversationId) return;
+    const delta = (payload as { message?: Message } | null)?.message;
+    if (name === "conversation-message-delta" && delta && typeof delta.id === "number") {
+      messages.set(mergeMessages(messages(), [delta]));
+    } else {
+      void refreshTimeline(c);
+    }
   });
-  void stop;
+  cleanup(() => {
+    stop();
+    if (inboxTimer !== null) clearTimeout(inboxTimer);
+  });
 
   void inbox.reload();
 
@@ -134,7 +178,7 @@ export function ConversationScreen() {
       <View class="w-[320px] border-r border-border bg-card">
         <View class="border-b border-border px-4 py-3">
           <Text class="text-base font-semibold text-foreground">Hộp thư</Text>
-          <Text testID="inbox-caption" class="text-xs text-muted-foreground">{`${inbox.total()} hội thoại`}</Text>
+          <Text testID="inbox-caption" class="text-xs text-muted-foreground">{inbox.ready() ? `${inbox.total()} hội thoại` : "Đang mở hộp thư…"}</Text>
         </View>
         <If when={!inbox.ready()}><View class="gap-3 p-4"><Skeleton /><Skeleton /></View></If>
         <If when={inbox.ready() && inbox.total() === 0}><EmptyState title="Hộp thư trống" /></If>
@@ -162,10 +206,13 @@ export function ConversationScreen() {
                 <Text testID="chat-caption" class="text-xs text-muted-foreground">{`${messages().length} tin đã tải`}</Text>
               </View>
               <If when={!timelineReady()}><View class="gap-3 p-4"><Skeleton /><Skeleton /></View></If>
-              <List testID="chat-list" each={messages()} keyExtractor={(m) => String(m.id)} estimatedItemSize={56}
-                initialScrollAtEnd onLoadMoreAtStart={() => { void older(); }} class="flex-1">
-                {(row) => <Bubble row={row} />}
-              </List>
+              {/* Mounted once the page is in, so "start at the end" sees the messages (an empty list has no end). */}
+              <If when={timelineReady()}>
+                <List testID="chat-list" each={messages()} keyExtractor={(m) => String(m.id)} estimatedItemSize={56}
+                  initialScrollAtEnd onLoadMoreAtStart={() => { void older(); }} class="flex-1">
+                  {(row) => <Bubble row={row} />}
+                </List>
+              </If>
               <View class="flex-row items-center gap-2 border-t border-border bg-card p-3">
                 <View class="flex-1">
                   <Input testID="composer" value={draft()} placeholder="Nhập tin nhắn…" onValue={(v) => draft.set(v)} onSubmit={() => { void send(); }} />

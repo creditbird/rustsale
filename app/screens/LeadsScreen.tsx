@@ -131,7 +131,7 @@ export function LeadsScreen() {
         <View class="flex-row items-center justify-between">
           <Text class="text-xl font-semibold text-foreground">Khách hàng</Text>
           <View class="flex-row items-center gap-3">
-            <Text testID="lead-caption" class="text-sm text-muted-foreground">{`${list.items().length} / ${list.total()} khách`}</Text>
+            <Text testID="lead-caption" class="text-sm text-muted-foreground">{list.ready() ? `${list.items().length} / ${list.total()} khách` : (failed() ? "Chưa tải được" : "Đang mở dữ liệu…")}</Text>
             <Button testID="lead-add" label="Thêm khách" variant="primary" size="sm" onPress={() => { formError.set(null); adding.set(true); }} />
           </View>
         </View>

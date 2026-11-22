@@ -5,11 +5,12 @@ import { Demo, GoogleMaps, Host } from "rustsale/native";
 let seeded: Promise<unknown> | undefined;
 const dir = `/tmp/rustsale-v3-ui2-scraper-${Date.now()}`;
 
-async function openScraper() {
+async function openScraper(entry = "./App.tsx") {
+  await Demo.prepare(dir);
   await Host.start(dir);
   seeded ??= Demo.seed();
   await seeded;
-  const app = await open("./App.tsx");
+  const app = await open(entry);
   await app.setViewport(1280, 800);
   await app.press("id:nav-scraper");
   await app.waitFor("id:scraper-start");
@@ -37,4 +38,15 @@ test("a paused job resumes through the core", async () => {
   await app.waitFor("id:resume-demo-job-2");
   await app.press("id:resume-demo-job-2");
   await eventually(async () => ((await GoogleMaps.getJob("demo-job-2")) as { status: string }).status !== "paused");
+});
+
+test("a scrape job event from the core refreshes the list", async () => {
+  const app = await openScraper("./harness/EventApp.tsx");
+  await app.waitUntil(() => has(app, "nhà hàng"));
+  const before = ((await GoogleMaps.listJobs()) as unknown[]).length;
+  await GoogleMaps.createJob({ mode: "keyword", keyword: "tiệm bánh sự kiện", headless: true });
+  expect(((await GoogleMaps.listJobs()) as unknown[]).length).toBe(before + 1);
+  // The core's own event name triggers the reload; the old name does not.
+  await app.press("id:emit-scrape");
+  await app.waitUntil(() => has(app, "tiệm bánh sự kiện"), { timeout: 4000 });
 });
