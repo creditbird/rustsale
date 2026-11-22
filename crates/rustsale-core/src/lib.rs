@@ -63,6 +63,9 @@ pub enum CoreError {
 pub struct CoreConfig {
     /// Application data directory (database, logs, sessions, spool).
     pub data_dir: PathBuf,
+    /// Port of the local HTTP API; `None` keeps the environment/default
+    /// (`RUSTSALE_LOCAL_API_PORT`, else 8787).
+    pub local_api_port: Option<u16>,
 }
 
 /// A started core: owns the [`AppHandle`] with every managed state.
@@ -101,9 +104,10 @@ impl Core {
             path: app_data_dir.clone(),
             source,
         })?;
-        let diagnostics =
-            google_maps_jobs::diagnostics::init_structured_logging(&app_data_dir.join("logs"))
-                .map_err(|source| CoreError::Logging(source.to_string()))?;
+        let diagnostics = google_maps_jobs::diagnostics::init_structured_logging_or_inherit(
+            &app_data_dir.join("logs"),
+        )
+        .map_err(|source| CoreError::Logging(source.to_string()))?;
         handle.manage(diagnostics);
         let db_path = app_data_dir.join("rustsale.db");
         let db_path_str = db_path
@@ -288,7 +292,10 @@ impl Core {
             whatsapp_supervisor: whatsapp_supervisor.clone(),
             whatsapp_login_manager: whatsapp_login_manager.clone(),
         };
-        local_api::server::spawn(std::sync::Arc::new(conversation_state.clone()));
+        local_api::server::spawn(
+            std::sync::Arc::new(conversation_state.clone()),
+            config.local_api_port,
+        );
         handle.manage(conversation_state);
         conversation_events
             .clone()

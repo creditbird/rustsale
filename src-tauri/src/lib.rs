@@ -26,7 +26,14 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     let tauri_host = host::TauriHost::new(app.handle().clone());
     let runtime = tauri::async_runtime::handle();
-    let core = Core::start(CoreConfig { data_dir }, tauri_host.ports(), runtime.inner())?;
+    let core = Core::start(
+        CoreConfig {
+            data_dir,
+            local_api_port: None,
+        },
+        tauri_host.ports(),
+        runtime.inner(),
+    )?;
     tauri_host.bind_core(core.handle().clone());
 
     let tray_ready = match core.handle().ports().tray.init() {
