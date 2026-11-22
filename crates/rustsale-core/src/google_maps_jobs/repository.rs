@@ -1409,7 +1409,9 @@ fn unit_from_row(row: &Row<'_>) -> rusqlite::Result<ScrapeUnit> {
         unit_type: row.get(3)?,
         payload,
         status: enum_from_text(row.get(5)?, 5)?,
-        depth: row.get::<_, i64>(6)? as u8,
+        depth: u8::try_from(row.get::<_, i64>(6)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(6, Type::Integer, Box::new(error))
+        })?,
         attempt_count: row.get::<_, i64>(7)? as u32,
         next_retry_at: row.get(8)?,
         last_error_kind: optional_enum_from_text(row.get(9)?, 9)?,
@@ -1703,6 +1705,46 @@ mod tests {
             first_seen_at: "2026-07-26T00:00:00Z".to_string(),
             last_seen_at: "2026-07-26T00:00:00Z".to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn unit_from_row_rejects_out_of_range_depth() {
+        let context = TestRepository::new();
+        context
+            .repository
+            .create_job(sample_job(ScrapeJobStatus::Queued))
+            .await
+            .unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![sample_unit(
+                    "unit-1",
+                    "keyword:coffee",
+                    ScrapeUnitStatus::Pending,
+                )],
+            )
+            .await
+            .unwrap();
+        context
+            .connection()
+            .execute(
+                "UPDATE google_maps_scrape_units SET depth=300 WHERE id='unit-1'",
+                [],
+            )
+            .unwrap();
+
+        let error = context
+            .repository
+            .get_unit("unit-1")
+            .await
+            .expect_err("depth above u8 must not be truncated");
+
+        assert!(
+            error.to_string().contains("depth") || error.to_string().contains("out of range"),
+            "unexpected error: {error}"
+        );
     }
 
     /// A2: units failed by `fail_job` must be counted, a user retry must be
