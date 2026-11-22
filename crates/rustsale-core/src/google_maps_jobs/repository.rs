@@ -776,8 +776,19 @@ impl ScrapeJobRepository {
             }
             tx.commit()?;
             if should_import_ready {
-                crate::google_maps_jobs::importer::import_ready_results(&mut conn, &job_id)
-                    .map_err(anyhow::Error::from)?;
+                // The checkpoint is already durable. An import failure (locked
+                // database, a leads constraint) must not fail the whole job:
+                // the result stays `pending` and finalize imports it again.
+                if let Err(error) =
+                    crate::google_maps_jobs::importer::import_ready_results(&mut conn, &job_id)
+                {
+                    tracing::warn!(
+                        target: "google_maps_scraper",
+                        job_id = %job_id,
+                        error = %error,
+                        "lead import after checkpoint failed; results stay pending for finalize"
+                    );
+                }
             }
             load_job(&conn, &job_id)?.ok_or_else(|| anyhow!("checkpointed job was not found"))
         })
@@ -1883,6 +1894,58 @@ mod tests {
                 .any(|detail| detail.contains("idx_google_maps_units_job_created")),
             "claim does not use the ordered index: {details:?}"
         );
+    }
+
+    /// A9/B12: a committed checkpoint is durable even when the following lead
+    /// import fails; the result must stay pending for finalize to import.
+    #[tokio::test]
+    async fn checkpoint_survives_import_failure() {
+        let context = TestRepository::new();
+        let mut job = sample_job(ScrapeJobStatus::Running);
+        job.total_units = 1;
+        context.repository.create_job(job).await.unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![sample_unit(
+                    "unit-1",
+                    "keyword:coffee",
+                    ScrapeUnitStatus::Running,
+                )],
+            )
+            .await
+            .unwrap();
+        context
+            .connection()
+            .execute_batch(
+                "CREATE TRIGGER reject_lead_insert BEFORE INSERT ON leads
+                 BEGIN
+                     SELECT RAISE(ABORT, 'lead insert rejected');
+                 END;",
+            )
+            .unwrap();
+
+        let mut result = sample_result();
+        result.enrichment_status = "not_found".to_string();
+        result.import_status = "pending".to_string();
+        let checkpoint = context
+            .repository
+            .checkpoint_completed_unit("job-1", "unit-1", vec![result], Vec::new())
+            .await
+            .expect("a durable checkpoint must survive an import failure");
+
+        assert_eq!(checkpoint.status, ScrapeJobStatus::Running);
+        assert_eq!(checkpoint.processed_units, 1);
+        let import_status: String = context
+            .connection()
+            .query_row(
+                "SELECT import_status FROM google_maps_scrape_results WHERE id='result-1'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(import_status, "pending");
     }
 
     /// A2: units failed by `fail_job` must be counted, a user retry must be
