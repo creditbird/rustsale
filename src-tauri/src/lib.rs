@@ -22,6 +22,11 @@ impl CoreHandle {
     }
 }
 
+/// Local HTTP API port of the v3 development build. Production v2 owns 8787; a v3 dev run
+/// that forgot `RUSTSALE_LOCAL_API_PORT` used to bind (or fight for) that port. Passing it
+/// here wins over the environment and `.env`. Revert to `None` at cutover (core-api.md §12).
+const DEV_LOCAL_API_PORT: u16 = 8797;
+
 fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let data_dir = app.path().app_data_dir()?;
     let tauri_host = host::TauriHost::new(app.handle().clone());
@@ -29,7 +34,7 @@ fn setup(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let core = Core::start(
         CoreConfig {
             data_dir,
-            local_api_port: None,
+            local_api_port: Some(DEV_LOCAL_API_PORT),
         },
         tauri_host.ports(),
         runtime.inner(),
@@ -81,5 +86,17 @@ pub fn run() {
     if let Err(error) = result {
         tracing::error!("error while running tauri application: {error}");
         eprintln!("error while running tauri application: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DEV_LOCAL_API_PORT;
+
+    /// v2 production owns 8787; a v3 dev build must never default to it.
+    #[test]
+    fn dev_local_api_port_does_not_collide_with_production() {
+        assert_eq!(DEV_LOCAL_API_PORT, 8797);
+        assert_ne!(DEV_LOCAL_API_PORT, 8787);
     }
 }

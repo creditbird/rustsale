@@ -67,7 +67,7 @@ sidecar, place/lead import, administrative areas) and fix the bugs found in the 
 - App id `com.rustsale.crm.v3`, data dir `~/.local/share/com.rustsale.crm.v3-dev/`
   (a copy of the production DB made 22/11 02:23). Never open
   `~/.local/share/com.rustsale.crm/` from v3.
-- Local API port: set `RUSTSALE_LOCAL_API_PORT=8797` for v3 (v2 owns 8787).
+- Local API port: both v3 dev shells bind 8797 by themselves (v2 owns 8787); no env var needed.
 - **Never log the production Zalo / WhatsApp accounts into v3.** A second login can kick
   v2's session, and the VTQA bot depends on it. Use a test account or no login until cutover.
 - Zalo webhook disabled in v3 dev (no allowlist file in the v3 data dir).

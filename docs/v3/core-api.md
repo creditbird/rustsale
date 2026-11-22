@@ -23,7 +23,7 @@ notification, scrapers, tray`.
 
 ```rust
 let core = Core::start(CoreConfig { data_dir, local_api_port: None }, ports, &tokio_handle)?;   // Result<Core, CoreError>
-// local_api_port: Some(8797) overrides RUSTSALE_LOCAL_API_PORT (the NSH host passes it; Tauri passes None)
+// local_api_port: Some(8797) overrides RUSTSALE_LOCAL_API_PORT (both v3 dev shells pass 8797; revert the Tauri one to None at cutover, §12)
 let app: &AppHandle = core.handle();                                      // the "service hub"
 ```
 
@@ -399,8 +399,8 @@ TSX must never receive a whole large list. Sorting/filtering stays in Rust.
 5. `AppHandle::state::<T>()` returns `Result` (v2/Tauri panicked); startup `expect`s are `CoreError`.
 6. Not run by hand (no GUI session in this task): tray, native dialogs, updater, close-to-tray,
    autostart through the Tauri adapter. They compile and are wired to the same core functions;
-   Alice's QA must cover them on v2-style `cargo tauri dev` with `RUSTSALE_LOCAL_API_PORT=8797`
-   and the `com.rustsale.crm.v3-dev` data dir.
+   Alice's QA must cover them on v2-style `cargo tauri dev` (the shell binds 8797 by itself, no env
+   var needed) and the `com.rustsale.crm.v3-dev` data dir.
 
 ## 10. Exporting to TSX (`#[native_module("rustsale/native")]`)
 
@@ -433,6 +433,7 @@ cutover the build identifies itself as a separate app:
 | `productName` | `RustSale CRM v3 dev` (autostart `.desktop`, bundle names) | `RustSale CRM` |
 | `plugins.updater.endpoints` | `https://updates.v3-dev.invalid/latest.json` (never resolves; a dev build cannot self-update to a production release) | the real `latest.json` URL |
 | OS keyring service and vault lock dir (`facebook/vault.rs`) | `rustsale-v3-dev` | `rustsale`, so migrated Facebook tokens still decrypt |
+| Local API port (`src-tauri/src/lib.rs` `DEV_LOCAL_API_PORT`, passed as `CoreConfig.local_api_port`; wins over `RUSTSALE_LOCAL_API_PORT` and `.env`) | `8797` (production v2 owns 8787, so a forgotten env var cannot collide) | `None`, so the core falls back to `RUSTSALE_LOCAL_API_PORT`, else 8787 |
 | Zalo webhook allowlist default | `<data_dir>/zalo-webhook-allowlist.csv` only; no `HOME` fallback, so no data dir means nobody is reported | unchanged |
 
 Test-only helpers that open a database refuse any path under `~/.local/share/com.rustsale.crm`
