@@ -1,10 +1,10 @@
 // `nsh test` runs this in a headless runner linked with the crate: the module is the real one, on a
 // throwaway data folder with the debug seed (3 synthetic leads, 2 deals). No real account or data.
-import { writeFile } from "node:fs/promises";
 import { expect, test } from "nsh/test";
 import {
   Ai,
   Campaigns,
+  ConversationNetwork,
   Desktop,
   Facebook,
   GoogleMapsMore,
@@ -217,9 +217,7 @@ test("import: inspect a CSV and import its rows as leads", async () => {
 
   await expect(ImportLeads.inspectFile("/tmp/does-not-exist.csv", null)).rejects.toThrow();
 
-  const csvPath = `/tmp/rustsale-import-rest-${Date.now()}.csv`;
-  await writeFile(csvPath, "name,phone,email\nBulk Imported,0909123456,bulk@example.invalid\n");
-
+  const csvPath = "fixtures/lead-import.csv";
   const inspection = row(await ImportLeads.inspectFile(csvPath, null));
   expect(inspection.file_type).toBe("csv");
   expect(inspection.headers).toContain("name");
@@ -290,4 +288,85 @@ test("google maps more: grid plan, provinces, catalog and missing jobs", async (
   await expect(GoogleMapsMore.resolveBounds(999_999_999)).rejects.toThrow();
   await expect(GoogleMapsMore.retryFailedUnits("missing-job")).rejects.toThrow();
   await expect(GoogleMapsMore.retryEmailEnrichment("missing-job")).rejects.toThrow();
+});
+
+test("conversation network: empty channel state and validation errors", async () => {
+  await Host.start(dir);
+
+  expect(await ConversationNetwork.whatsappAccounts()).toEqual([]);
+  expect(await ConversationNetwork.groupMembers(999_999)).toEqual([]);
+  expect(await ConversationNetwork.cancelWhatsappQr("missing-attempt")).toBeNull();
+  expect(typeof (await ConversationNetwork.syncWhatsappConversations())).toBe("number");
+
+  await expect(
+    ConversationNetwork.startDirect({
+      channelAccountId: 999_999,
+      phoneOrExternalId: "0909000000",
+      displayName: null,
+      initialMessage: "Chao ban"
+    })
+  ).rejects.toThrow();
+
+  await expect(
+    ConversationNetwork.searchStickers(999_999, "cat", 5)
+  ).rejects.toThrow();
+  await expect(ConversationNetwork.stickerDetail(999_999, 1)).rejects.toThrow();
+  await expect(
+    ConversationNetwork.recallMessage({ messageId: 999_999 })
+  ).rejects.toThrow();
+  await expect(
+    ConversationNetwork.setReaction({
+      messageId: 999_999,
+      reaction: "like",
+      active: true,
+      count: null,
+      clientMutationId: "bulk-reaction"
+    })
+  ).rejects.toThrow();
+  await expect(
+    ConversationNetwork.forwardMessage({
+      clientOperationId: "bulk-forward",
+      sourceMessageId: 999_999,
+      targetConversationIds: [1]
+    })
+  ).rejects.toThrow();
+  await expect(
+    ConversationNetwork.retryForwardTarget({
+      clientOperationId: "bulk-forward",
+      targetConversationId: 1
+    })
+  ).rejects.toThrow();
+  await expect(
+    ConversationNetwork.deepScanGroupMembers(999_999)
+  ).rejects.toThrow();
+  await expect(
+    ConversationNetwork.syncZaloGroupHistory(999_999)
+  ).rejects.toThrow();
+  await expect(
+    ConversationNetwork.downloadAttachment(999_999)
+  ).rejects.toThrow();
+  expect(await ConversationNetwork.disconnectWhatsappAccount(999_999)).toBeNull();
+  expect(await ConversationNetwork.discardStagedAttachment("missing-stage")).toBeNull();
+  await expect(ConversationNetwork.restartAccount("missing-account")).rejects.toThrow();
+  await expect(
+    ConversationNetwork.stageClipboardImage({
+      conversationId: 999_999,
+      fileName: "bulk.png",
+      mimeType: "image/png",
+      base64Data: "not base64"
+    })
+  ).rejects.toThrow();
+  await expect(
+    ConversationNetwork.importGroupMembers({
+      conversation_id: 999_999,
+      members: [],
+      category_ids: [],
+      new_category_name: null,
+      group_title: "Bulk group",
+      skip_existing: false
+    })
+  ).rejects.toThrow();
+
+  const staged = rows(await ConversationNetwork.stageAttachmentPaths(999_999, []));
+  expect(staged.length).toBe(0);
 });
