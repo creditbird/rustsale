@@ -17,7 +17,7 @@ use std::sync::Arc;
 
 const JOB_COLUMNS: &str = "id, mode, keyword, location, bbox_json, step_km, headless, profile_dir, blocked_url, status, stage, total_units, processed_units, failed_units, businesses_discovered, businesses_qualified, leads_created, last_error_kind, last_error_message, action_required, event_sequence, version, run_generation, created_at, started_at, updated_at, completed_at, coverage_truncated";
 const UNIT_COLUMNS: &str = "id, job_id, unit_key, unit_type, payload_json, status, depth, attempt_count, next_retry_at, last_error_kind, last_error_message, created_at, updated_at, completed_at";
-const RESULT_COLUMNS: &str = "id, job_id, source_unit_id, place_id, canonical_url, dedup_key, name, phone, normalized_phone, email, normalized_email, address, website, facebook, zalo, latitude, longitude, inside_requested_area, detail_status, enrichment_status, import_status, last_error_kind, last_error_message, first_seen_at, last_seen_at";
+pub(crate) const RESULT_COLUMNS: &str = "id, job_id, source_unit_id, place_id, canonical_url, dedup_key, name, phone, normalized_phone, email, normalized_email, address, website, facebook, zalo, latitude, longitude, inside_requested_area, detail_status, enrichment_status, import_status, last_error_kind, last_error_message, first_seen_at, last_seen_at";
 
 #[derive(Clone)]
 pub struct ScrapeJobRepository {
@@ -1036,6 +1036,29 @@ impl ScrapeJobRepository {
         .await
     }
 
+    /// One page of a job's places, filtered and sorted in SQL.
+    pub async fn list_results_page(
+        &self,
+        job_id: &str,
+        query: crate::paging::places::PlaceQuery,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> std::result::Result<crate::paging::Page<ScrapeResult>, crate::paging::PageError> {
+        use crate::paging::{places::list_places_page_internal, PageError};
+        let job_id = job_id.to_string();
+        self.with_connection(move |conn| {
+            Ok(list_places_page_internal(
+                &conn,
+                &job_id,
+                &query,
+                cursor.as_deref(),
+                limit,
+            ))
+        })
+        .await
+        .map_err(|error| PageError::Database(format!("{error:#}")))?
+    }
+
     pub async fn list_results_for_enrichment(&self, job_id: &str) -> Result<Vec<ScrapeResult>> {
         let job_id = job_id.to_string();
         self.with_connection(move |conn| {
@@ -1420,7 +1443,7 @@ fn unit_from_row(row: &Row<'_>) -> rusqlite::Result<ScrapeUnit> {
     })
 }
 
-fn result_from_row(row: &Row<'_>) -> rusqlite::Result<ScrapeResult> {
+pub(crate) fn result_from_row(row: &Row<'_>) -> rusqlite::Result<ScrapeResult> {
     Ok(ScrapeResult {
         id: row.get(0)?,
         job_id: row.get(1)?,

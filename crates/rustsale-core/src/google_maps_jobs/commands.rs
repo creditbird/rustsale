@@ -177,6 +177,22 @@ impl GoogleMapsJobService {
         self.repository.list_jobs().await
     }
 
+    /// One page of a job's places (filter, sort and cursor handled in SQL).
+    pub async fn list_results_page(
+        &self,
+        job_id: &str,
+        query: crate::paging::places::PlaceQuery,
+        cursor: Option<String>,
+        limit: u32,
+    ) -> Result<
+        crate::paging::Page<crate::google_maps_jobs::types::ScrapeResult>,
+        crate::paging::PageError,
+    > {
+        self.repository
+            .list_results_page(job_id, query, cursor, limit)
+            .await
+    }
+
     pub async fn pause_job(&self, job_id: &str) -> Result<ScrapeJob> {
         self.runner.pause(job_id).await
     }
@@ -406,6 +422,23 @@ pub async fn list_google_maps_scrape_jobs(
         .list_jobs()
         .await
         .map_err(|error| error.to_string())
+}
+
+/// New command: the places of one job, filtered, sorted and paged.
+pub async fn list_google_maps_results_page(
+    state: State<'_, GoogleMapsJobState>,
+    job_id: String,
+    query: crate::paging::places::PlaceQuery,
+    cursor: Option<String>,
+    limit: u32,
+) -> Result<
+    crate::paging::Page<crate::google_maps_jobs::types::ScrapeResult>,
+    crate::paging::PageError,
+> {
+    state
+        .service
+        .list_results_page(&job_id, query, cursor, limit)
+        .await
 }
 
 pub async fn delete_google_maps_scrape_job(

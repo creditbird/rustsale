@@ -25,6 +25,7 @@ pub mod lead_importer;
 pub mod local_api;
 pub mod models;
 pub mod notification;
+pub mod paging;
 pub mod scrapers;
 pub mod tray;
 
