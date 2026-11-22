@@ -107,3 +107,26 @@ mod item3 {
         commands::update_deal_stage_internal(&conn, 1, "Demo".to_string()).unwrap();
     }
 }
+
+mod item6 {
+    use crate::google_maps_jobs::types::ScrapeErrorKind;
+    use crate::scrapers::browser::BrowserManager;
+    use std::path::PathBuf;
+
+    /// A missing CloakBrowser sidecar is a runtime that is not available, never a missing
+    /// record: the API layer sorts the message by its words, so it must say "unavailable" and
+    /// must not say "not found".
+    #[tokio::test]
+    async fn a_missing_sidecar_is_unavailable_not_not_found() {
+        let manager = BrowserManager::new(1)
+            .with_sidecar_path(PathBuf::from("/nonexistent/rustsale-ui2-core/sidecar"));
+        let error = manager
+            .runtime_status()
+            .await
+            .expect_err("no sidecar, no status");
+        assert_eq!(error.kind, ScrapeErrorKind::RuntimeUnavailable);
+        let message = error.to_string().to_lowercase();
+        assert!(message.contains("unavailable"), "{message}");
+        assert!(!message.contains("not found"), "{message}");
+    }
+}

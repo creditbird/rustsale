@@ -2,7 +2,7 @@
 // throwaway data folder. Every case is one fault Alice's UI2 QA found; each name starts with the
 // item of the ui2-core brief.
 import { expect, test } from "nsh/test";
-import { ConversationActions, Deals, Host, Leads, Templates } from "rustsale/native";
+import { ConversationActions, Deals, GoogleMaps, Host, Leads, Templates } from "rustsale/native";
 
 const dir = `/tmp/rustsale-v3-nsh-test-ui2-core-${Date.now()}`;
 
@@ -72,4 +72,9 @@ test("ui2 item3: editing a row that no longer exists is not_found, never a silen
     "not_found",
     "email template 987654 not found"
   );
+});
+
+test("ui2 item6: GoogleMaps.runtimeStatus without the sidecar is unavailable", async () => {
+  await Host.start(dir);
+  await expectError(GoogleMaps.runtimeStatus(), "unavailable");
 });
