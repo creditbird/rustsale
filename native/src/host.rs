@@ -75,14 +75,14 @@ fn serve(request: Request) {
         }),
         Request::Notify { title, body, reply } => {
             let shown = show_notification(Notification::new("rustsale", title, body));
-            let _ = spawn(async move {
+            drop(spawn(async move {
                 let _ = reply.send(match shown.await {
                     true => Ok(()),
                     false => Err(PortError::Failed(
                         "the system did not show the notification".into(),
                     )),
                 });
-            });
+            }));
         }
         Request::PickFile { request, reply } => {
             let mut dialog = OpenDialog::files();
@@ -90,12 +90,12 @@ fn serve(request: Request) {
                 dialog = dialog.filter(filter);
             }
             let picked = pick_paths(dialog);
-            let _ = spawn(async move {
+            drop(spawn(async move {
                 let _ = reply.send(match picked.await {
                     Ok(paths) => Ok(paths.and_then(|p| p.into_iter().next())),
                     Err(error) => Err(port_err(error)),
                 });
-            });
+            }));
         }
         Request::SaveFile { request, reply } => {
             let mut dialog = SaveDialog::new();
@@ -106,24 +106,24 @@ fn serve(request: Request) {
                 dialog = dialog.filter(filter);
             }
             let picked = pick_save_path(dialog);
-            let _ = spawn(async move {
+            drop(spawn(async move {
                 let _ = reply.send(picked.await.map_err(port_err));
-            });
+            }));
         }
         Request::OpenUrl { url, reply } => {
             let opened = open_url(url);
-            let _ = spawn(async move {
+            drop(spawn(async move {
                 let _ = reply.send(match opened.await {
                     true => Ok(()),
                     false => Err(PortError::Failed("no app opened the URL".into())),
                 });
-            });
+            }));
         }
         Request::RevealPath { path, reply } => {
             let shown = reveal_path(path);
-            let _ = spawn(async move {
+            drop(spawn(async move {
                 let _ = reply.send(shown.await.map_err(port_err));
-            });
+            }));
         }
         Request::TrayInit { reply } => {
             set_tray(tray().tooltip("RustSale").menu([
@@ -150,13 +150,13 @@ fn serve(request: Request) {
         Request::Exit => quit(),
         Request::AutostartGet { reply } => {
             let enabled = launch_at_login();
-            let _ = spawn(async move {
+            drop(spawn(async move {
                 let _ = reply.send(Ok(enabled.await));
-            });
+            }));
         }
         Request::AutostartSet { enabled, reply } => {
             let done = set_launch_at_login(enabled);
-            let _ = spawn(async move {
+            drop(spawn(async move {
                 let _ = reply.send(match done.await {
                     Ok(()) => Ok(()),
                     Err(LaunchAtLoginError::Unavailable) => Err(PortError::Unsupported(
@@ -164,7 +164,7 @@ fn serve(request: Request) {
                     )),
                     Err(error) => Err(PortError::Failed(format!("{error:?}"))),
                 });
-            });
+            }));
         }
         Request::Updater { id, op } => UPDATER.with(|listeners| {
             let listeners = listeners.borrow();
@@ -207,7 +207,7 @@ impl Host {
         if !PUMPED.with(Cell::get) {
             let (tx, rx) = mpsc::unbounded_channel();
             BRIDGE.with(|b| *b.borrow_mut() = Some(Bridge::new(tx, updater_answers().clone())));
-            let _ = spawn(pump(rx));
+            drop(spawn(pump(rx)));
             PUMPED.with(|p| p.set(true));
         }
         let bridge = BRIDGE
