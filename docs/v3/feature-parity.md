@@ -194,10 +194,10 @@
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| ZALO-01 | ZALO | Bắt đầu đăng nhập Zalo bằng QR | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:start_zalo_qr_login | Phát zalo-qr-code, scanned, expired, declined, success, error | Chưa xuất |
-| ZALO-02 | ZALO | Liệt kê tài khoản Zalo kèm trạng thái auth và runtime | ZaloAccountsSettings.svelte, ZaloOutreach.svelte | src-tauri/src/commands.rs:get_managed_zalo_accounts | Tách auth status và runtime status | Chưa xuất |
-| ZALO-03 | ZALO | Xóa phiên Zalo | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:delete_zalo_session | Xóa session và tài khoản | Chưa xuất |
-| ZALO-04 | ZALO | Kiểm tra lại phiên Zalo | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:verify_zalo_session | Gọi zca-rs | Chưa xuất |
+| ZALO-01 | ZALO | Bắt đầu đăng nhập Zalo bằng QR | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:start_zalo_qr_login | Phát zalo-qr-code, scanned, expired, declined, success, error | Đã xuất `Zalo.startQrLogin` — bọc, chưa gọi thử (cần đăng nhập Zalo thật) |
+| ZALO-02 | ZALO | Liệt kê tài khoản Zalo kèm trạng thái auth và runtime | ZaloAccountsSettings.svelte, ZaloOutreach.svelte | src-tauri/src/commands.rs:get_managed_zalo_accounts | Tách auth status và runtime status | Đã xuất `Zalo.accounts` |
+| ZALO-03 | ZALO | Xóa phiên Zalo | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:delete_zalo_session | Xóa session và tài khoản | Đã xuất `Zalo.deleteSession` |
+| ZALO-04 | ZALO | Kiểm tra lại phiên Zalo | ZaloAccountsSettings.svelte | src-tauri/src/commands.rs:verify_zalo_session | Gọi zca-rs | Đã xuất `Zalo.verifySession` — bọc, chưa gọi thử (cần tài khoản Zalo thật) |
 | ZALO-05 | ZALO | Kiểm tra toàn bộ phiên Zalo | Không có | src-tauri/src/commands.rs:verify_all_zalo_sessions | Không thấy frontend gọi | Không xuất (lệnh cũ, TSX không được thấy; thay bằng luồng mới) |
 
 ### 2.6 Nhóm FB — 16 command

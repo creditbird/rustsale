@@ -1,7 +1,7 @@
 // `nsh test` runs this in a headless runner linked with the crate: the module is the real one, on a
 // throwaway data folder with the debug seed (3 synthetic leads, 2 deals). No real account or data.
 import { expect, test } from "nsh/test";
-import { Campaigns, Host, LeadsMore } from "rustsale/native";
+import { Campaigns, Host, LeadsMore, Zalo } from "rustsale/native";
 
 type Row = Record<string, any>;
 const row = (value: unknown) => value as Row;
@@ -157,4 +157,10 @@ test("campaigns: WhatsApp campaign create, populate and cancel", async () => {
   expect(row(await Campaigns.whatsappCampaign(campaignId)).status).toBe("queued");
   await Campaigns.cancelWhatsappCampaign(campaignId);
   expect(row(await Campaigns.whatsappCampaign(campaignId)).status).toBe("cancelled");
+});
+
+test("zalo: account list is empty and a missing session rejects", async () => {
+  await Host.start(dir);
+  expect(await Zalo.accounts()).toEqual([]);
+  await expect(Zalo.verifySession("missing-imei")).rejects.toThrow();
 });
