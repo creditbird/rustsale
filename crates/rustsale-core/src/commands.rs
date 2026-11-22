@@ -8518,10 +8518,26 @@ pub fn get_template_by_id(
     crate::db::get_template_by_id(&conn, id).map_err(|e| format!("Database error: {}", e))
 }
 
+/// The channels a multi-channel template can be written for.
+pub const TEMPLATE_CHANNELS: [&str; 5] = ["zalo", "whatsapp", "messenger", "facebook", "email"];
+
+/// Refuses a template channel the app does not know.
+pub fn validate_template_channel(channel: &str) -> Result<(), String> {
+    if TEMPLATE_CHANNELS.contains(&channel) {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid template channel: expected one of {}",
+            TEMPLATE_CHANNELS.join(", ")
+        ))
+    }
+}
+
 pub fn create_template(
     input: crate::models::CreateTemplateInput,
     state: State<DbState>,
 ) -> Result<i64, String> {
+    validate_template_channel(&input.channel)?;
     let conn = state
         .conn
         .lock()
@@ -8533,6 +8549,7 @@ pub fn update_template(
     input: crate::models::UpdateTemplateInput,
     state: State<DbState>,
 ) -> Result<(), String> {
+    validate_template_channel(&input.channel)?;
     let conn = state
         .conn
         .lock()

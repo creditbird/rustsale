@@ -28,6 +28,8 @@ pub mod notification;
 pub mod paging;
 pub mod scrapers;
 pub mod tray;
+#[cfg(test)]
+mod ui2_core_test;
 
 use host::{AppHandle, Ports};
 

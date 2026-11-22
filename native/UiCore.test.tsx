@@ -2,7 +2,7 @@
 // throwaway data folder. Every case is one fault Alice's UI2 QA found; each name starts with the
 // item of the ui2-core brief.
 import { expect, test } from "nsh/test";
-import { ConversationActions, Host } from "rustsale/native";
+import { ConversationActions, Host, Templates } from "rustsale/native";
 
 const dir = `/tmp/rustsale-v3-nsh-test-ui2-core-${Date.now()}`;
 
@@ -32,5 +32,17 @@ test("ui2 item1: sendMessage to a missing conversation is not_found with a clean
     }),
     "not_found",
     "conversation 424242 not found"
+  );
+});
+
+test("ui2 item2: a template with an unknown channel is invalid_request", async () => {
+  await Host.start(dir);
+  await expectError(
+    Templates.createTemplate({
+      name: "Bogus channel",
+      channel: "bogus",
+      content: "hi"
+    }),
+    "invalid_request"
   );
 });
