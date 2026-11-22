@@ -412,6 +412,20 @@ impl ScrapeJobRunner {
         Duration::from_micros(jittered)
     }
 
+    /// The job currently owning the runner, if any, with a finished handle
+    /// pruned first. Commands use it to refuse a state change that would leave
+    /// the job queued but unstartable (A12).
+    pub async fn active_job_id(&self) -> Option<String> {
+        let mut active = self.active.lock().await;
+        if active
+            .as_ref()
+            .is_some_and(|active| active.handle.is_finished())
+        {
+            active.take();
+        }
+        active.as_ref().map(|active| active.job_id.clone())
+    }
+
     pub async fn wait_for_idle(&self, timeout: Duration) -> Result<()> {
         tokio::time::timeout(timeout, async {
             loop {

@@ -195,6 +195,12 @@ impl GoogleMapsJobService {
     }
 
     pub async fn retry_failed_units(&self, job_id: &str) -> Result<ScrapeJob> {
+        // Refuse before touching the job: transitioning to Queued and resetting
+        // units before a start that cannot succeed left the UI reporting an
+        // error while the database had already changed (A12).
+        if let Some(active) = self.runner.active_job_id().await {
+            return Err(anyhow!("scrape job {active} is already active"));
+        }
         self.repository.import_ready_results(job_id).await?;
         let job = self.get_job(job_id).await?;
         let queued = self
@@ -766,6 +772,108 @@ mod tests {
         assert_eq!(resumed.status, ScrapeJobStatus::Running);
         let cancelled = harness.service.cancel_job(&job.id).await.unwrap();
         assert_eq!(cancelled.status, ScrapeJobStatus::Cancelled);
+        harness
+            .runner
+            .wait_for_idle(std::time::Duration::from_secs(1))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn retry_while_other_job_active_leaves_job_unchanged() {
+        let harness = Harness::new(true);
+        let active = harness
+            .service
+            .create_job(keyword_request("cafe"))
+            .await
+            .unwrap();
+        let retryable = harness
+            .service
+            .create_job(keyword_request("spa"))
+            .await
+            .unwrap();
+        harness.service.resume_job(&active.id).await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if !harness.processor.executed_units.lock().unwrap().is_empty() {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+            }
+        })
+        .await
+        .expect("the first job should start executing");
+
+        let running = harness
+            .repository
+            .transition_job(
+                &retryable.id,
+                retryable.version,
+                ScrapeJobStatus::Running,
+                crate::google_maps_jobs::types::TransitionCause::System,
+            )
+            .await
+            .unwrap();
+        let unit = harness
+            .repository
+            .claim_next_unit(&retryable.id)
+            .await
+            .unwrap()
+            .unwrap();
+        let failed = harness
+            .repository
+            .checkpoint_failed_unit(
+                &retryable.id,
+                &unit.id,
+                ScrapeJobError {
+                    kind: crate::google_maps_jobs::types::ScrapeErrorKind::SelectorChanged,
+                    message: "place listing changed".to_string(),
+                    retryable: false,
+                },
+            )
+            .await
+            .unwrap();
+        let partial = harness
+            .repository
+            .transition_job(
+                &retryable.id,
+                failed.version,
+                ScrapeJobStatus::Partial,
+                crate::google_maps_jobs::types::TransitionCause::System,
+            )
+            .await
+            .unwrap();
+        assert_eq!(partial.failed_units, 1);
+        assert_eq!(running.failed_units, 0);
+
+        let error = harness
+            .service
+            .retry_failed_units(&retryable.id)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("already active"));
+
+        let unchanged = harness
+            .repository
+            .get_job(&retryable.id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unchanged.status, ScrapeJobStatus::Partial);
+        assert_eq!(unchanged.failed_units, 1);
+        assert_eq!(unchanged.version, partial.version);
+        assert_eq!(
+            harness
+                .repository
+                .get_unit(&unit.id)
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            crate::google_maps_jobs::types::ScrapeUnitStatus::Failed
+        );
+
+        harness.service.cancel_job(&active.id).await.unwrap();
         harness
             .runner
             .wait_for_idle(std::time::Duration::from_secs(1))
