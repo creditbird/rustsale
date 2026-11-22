@@ -7109,3 +7109,24 @@ fn test_zalo_apply_normalized_message_delta_fault_injection_rolls_back_atomicall
         .unwrap();
     assert_eq!(delta_count, 0, "No delta row should persist");
 }
+
+#[test]
+fn start_direct_conversation_reports_a_missing_channel_account() {
+    let harness = Harness::new();
+    let request = crate::conversation::types::StartDirectConversationRequest {
+        channel_account_id: 424242,
+        phone_or_external_id: "0900000000".to_string(),
+        display_name: None,
+        initial_message: "qa errcode".to_string(),
+    };
+
+    let error = harness
+        .repository
+        .start_direct_conversation(&request, "2026-11-22T00:00:00.000Z")
+        .unwrap_err();
+
+    assert!(
+        error.to_string().contains("not found"),
+        "missing account must be reported as not found: {error}"
+    );
+}

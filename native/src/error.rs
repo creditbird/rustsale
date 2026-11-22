@@ -49,7 +49,12 @@ impl CoreApiError {
 impl From<String> for CoreApiError {
     fn from(message: String) -> Self {
         let lower = message.to_lowercase();
-        let code = if lower.contains("not found") || lower.contains("no such") {
+        let code = if lower.contains("not found")
+            || lower.contains("no such")
+            || lower.contains("no rows")
+            || lower.contains("does not exist")
+            || lower.contains("không tồn tại")
+        {
             "not_found"
         } else if lower.contains("invalid")
             || lower.contains("must not be empty")
@@ -133,6 +138,29 @@ mod tests {
         );
         assert_eq!(CoreApiError::from("duplicate phone").code, "conflict");
         assert_eq!(CoreApiError::from("disk exploded").code, "internal");
+    }
+
+    #[test]
+    fn missing_rows_and_files_are_not_found() {
+        assert_eq!(
+            CoreApiError::from("Query returned no rows").code,
+            "not_found"
+        );
+        assert_eq!(
+            CoreApiError::from(
+                "No channel account found for Facebook page x: Query returned no rows"
+            )
+            .code,
+            "not_found"
+        );
+        assert_eq!(
+            CoreApiError::from("Tệp không tồn tại: /tmp/qa.csv").code,
+            "not_found"
+        );
+        assert_eq!(
+            CoreApiError::from("scrape job qa was not found").code,
+            "not_found"
+        );
     }
 
     #[test]

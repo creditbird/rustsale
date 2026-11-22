@@ -4579,7 +4579,16 @@ impl ConversationRepository {
                 [request.channel_account_id],
                 |row| row.get(0),
             )
-            .unwrap_or_else(|_| "zalo".to_string());
+            .optional()?
+            .ok_or_else(|| {
+                rusqlite::Error::ToSqlConversionFailure(Box::new(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!(
+                        "channel account {} was not found",
+                        request.channel_account_id
+                    ),
+                )))
+            })?;
 
         let identity_namespace = if channel_name == "whatsapp" {
             "phone"
