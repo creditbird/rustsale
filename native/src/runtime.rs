@@ -238,6 +238,42 @@ pub(crate) fn optional_id64(value: Option<f64>) -> Result<Option<i64>, CoreApiEr
     value.map(id64).transpose()
 }
 
+/// A row id that reached a struct through `body`/`args` as an `i32`: it is whole by its type, so
+/// only the sign is left to check. 0 keeps the meaning the raw guards give it.
+pub(crate) fn checked_id32(value: i32) -> Result<i32, CoreApiError> {
+    id32(f64::from(value))
+}
+
+/// A row id that reached a struct through `body`/`args` as an `i64`: it must not be negative and
+/// must still be a number JS can hold exactly.
+pub(crate) fn checked_id64(value: i64) -> Result<i64, CoreApiError> {
+    if (value as f64) as i64 != value {
+        return Err(CoreApiError::invalid("id is out of range"));
+    }
+    id64(value as f64)?;
+    Ok(value)
+}
+
+/// An absent `Option<i32>` row id that reached a struct through `body`/`args`.
+pub(crate) fn checked_optional_id32(value: Option<i32>) -> Result<Option<i32>, CoreApiError> {
+    value.map(checked_id32).transpose()
+}
+
+/// An absent `Option<i64>` row id that reached a struct through `body`/`args`.
+pub(crate) fn checked_optional_id64(value: Option<i64>) -> Result<Option<i64>, CoreApiError> {
+    value.map(checked_id64).transpose()
+}
+
+/// A list of `i32` row ids that reached a struct through `body`/`args`.
+pub(crate) fn checked_ids32(values: Vec<i32>) -> Result<Vec<i32>, CoreApiError> {
+    values.into_iter().map(checked_id32).collect()
+}
+
+/// A list of `i64` row ids that reached a struct through `body`/`args`.
+pub(crate) fn checked_ids64(values: Vec<i64>) -> Result<Vec<i64>, CoreApiError> {
+    values.into_iter().map(checked_id64).collect()
+}
+
 /// The state of type `S` of the running core.
 pub(crate) fn state_of<S: Send + Sync + 'static>(
     handle: &AppHandle,
@@ -336,5 +372,39 @@ mod tests {
         assert_eq!(optional_id64(None).ok(), Some(None));
         assert_eq!(optional_id64(Some(5.0)).ok(), Some(Some(5)));
         assert!(optional_id64(Some(5.5)).is_err());
+    }
+
+    #[test]
+    fn ids_already_deserialized_are_checked_for_their_sign() {
+        assert_eq!(checked_id32(0).ok(), Some(0));
+        assert_eq!(checked_id32(42).ok(), Some(42));
+        assert_eq!(checked_id32(i32::MAX).ok(), Some(i32::MAX));
+        assert_eq!(
+            checked_id32(-1).map_err(|error| error.code),
+            Err("invalid_request".to_string())
+        );
+        assert_eq!(checked_id64(0).ok(), Some(0));
+        assert_eq!(checked_id64(42).ok(), Some(42));
+        assert_eq!(
+            checked_id64(9_007_199_254_740_992).ok(),
+            Some(9_007_199_254_740_992)
+        );
+        for bad in [-1_i64, 9_007_199_254_740_993] {
+            assert_eq!(
+                checked_id64(bad).map_err(|error| error.code),
+                Err("invalid_request".to_string()),
+                "{bad}"
+            );
+        }
+        assert_eq!(checked_optional_id32(None).ok(), Some(None));
+        assert_eq!(checked_optional_id32(Some(5)).ok(), Some(Some(5)));
+        assert!(checked_optional_id32(Some(-5)).is_err());
+        assert_eq!(checked_optional_id64(None).ok(), Some(None));
+        assert_eq!(checked_optional_id64(Some(5)).ok(), Some(Some(5)));
+        assert!(checked_optional_id64(Some(-5)).is_err());
+        assert_eq!(checked_ids32(vec![1, 2]).ok(), Some(vec![1, 2]));
+        assert!(checked_ids32(vec![1, -2]).is_err());
+        assert_eq!(checked_ids64(vec![1, 2]).ok(), Some(vec![1, 2]));
+        assert!(checked_ids64(vec![1, -2]).is_err());
     }
 }

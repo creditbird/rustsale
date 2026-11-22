@@ -1,7 +1,10 @@
 //! Email templates, the multi-channel template centre and SMTP accounts.
 
 use crate::error::CoreApiError;
-use crate::runtime::{args, body, id32, id64, on_blocking, on_core, state_of};
+use crate::runtime::{
+    args, body, checked_id64, checked_optional_id32, checked_optional_id64, id32, id64,
+    on_blocking, on_core, state_of,
+};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
@@ -29,6 +32,15 @@ struct SmtpInput {
     created_at: String,
 }
 
+impl SmtpInput {
+    /// Checks the id and the port serde accepted, before the core stores a row or opens a socket.
+    fn checked(mut self) -> Result<Self, CoreApiError> {
+        self.id = checked_optional_id32(self.id)?;
+        self.port = smtp_port(f64::from(self.port))?;
+        Ok(self)
+    }
+}
+
 impl From<SmtpInput> for SmtpServer {
     fn from(input: SmtpInput) -> Self {
         Self {
@@ -46,9 +58,9 @@ impl From<SmtpInput> for SmtpServer {
     }
 }
 
-/// A JS number as a TCP port: whole, not negative and at most 65535.
+/// A JS number as a TCP port: whole and in 1..=65535, the ports a TCP socket accepts.
 fn smtp_port(value: f64) -> Result<i32, CoreApiError> {
-    if value.is_finite() && value.fract() == 0.0 && (0.0..=65_535.0).contains(&value) {
+    if value.is_finite() && value.fract() == 0.0 && (1.0..=65_535.0).contains(&value) {
         Ok(value as i32)
     } else {
         Err(CoreApiError::invalid("port is out of range"))
@@ -116,7 +128,8 @@ impl Templates {
     /// The multi-channel templates matching `filter` (`{ channel?, folder_id?, stage?,
     /// search_query?, tag? }`); absent or `null` means all.
     pub async fn list(filter: Option<JsonValue>) -> Result<JsonValue, JsError> {
-        let filter: TemplateFilter = args(filter)?;
+        let mut filter: TemplateFilter = args(filter)?;
+        filter.folder_id = checked_optional_id64(filter.folder_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_templates(Some(filter), state)?)
@@ -137,7 +150,8 @@ impl Templates {
     /// Creates a multi-channel template from `{ folder_id?, name, channel, stage?, subject?,
     /// content, media_url?, ai_prompt?, tags_json? }` and resolves its id.
     pub async fn create_template(input: JsonValue) -> Result<JsonValue, JsError> {
-        let input: CreateTemplateInput = body(input)?;
+        let mut input: CreateTemplateInput = body(input)?;
+        input.folder_id = checked_optional_id64(input.folder_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::create_template(input, state)?)
@@ -148,7 +162,9 @@ impl Templates {
     /// Replaces a multi-channel template from `{ id, folder_id?, name, channel, stage?, subject?,
     /// content, media_url?, ai_prompt?, tags_json? }`.
     pub async fn update_template(input: JsonValue) -> Result<JsonValue, JsError> {
-        let input: UpdateTemplateInput = body(input)?;
+        let mut input: UpdateTemplateInput = body(input)?;
+        input.id = checked_id64(input.id)?;
+        input.folder_id = checked_optional_id64(input.folder_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::update_template(input, state)?)
@@ -217,7 +233,7 @@ impl Templates {
     /// from_email, from_name?, security?, created_at? }` and resolves its id. A blank password
     /// keeps the stored one.
     pub async fn save_smtp_server(server: JsonValue) -> Result<JsonValue, JsError> {
-        let server: SmtpInput = body(server)?;
+        let server = SmtpInput::checked(body(server)?)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::save_smtp_server(server.into(), state)?)
@@ -266,5 +282,64 @@ mod tests {
             assert_eq!(error.code(), Some("invalid_request"));
             assert_eq!(error.message(), "id is out of range");
         }
+    }
+
+    fn smtp_input() -> super::SmtpInput {
+        super::SmtpInput {
+            id: None,
+            name: "QA".to_owned(),
+            host: "127.0.0.1".to_owned(),
+            port: 2525,
+            username: String::new(),
+            password: String::new(),
+            from_email: "qa@example.test".to_owned(),
+            from_name: String::new(),
+            security: String::new(),
+            created_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn smtp_ports_outside_one_to_65535_are_invalid_requests() {
+        for good in [1.0, 25.0, 2525.0, 65_535.0] {
+            assert_eq!(super::smtp_port(good).ok(), Some(good as i32));
+        }
+        for bad in [0.0, -1.0, 65_536.0, 70_000.0, 1.5, f64::NAN] {
+            let error = match super::smtp_port(bad) {
+                Ok(_) => panic!("a bad port must be refused"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, "invalid_request", "{bad}");
+            assert_eq!(error.message, "port is out of range", "{bad}");
+        }
+    }
+
+    #[test]
+    fn smtp_input_checks_its_id_and_port_after_serde() {
+        let mut input = smtp_input();
+        input.id = Some(-1);
+        let error = match input.checked() {
+            Ok(_) => panic!("a negative id must be refused"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "invalid_request");
+
+        let mut input = smtp_input();
+        input.port = 70_000;
+        let error = match input.checked() {
+            Ok(_) => panic!("a port past 65535 must be refused"),
+            Err(error) => error,
+        };
+        assert_eq!(error.message, "port is out of range");
+
+        let mut input = smtp_input();
+        input.id = Some(7);
+        input.port = 65_535;
+        let checked = match input.checked() {
+            Ok(checked) => checked,
+            Err(error) => panic!("a valid input must pass: {error}"),
+        };
+        assert_eq!(checked.id, Some(7));
+        assert_eq!(checked.port, 65_535);
     }
 }
