@@ -16,7 +16,7 @@ impl Zalo {
     /// Starts a Zalo QR login. `zalo-qr-code`, `zalo-qr-scanned`, `zalo-qr-expired`,
     /// `zalo-qr-declined`, `zalo-qr-success` and `zalo-qr-error` arrive as events; resolves when
     /// the login ends (success, refusal or an error).
-    pub async fn start_qr_login() -> Result<JsonValue, CoreApiError> {
+    pub async fn start_qr_login() -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let app = h.clone();
             let state = state_of::<DbState>(&h)?;
@@ -26,7 +26,7 @@ impl Zalo {
     }
 
     /// Every managed Zalo account with its auth status, runtime status and last error.
-    pub async fn accounts() -> Result<JsonValue, CoreApiError> {
+    pub async fn accounts() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_managed_zalo_accounts(state)?)
@@ -35,7 +35,7 @@ impl Zalo {
     }
 
     /// Stops the listener of session `imei` and deletes the session and its account.
-    pub async fn delete_session(imei: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn delete_session(imei: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let app = h.clone();
             let state = state_of::<DbState>(&h)?;
@@ -46,7 +46,7 @@ impl Zalo {
 
     /// Checks session `imei` against Zalo and resolves `{ imei, is_valid, display_name, avatar,
     /// error_message }`. A missing session rejects with `not_found`.
-    pub async fn verify_session(imei: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn verify_session(imei: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::verify_zalo_session(imei, state).await?)

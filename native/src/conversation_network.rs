@@ -36,7 +36,7 @@ pub struct ConversationNetwork;
 #[module]
 impl ConversationNetwork {
     /// Restarts the Zalo listener of account `providerAccountKey`.
-    pub async fn restart_account(provider_account_key: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn restart_account(provider_account_key: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(
@@ -48,7 +48,7 @@ impl ConversationNetwork {
 
     /// Opens a direct conversation from `request` (`{ channelAccountId, phoneOrExternalId,
     /// displayName?, initialMessage }`) and resolves its first message.
-    pub async fn start_direct(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn start_direct(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: StartDirectConversationRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -62,7 +62,7 @@ impl ConversationNetwork {
     pub async fn stage_attachment_paths(
         conversation_id: f64,
         paths: Vec<String>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let conversation = id(conversation_id);
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -76,7 +76,7 @@ impl ConversationNetwork {
 
     /// Stages a clipboard image from `request` (`{ conversationId, fileName, mimeType,
     /// base64Data }`) and resolves its metadata.
-    pub async fn stage_clipboard_image(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn stage_clipboard_image(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: StageConversationClipboardImageRequest = body(request)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -90,7 +90,7 @@ impl ConversationNetwork {
     /// Discards staged attachment `stagedAttachmentId` and deletes its staged file.
     pub async fn discard_staged_attachment(
         staged_attachment_id: String,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(
@@ -106,7 +106,7 @@ impl ConversationNetwork {
         conversation_id: f64,
         query: String,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let conversation = id(conversation_id);
         let size = limit(limit_);
         on_core(move |h| async move {
@@ -120,10 +120,7 @@ impl ConversationNetwork {
 
     /// One Zalo sticker by id, as the chat of conversation `conversationId` sees it; `null` when
     /// Zalo has no such sticker.
-    pub async fn sticker_detail(
-        conversation_id: f64,
-        sticker: f64,
-    ) -> Result<JsonValue, CoreApiError> {
+    pub async fn sticker_detail(conversation_id: f64, sticker: f64) -> Result<JsonValue, JsError> {
         let conversation = id(conversation_id);
         let sticker = sticker_id(sticker)?;
         on_core(move |h| async move {
@@ -136,7 +133,7 @@ impl ConversationNetwork {
     }
 
     /// Recalls sent message `request` (`{ messageId }`) and resolves the updated message.
-    pub async fn recall_message(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn recall_message(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: RecallMessageRequest = body(request)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -147,7 +144,7 @@ impl ConversationNetwork {
 
     /// Adds or removes reaction `request` (`{ messageId, reaction, active, count?,
     /// clientMutationId }`) on a message; resolves the mutation result.
-    pub async fn set_reaction(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn set_reaction(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: SetConversationReactionRequest = body(request)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -159,7 +156,7 @@ impl ConversationNetwork {
     /// Forwards message `request` (`{ clientOperationId, sourceMessageId,
     /// targetConversationIds }`) to several conversations; resolves the operation with per-target
     /// results.
-    pub async fn forward_message(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn forward_message(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: ForwardConversationMessageRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -170,7 +167,7 @@ impl ConversationNetwork {
 
     /// Retries one failed target of a forward from `request` (`{ clientOperationId,
     /// targetConversationId }`) and resolves that target's result.
-    pub async fn retry_forward_target(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn retry_forward_target(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: RetryConversationForwardTargetRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -183,7 +180,7 @@ impl ConversationNetwork {
 
     /// The members of group conversation `conversationId` with their lead and categories. The
     /// name keeps the v2 `unrestricted` meaning: the group may have more than the page shows.
-    pub async fn group_members(conversation_id: f64) -> Result<JsonValue, CoreApiError> {
+    pub async fn group_members(conversation_id: f64) -> Result<JsonValue, JsError> {
         let conversation = id(conversation_id);
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -197,7 +194,7 @@ impl ConversationNetwork {
 
     /// Imports group members from `request` (`{ conversationId, members, categoryIds,
     /// newCategoryName?, groupTitle, skipExisting? }`) as leads and resolves the counts.
-    pub async fn import_group_members(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn import_group_members(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: BatchImportGroupMembersRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -210,7 +207,7 @@ impl ConversationNetwork {
 
     /// Pulls the member profiles of group `conversationId` from the channel runtime and resolves
     /// the scan result.
-    pub async fn deep_scan_group_members(conversation_id: f64) -> Result<JsonValue, CoreApiError> {
+    pub async fn deep_scan_group_members(conversation_id: f64) -> Result<JsonValue, JsError> {
         let conversation = id(conversation_id);
         on_core(move |h| async move {
             let db = state_of::<DbState>(&h)?;
@@ -224,7 +221,7 @@ impl ConversationNetwork {
 
     /// Backfills up to five pages of the Zalo group history of `conversationId`; resolves how many
     /// messages were added.
-    pub async fn sync_zalo_group_history(conversation_id: f64) -> Result<JsonValue, CoreApiError> {
+    pub async fn sync_zalo_group_history(conversation_id: f64) -> Result<JsonValue, JsError> {
         let conversation = id(conversation_id);
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -236,7 +233,7 @@ impl ConversationNetwork {
     }
 
     /// Syncs WhatsApp conversations from every connected account; resolves how many were touched.
-    pub async fn sync_whatsapp_conversations() -> Result<JsonValue, CoreApiError> {
+    pub async fn sync_whatsapp_conversations() -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::sync_whatsapp_conversations(state).await?)
@@ -245,7 +242,7 @@ impl ConversationNetwork {
     }
 
     /// Downloads attachment `attachmentId` into the local spool and resolves its record.
-    pub async fn download_attachment(attachment_id: f64) -> Result<JsonValue, CoreApiError> {
+    pub async fn download_attachment(attachment_id: f64) -> Result<JsonValue, JsError> {
         let attachment = id(attachment_id);
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -258,7 +255,7 @@ impl ConversationNetwork {
 
     /// Starts the WhatsApp QR login attempt `attemptId`; the QR and the result arrive as
     /// `whatsapp-qr-code` and `whatsapp-login-*` events on `Host.onEvent`.
-    pub async fn start_whatsapp_qr(attempt_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn start_whatsapp_qr(attempt_id: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::start_whatsapp_qr_login(state, attempt_id).await?)
@@ -267,7 +264,7 @@ impl ConversationNetwork {
     }
 
     /// Cancels WhatsApp QR login attempt `attemptId` and removes its temporary session.
-    pub async fn cancel_whatsapp_qr(attempt_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn cancel_whatsapp_qr(attempt_id: String) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::cancel_whatsapp_qr_login(state, attempt_id)?)
@@ -276,7 +273,7 @@ impl ConversationNetwork {
     }
 
     /// Connected WhatsApp accounts with their phone number and push name.
-    pub async fn whatsapp_accounts() -> Result<JsonValue, CoreApiError> {
+    pub async fn whatsapp_accounts() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::get_managed_whatsapp_accounts(state)?)
@@ -287,7 +284,7 @@ impl ConversationNetwork {
     /// Disconnects WhatsApp account `channelAccountId`: it stops the bot and deletes the session.
     pub async fn disconnect_whatsapp_account(
         channel_account_id: f64,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let account = id(channel_account_id);
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;

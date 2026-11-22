@@ -16,7 +16,7 @@ pub struct GoogleMaps;
 #[module]
 impl GoogleMaps {
     /// Whether the scraper's browser is installed and ready.
-    pub async fn runtime_status() -> Result<JsonValue, CoreApiError> {
+    pub async fn runtime_status() -> Result<JsonValue, JsError> {
         on_core(|h| async move {
             let state = state_of::<GoogleMapsJobState>(&h)?;
             Ok::<_, CoreApiError>(jobs::get_google_maps_runtime_status(state).await?)
@@ -25,7 +25,7 @@ impl GoogleMaps {
     }
 
     /// All jobs, newest first.
-    pub async fn list_jobs() -> Result<JsonValue, CoreApiError> {
+    pub async fn list_jobs() -> Result<JsonValue, JsError> {
         on_core(|h| async move {
             let state = state_of::<GoogleMapsJobState>(&h)?;
             Ok::<_, CoreApiError>(jobs::list_google_maps_scrape_jobs(state).await?)
@@ -34,7 +34,7 @@ impl GoogleMaps {
     }
 
     /// One job by id.
-    pub async fn get_job(job_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn get_job(job_id: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<GoogleMapsJobState>(&h)?;
             Ok::<_, CoreApiError>(jobs::get_google_maps_scrape_job(state, job_id).await?)
@@ -44,7 +44,7 @@ impl GoogleMaps {
 
     /// Creates and queues a job from `{ mode, keyword, location?, bbox?, stepKm?, districts?,
     /// headless }` and resolves it.
-    pub async fn create_job(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn create_job(request: JsonValue) -> Result<JsonValue, JsError> {
         let request = body(request)?;
         on_core(move |h| async move {
             let state = state_of::<GoogleMapsJobState>(&h)?;
@@ -54,7 +54,7 @@ impl GoogleMaps {
     }
 
     /// Pauses a running job and resolves it.
-    pub async fn pause_job(job_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn pause_job(job_id: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<GoogleMapsJobState>(&h)?;
             Ok::<_, CoreApiError>(jobs::pause_google_maps_scrape_job(state, job_id).await?)
@@ -63,7 +63,7 @@ impl GoogleMaps {
     }
 
     /// Resumes a paused job and resolves it.
-    pub async fn resume_job(job_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn resume_job(job_id: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<GoogleMapsJobState>(&h)?;
             Ok::<_, CoreApiError>(jobs::resume_google_maps_scrape_job(state, job_id).await?)
@@ -72,7 +72,7 @@ impl GoogleMaps {
     }
 
     /// Cancels a job and resolves it.
-    pub async fn cancel_job(job_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn cancel_job(job_id: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<GoogleMapsJobState>(&h)?;
             Ok::<_, CoreApiError>(jobs::cancel_google_maps_scrape_job(state, job_id).await?)
@@ -81,7 +81,7 @@ impl GoogleMaps {
     }
 
     /// Deletes a finished job and its places; resolves whether it existed.
-    pub async fn delete_job(job_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn delete_job(job_id: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<GoogleMapsJobState>(&h)?;
             Ok::<_, CoreApiError>(jobs::delete_google_maps_scrape_job(state, job_id).await?)
@@ -96,7 +96,7 @@ impl GoogleMaps {
         query: Option<JsonValue>,
         cursor: Option<String>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let query: PlaceQuery = args(query)?;
         let limit = limit(limit_);
         on_core(move |h| async move {

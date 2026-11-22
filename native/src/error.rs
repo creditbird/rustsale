@@ -173,6 +173,7 @@ mod tests {
     #[test]
     fn js_error_carries_code_and_message() {
         let js: JsError = CoreApiError::new("not_found", "no lead 9").into();
+        assert_eq!(js.code(), Some("not_found"));
         assert_eq!(js.message(), "no lead 9");
     }
 }

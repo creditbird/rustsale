@@ -19,7 +19,7 @@ impl Conversations {
         query: Option<JsonValue>,
         cursor: Option<String>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let query: InboxQuery = args(query)?;
         let limit = limit(limit_);
         on_blocking(move |h| {
@@ -30,7 +30,7 @@ impl Conversations {
     }
 
     /// Marks the conversation with inbox `key` read and resolves how many messages changed.
-    pub async fn mark_read(key: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn mark_read(key: String) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::mark_conversation_read(state, key)?)
@@ -44,7 +44,7 @@ impl Conversations {
         conversation_id: f64,
         before: Option<JsonValue>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let before = match before {
             None | Some(JsonValue::Null) => None,
             Some(value) => Some(body(value)?),
@@ -63,7 +63,7 @@ impl Conversations {
     }
 
     /// Whether each channel account is connected: Zalo, Facebook and WhatsApp.
-    pub async fn runtime_status() -> Result<JsonValue, CoreApiError> {
+    pub async fn runtime_status() -> Result<JsonValue, JsError> {
         on_core(|h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_conversation_runtime_status(state).await?)

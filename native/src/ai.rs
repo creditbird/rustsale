@@ -31,7 +31,7 @@ impl Ai {
     /// Classifies the intent of `text` and resolves `{ intent, confidence, detected_language,
     /// matched_keywords, reasoning, is_heuristic_match }`. Falls back to the heuristic classifier
     /// when no provider is configured.
-    pub async fn classify_intent(text: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn classify_intent(text: String) -> Result<JsonValue, JsError> {
         on_core(move |_h| async move {
             Ok::<_, CoreApiError>(ai::classify_customer_intent(text).await?)
         })
@@ -45,7 +45,7 @@ impl Ai {
         lead_id_: f64,
         conversation_id: Option<f64>,
         custom_prompt: Option<String>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let lead = lead_id(lead_id_)?;
         let conversation = conversation_id.filter(|n| n.is_finite()).map(|n| n as i64);
         on_core(move |h| async move {
@@ -59,7 +59,7 @@ impl Ai {
     }
 
     /// AI action proposals waiting for review.
-    pub async fn pending_proposals() -> Result<JsonValue, CoreApiError> {
+    pub async fn pending_proposals() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(ai::get_pending_ai_proposals(state)?)
@@ -73,7 +73,7 @@ impl Ai {
         proposal_id: f64,
         status: String,
         reviewer: String,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let proposal = id(proposal_id);
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -84,7 +84,7 @@ impl Ai {
 
     /// The CRM evidence of lead `leadId` that the copilot reads: the lead, its deal, recent
     /// messages and the journey stage.
-    pub async fn lead_evidence_context(lead_id_: f64) -> Result<JsonValue, CoreApiError> {
+    pub async fn lead_evidence_context(lead_id_: f64) -> Result<JsonValue, JsError> {
         let lead = lead_id(lead_id_)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;

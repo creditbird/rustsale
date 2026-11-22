@@ -34,7 +34,7 @@ impl Desktop {
         active_conversation_id: Option<f64>,
         is_focused: bool,
         seq: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let conversation_id = conversation(active_conversation_id);
         let seq = sequence(seq);
         on_blocking(move |h| {
@@ -51,7 +51,7 @@ impl Desktop {
 
     /// Shows a test desktop notification and emits `desktop-notification-sent` with
     /// `{ test: true, sound }`.
-    pub async fn test_notification() -> Result<JsonValue, CoreApiError> {
+    pub async fn test_notification() -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let app = h.clone();
             let state = state_of::<Arc<NotificationManager>>(&h)?;

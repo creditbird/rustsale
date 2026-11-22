@@ -198,7 +198,7 @@ impl Host {
     /// Starts the core on `dataDir` (default: the v3-dev folder beside the live app's, which is never
     /// used) and resolves once it runs. Calling it again resolves with the same answer. Rejects
     /// with `invalid_request` for the live app's folder or when the Zalo webhook is switched on.
-    pub async fn start(data_dir: Option<String>) -> Result<StartInfo, CoreApiError> {
+    pub async fn start(data_dir: Option<String>) -> Result<StartInfo, JsError> {
         let dir = match data_dir.filter(|d| !d.trim().is_empty()) {
             Some(dir) => PathBuf::from(dir),
             None => runtime::default_data_dir()?,

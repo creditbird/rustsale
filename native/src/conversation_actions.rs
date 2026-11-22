@@ -58,7 +58,7 @@ impl ConversationActions {
         channels: Option<JsonValue>,
         before: Option<JsonValue>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let channels: Vec<Channel> = args(channels)?;
         let before = cursor(before)?;
         let limit = limit(limit_);
@@ -80,7 +80,7 @@ impl ConversationActions {
         identity_id: f64,
         before: Option<JsonValue>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let before = cursor(before)?;
         let limit = limit(limit_);
         on_blocking(move |h| {
@@ -96,7 +96,7 @@ impl ConversationActions {
     }
 
     /// Links identity `request` (`{ identityId, leadId }`) to its lead.
-    pub async fn link_identity(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn link_identity(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: LinkIdentityRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -106,7 +106,7 @@ impl ConversationActions {
     }
 
     /// Unlinks identity `request` (`{ identityId }`); its messages stay.
-    pub async fn unlink_identity(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn unlink_identity(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: UnlinkIdentityRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -116,7 +116,7 @@ impl ConversationActions {
     }
 
     /// Unlinks lead `request` (`{ leadId }`) from its conversations; the conversations stay.
-    pub async fn unlink_lead(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn unlink_lead(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: UnlinkLeadRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -126,7 +126,7 @@ impl ConversationActions {
     }
 
     /// Moves the link of `request` (`{ sourceLeadId, targetLeadId }`) to another lead.
-    pub async fn relink_lead(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn relink_lead(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: RelinkLeadRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -136,7 +136,7 @@ impl ConversationActions {
     }
 
     /// Queues one message from `request` in the outbox; the channel supervisor delivers it.
-    pub async fn send_message(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn send_message(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: SendConversationMessageRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -147,7 +147,7 @@ impl ConversationActions {
 
     /// Queues a message of several parts from `request` in the outbox; only the `HUMAN_AGENT` tag
     /// is accepted.
-    pub async fn send_batch(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn send_batch(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: SendConversationBatchRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -158,7 +158,7 @@ impl ConversationActions {
 
     /// Deletes one conversation from `request` (`{ conversationId? | identityId? | leadId? }`): exactly
     /// one of the three must be given.
-    pub async fn delete_conversation(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn delete_conversation(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: DeleteConversationRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -168,7 +168,7 @@ impl ConversationActions {
     }
 
     /// Deletes every conversation in `requests`, each shaped as `deleteConversation` takes it.
-    pub async fn delete_conversations(requests: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn delete_conversations(requests: JsonValue) -> Result<JsonValue, JsError> {
         let requests: Vec<DeleteConversationRequest> = body(requests)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -178,7 +178,7 @@ impl ConversationActions {
     }
 
     /// The quick reply templates matching `request` (`{ category?, searchQuery?, includeInactive? }`).
-    pub async fn quick_templates(request: Option<JsonValue>) -> Result<JsonValue, CoreApiError> {
+    pub async fn quick_templates(request: Option<JsonValue>) -> Result<JsonValue, JsError> {
         let request = match request {
             None | Some(JsonValue::Null) => ListConversationQuickTemplatesRequest {
                 category: None,
@@ -195,7 +195,7 @@ impl ConversationActions {
     }
 
     /// Creates a quick reply template from `request` (`{ shortcut, title, bodyText, category? }`).
-    pub async fn create_quick_template(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn create_quick_template(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: CreateConversationQuickTemplateRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -208,7 +208,7 @@ impl ConversationActions {
 
     /// Replaces quick reply template `request` (`{ id, shortcut, title, bodyText, category?,
     /// isActive? }`).
-    pub async fn update_quick_template(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn update_quick_template(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: UpdateConversationQuickTemplateRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -220,7 +220,7 @@ impl ConversationActions {
     }
 
     /// Deletes quick reply template `request` (`{ id }`).
-    pub async fn delete_quick_template(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn delete_quick_template(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: DeleteConversationQuickTemplateRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -232,7 +232,7 @@ impl ConversationActions {
     }
 
     /// Counts one more use of quick reply template `request` (`{ id }`).
-    pub async fn mark_quick_template_used(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn mark_quick_template_used(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: MarkConversationQuickTemplateUsedRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -244,7 +244,7 @@ impl ConversationActions {
     }
 
     /// The state of forward operation `clientOperationId`; a missing one rejects.
-    pub async fn forward_operation(client_operation_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn forward_operation(client_operation_id: String) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_conversation_forward_operation(
@@ -256,7 +256,7 @@ impl ConversationActions {
     }
 
     /// The members `request` (`{ conversationId, sourceMessageId?, query?, limit? }`) can mention.
-    pub async fn mention_candidates(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn mention_candidates(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: ListConversationMentionCandidatesRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -268,7 +268,7 @@ impl ConversationActions {
     }
 
     /// Pins message `request` (`{ conversationId, messageId, pinnedBy? }`).
-    pub async fn pin_message(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn pin_message(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: PinMessageRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -278,7 +278,7 @@ impl ConversationActions {
     }
 
     /// Unpins message `request` (`{ conversationId, messageId }`).
-    pub async fn unpin_message(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn unpin_message(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: UnpinMessageRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -288,7 +288,7 @@ impl ConversationActions {
     }
 
     /// The pinned messages of conversation `conversationId`, newest first.
-    pub async fn pinned_messages(conversation_id: f64) -> Result<JsonValue, CoreApiError> {
+    pub async fn pinned_messages(conversation_id: f64) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::list_conversation_pinned_messages(
@@ -303,7 +303,7 @@ impl ConversationActions {
     pub async fn resume_deltas(
         after_sequence: f64,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let after_sequence = sequence(after_sequence);
         let limit = count(limit_);
         on_blocking(move |h| {
@@ -318,7 +318,7 @@ impl ConversationActions {
     }
 
     /// The highest and lowest sequence of the conversation delta log.
-    pub async fn high_water_mark() -> Result<JsonValue, CoreApiError> {
+    pub async fn high_water_mark() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_conversation_high_water_mark(state)?)

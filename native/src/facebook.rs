@@ -33,7 +33,7 @@ pub struct Facebook;
 #[module]
 impl Facebook {
     /// Connected Facebook Pages with their token status, scopes and runtime status.
-    pub async fn accounts() -> Result<JsonValue, CoreApiError> {
+    pub async fn accounts() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_managed_facebook_accounts(state)?)
@@ -42,7 +42,7 @@ impl Facebook {
     }
 
     /// Deletes the Facebook Page token and account of `pageId`.
-    pub async fn delete_account(page_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn delete_account(page_id: String) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_facebook_account(state, page_id)?)
@@ -53,7 +53,7 @@ impl Facebook {
     /// Verifies the token with Meta and saves (or updates) the Page. `request` is
     /// `{ pageId, accessToken, pageName?, avatarUrl?, grantedScopes? }`; an empty Page id or token
     /// rejects before any network call.
-    pub async fn save_account(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn save_account(request: JsonValue) -> Result<JsonValue, JsError> {
         let request = body(request)?;
         on_core(move |h| async move {
             let state = state_of::<DbState>(&h)?;
@@ -66,7 +66,7 @@ impl Facebook {
     pub async fn discover_pages(
         token: String,
         app_id: Option<String>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         on_core(move |_h| async move {
             Ok::<_, CoreApiError>(commands::fetch_facebook_pages_from_token(token, app_id).await?)
         })
@@ -76,7 +76,7 @@ impl Facebook {
     /// Schedules a Page post from `request` (the core record's snake_case fields:
     /// `draft_group_id`, `channel_account_id`, `page_id`, `post_type`, `message`, `link_url`,
     /// `media_paths`, `scheduled_publish_time`) and resolves its id.
-    pub async fn schedule_post(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn schedule_post(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: CreateFacebookPostRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -86,7 +86,7 @@ impl Facebook {
     }
 
     /// Queues post `postId` for immediate publishing; resolves whether it changed.
-    pub async fn publish_post_now(post_id: f64) -> Result<JsonValue, CoreApiError> {
+    pub async fn publish_post_now(post_id: f64) -> Result<JsonValue, JsError> {
         let post = id(post_id);
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -96,7 +96,7 @@ impl Facebook {
     }
 
     /// Scheduled posts, newest first, at most 100; filtered to `pageId` when given.
-    pub async fn scheduled_posts(page_id: Option<String>) -> Result<JsonValue, CoreApiError> {
+    pub async fn scheduled_posts(page_id: Option<String>) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(fb::list_facebook_scheduled_posts(state, page_id)?)
@@ -105,7 +105,7 @@ impl Facebook {
     }
 
     /// Cancels draft or queued post `postId`; resolves whether it existed.
-    pub async fn cancel_scheduled_post(post_id: f64) -> Result<JsonValue, CoreApiError> {
+    pub async fn cancel_scheduled_post(post_id: f64) -> Result<JsonValue, JsError> {
         let post = id(post_id);
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -117,7 +117,7 @@ impl Facebook {
     /// Creates a comment automation rule from `request` (`{ channelAccountId, pageId, ruleName,
     /// postIds?, keywords?, matchMode?, autoLike?, publicReplyTemplate?, privateReplyTemplate?,
     /// isEnabled? }`) and resolves its id.
-    pub async fn create_comment_automation(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn create_comment_automation(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: CreateCommentAutomationRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -127,7 +127,7 @@ impl Facebook {
     }
 
     /// Comment automation rules, optionally filtered to `pageId`.
-    pub async fn comment_automations(page_id: Option<String>) -> Result<JsonValue, CoreApiError> {
+    pub async fn comment_automations(page_id: Option<String>) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(fb::list_comment_automations(state, page_id)?)
@@ -137,7 +137,7 @@ impl Facebook {
 
     /// Replaces the fields of a comment automation rule from `request` (`{ id, ruleName, postIds?,
     /// keywords?, matchMode?, autoLike?, publicReplyTemplate?, privateReplyTemplate?, isEnabled? }`).
-    pub async fn update_comment_automation(request: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn update_comment_automation(request: JsonValue) -> Result<JsonValue, JsError> {
         let request: UpdateCommentAutomationRequest = body(request)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -147,7 +147,7 @@ impl Facebook {
     }
 
     /// Deletes comment automation rule `id`; resolves whether it existed.
-    pub async fn delete_comment_automation(rule_id: f64) -> Result<JsonValue, CoreApiError> {
+    pub async fn delete_comment_automation(rule_id: f64) -> Result<JsonValue, JsError> {
         let rule = id(rule_id);
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -161,7 +161,7 @@ impl Facebook {
     pub async fn comment_logs(
         page_id: Option<String>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let limit = count(limit_);
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -171,7 +171,7 @@ impl Facebook {
     }
 
     /// The token and Page health of `pageId`: status, granted scopes, active posts and rules.
-    pub async fn page_health(page_id: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn page_health(page_id: String) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(fb::get_facebook_page_health(state, page_id)?)
@@ -181,7 +181,7 @@ impl Facebook {
 
     /// Pulls Messenger conversations from the Graph API for `pageId`, or every Page when absent;
     /// resolves how many conversations were touched.
-    pub async fn sync_conversations(page_id: Option<String>) -> Result<JsonValue, CoreApiError> {
+    pub async fn sync_conversations(page_id: Option<String>) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
             Ok::<_, CoreApiError>(conversation::sync_facebook_conversations(state, page_id).await?)
@@ -194,7 +194,7 @@ impl Facebook {
     pub async fn ingest_webhook_events(
         page_id: String,
         events: JsonValue,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let events: Vec<JsonValue> = body(events)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;

@@ -28,7 +28,7 @@ pub struct Deals;
 #[module]
 impl Deals {
     /// All deals, newest first, with their lead, stage, value and currency.
-    pub async fn list() -> Result<JsonValue, CoreApiError> {
+    pub async fn list() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_deals(state)?)
@@ -37,7 +37,7 @@ impl Deals {
     }
 
     /// Moves deal `id` to `stage`; the core accepts any stage string.
-    pub async fn update_stage(id: i32, stage: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn update_stage(id: i32, stage: String) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::update_deal_stage(id, stage, state)?)
@@ -47,7 +47,7 @@ impl Deals {
 
     /// Creates a deal from `{ leadId, title, value?, stage, currency? }` and resolves the new deal.
     /// `currency` defaults to VND; any other value than VND or USD rejects.
-    pub async fn create(deal: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn create(deal: JsonValue) -> Result<JsonValue, JsError> {
         let deal: NewDeal = body(deal)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -64,7 +64,7 @@ impl Deals {
     }
 
     /// Deletes deal `id`; a missing id is not an error.
-    pub async fn delete(id: i32) -> Result<JsonValue, CoreApiError> {
+    pub async fn delete(id: i32) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_deal(id, state)?)

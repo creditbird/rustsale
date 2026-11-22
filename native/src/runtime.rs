@@ -4,6 +4,7 @@
 use crate::error::CoreApiError;
 use crate::ports::{Bridge, nsh_ports};
 use nsh_core::JsonValue;
+use nsh_core::element::JsError;
 use rustsale_core::host::{AppHandle, HostError};
 use rustsale_core::{Core, CoreConfig};
 use serde::Serialize;
@@ -145,7 +146,7 @@ fn to_json<T: Serialize>(value: T) -> Result<JsonValue, CoreApiError> {
 /// thread, and gives its answer as JSON.
 pub(crate) async fn on_blocking<T, E>(
     f: impl FnOnce(AppHandle) -> Result<T, E> + Send + 'static,
-) -> Result<JsonValue, CoreApiError>
+) -> Result<JsonValue, JsError>
 where
     T: Serialize + Send + 'static,
     E: Into<CoreApiError> + Send + 'static,
@@ -153,14 +154,16 @@ where
     let handle = running()?.core.handle().clone();
     let joined =
         nsh_core::prelude::blocking(move || f(handle).map_err(Into::into).and_then(to_json)).await;
-    joined.map_err(|e| CoreApiError::internal(format!("background task failed: {e}")))?
+    joined
+        .map_err(|e| CoreApiError::internal(format!("background task failed: {e}")))?
+        .map_err(JsError::from)
 }
 
 /// Runs an async core command on the core's own runtime and gives its answer
 /// as JSON.
 pub(crate) async fn on_core<T, E, F>(
     f: impl FnOnce(AppHandle) -> F + Send + 'static,
-) -> Result<JsonValue, CoreApiError>
+) -> Result<JsonValue, JsError>
 where
     T: Serialize + Send + 'static,
     E: Into<CoreApiError> + Send + 'static,
@@ -173,6 +176,7 @@ where
         .spawn(async move { f(handle).await.map_err(Into::into).and_then(to_json) });
     task.await
         .map_err(|e| CoreApiError::internal(format!("core task failed: {e}")))?
+        .map_err(JsError::from)
 }
 
 /// An optional JSON argument as `T`; absent or `null` is `T::default()`.

@@ -49,7 +49,7 @@ impl Leads {
         query: Option<JsonValue>,
         cursor: Option<String>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let query: LeadQuery = args(query)?;
         let limit = limit(limit_);
         on_blocking(move |h| {
@@ -65,7 +65,7 @@ impl Leads {
         query: Option<JsonValue>,
         cursor: Option<String>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let query: LeadQuery = args(query)?;
         let limit = limit(limit_);
         on_blocking(move |h| {
@@ -82,7 +82,7 @@ impl Leads {
     }
 
     /// One lead by id. Rejects with `not_found` when there is none.
-    pub async fn details(id: i32) -> Result<JsonValue, CoreApiError> {
+    pub async fn details(id: i32) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_lead_details(id, state)?)
@@ -92,7 +92,7 @@ impl Leads {
 
     /// Creates a lead from `{ name, company?, status?, value?, owner?, email?, phone?, about?,
     /// address?, currency? }` and resolves its id. `currency` defaults to VND.
-    pub async fn add(lead: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn add(lead: JsonValue) -> Result<JsonValue, JsError> {
         let lead: NewLead = body(lead)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -114,7 +114,7 @@ impl Leads {
     }
 
     /// Sets the pipeline status of lead `id`.
-    pub async fn update_status(id: i32, status: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn update_status(id: i32, status: String) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::update_lead_status(id, status, state)?)
@@ -128,7 +128,7 @@ impl Leads {
         lead_id: Option<i32>,
         cursor: Option<String>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let limit = limit(limit_);
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -138,7 +138,7 @@ impl Leads {
     }
 
     /// All categories, as `{ id, name }`.
-    pub async fn categories() -> Result<JsonValue, CoreApiError> {
+    pub async fn categories() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_categories(state)?)

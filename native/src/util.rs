@@ -13,13 +13,13 @@ pub struct Util;
 #[module]
 impl Util {
     /// The v2 sample command: resolves `Hello, {name}! You've been greeted from Rust!`.
-    pub async fn greet(name: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn greet(name: String) -> Result<JsonValue, JsError> {
         Ok(JsonValue::String(rustsale_core::greet(&name)))
     }
 
     /// The license hardware id: `{ hardware_id, hostname, os_info }`, hashed from the OS, arch,
     /// hostname and user.
-    pub async fn hardware_id() -> Result<JsonValue, CoreApiError> {
+    pub async fn hardware_id() -> Result<JsonValue, JsError> {
         crate::runtime::on_blocking(move |_h| Ok::<_, CoreApiError>(commands::get_hardware_id()?))
             .await
     }
@@ -30,7 +30,7 @@ impl Util {
         default_filename: Option<String>,
         url: Option<String>,
         base64_data: Option<String>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             Ok::<_, CoreApiError>(
                 commands::save_image_file(h, default_filename, url, base64_data).await?,

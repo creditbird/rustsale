@@ -17,7 +17,7 @@ pub struct ImportLeads;
 #[module]
 impl ImportLeads {
     /// Opens the picker for an Excel or CSV file and resolves its path, or `null` when cancelled.
-    pub async fn pick_file() -> Result<JsonValue, CoreApiError> {
+    pub async fn pick_file() -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             Ok::<_, CoreApiError>(commands::pick_lead_import_file(h).await?)
         })
@@ -29,7 +29,7 @@ impl ImportLeads {
     pub async fn inspect_file(
         file_path: String,
         sheet_name: Option<String>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         on_core(move |_h| async move {
             Ok::<_, CoreApiError>(commands::inspect_lead_import_file(file_path, sheet_name).await?)
         })
@@ -40,7 +40,7 @@ impl ImportLeads {
     /// `sheet_name`, `has_header`, `header_row_index`, `mapping`, `conflict_strategy`,
     /// `default_category_id`, `default_status`, `default_owner`, `default_currency`,
     /// `normalize_phone`) and resolves the `ImportSummaryResult`.
-    pub async fn execute(options: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn execute(options: JsonValue) -> Result<JsonValue, JsError> {
         let options: LeadImportOptions = body(options)?;
         on_core(move |h| async move {
             let app = h.clone();
@@ -55,7 +55,7 @@ impl ImportLeads {
 
     /// Saves the lead import template for `format` (`xlsx`/`excel` or `csv`) through the save
     /// dialog and resolves the chosen path, or `null` when cancelled.
-    pub async fn download_template(format: String) -> Result<JsonValue, CoreApiError> {
+    pub async fn download_template(format: String) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             Ok::<_, CoreApiError>(commands::download_lead_import_template(h, format).await?)
         })
@@ -67,7 +67,7 @@ impl ImportLeads {
     pub async fn export_csv(
         default_filename: String,
         content: String,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         on_core(move |h| async move {
             Ok::<_, CoreApiError>(
                 commands::export_leads_csv_file(h, default_filename, content).await?,

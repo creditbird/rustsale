@@ -85,7 +85,7 @@ impl LeadsMore {
         filters: Option<JsonValue>,
         cursor: Option<i32>,
         limit_: Option<f64>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let filters: OutreachFilters = args(filters)?;
         let limit = limit(limit_);
         on_blocking(move |h| {
@@ -111,7 +111,7 @@ impl LeadsMore {
     pub async fn outreach_ids(
         filters: Option<JsonValue>,
         excluded_lead_ids: Option<Vec<i32>>,
-    ) -> Result<JsonValue, CoreApiError> {
+    ) -> Result<JsonValue, JsError> {
         let filters: OutreachFilters = args(filters)?;
         let excluded = excluded_lead_ids.unwrap_or_default();
         on_blocking(move |h| {
@@ -133,7 +133,7 @@ impl LeadsMore {
     }
 
     /// All leads, converted ones included; the caller splits them.
-    pub async fn list() -> Result<JsonValue, CoreApiError> {
+    pub async fn list() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_leads(state)?)
@@ -142,7 +142,7 @@ impl LeadsMore {
     }
 
     /// The full activity log of lead `leadId`, newest first.
-    pub async fn activities(lead_id: i32) -> Result<JsonValue, CoreApiError> {
+    pub async fn activities(lead_id: i32) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_activities(lead_id, state)?)
@@ -151,7 +151,7 @@ impl LeadsMore {
     }
 
     /// The last `limit` activities of all leads, newest first; absent means 10.
-    pub async fn recent_activities(limit_: Option<f64>) -> Result<JsonValue, CoreApiError> {
+    pub async fn recent_activities(limit_: Option<f64>) -> Result<JsonValue, JsError> {
         let limit = limit_
             .filter(|n| n.is_finite() && *n > 0.0)
             .map(|n| n.min(f64::from(i32::MAX)) as i32);
@@ -163,7 +163,7 @@ impl LeadsMore {
     }
 
     /// Logs an activity on a lead from `{ leadId, activityType, content, performedBy? }`.
-    pub async fn add_activity(activity: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn add_activity(activity: JsonValue) -> Result<JsonValue, JsError> {
         let activity: NewActivity = body(activity)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -180,7 +180,7 @@ impl LeadsMore {
 
     /// Replaces lead `lead` from `{ id, name, company?, status?, value?, owner?, email?, phone?,
     /// about?, address?, currency? }`.
-    pub async fn update(lead: JsonValue) -> Result<JsonValue, CoreApiError> {
+    pub async fn update(lead: JsonValue) -> Result<JsonValue, JsError> {
         let lead: LeadEdit = body(lead)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -203,7 +203,7 @@ impl LeadsMore {
     }
 
     /// Deletes lead `id` with its activities and deals; a missing id is not an error.
-    pub async fn delete(id: i32) -> Result<JsonValue, CoreApiError> {
+    pub async fn delete(id: i32) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::delete_lead(id, state)?)
