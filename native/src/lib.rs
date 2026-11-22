@@ -5,6 +5,7 @@ mod ai;
 mod campaigns;
 mod categories;
 mod conversation_actions;
+mod conversation_network;
 mod conversations;
 mod deals;
 mod desktop;
@@ -41,6 +42,7 @@ fn native(registry: &mut Registry) {
         .module::<facebook::Facebook>()
         .module::<conversations::Conversations>()
         .module::<conversation_actions::ConversationActions>()
+        .module::<conversation_network::ConversationNetwork>()
         .module::<maps::GoogleMaps>()
         .module::<maps_more::GoogleMapsMore>()
         .module::<templates::Templates>()
