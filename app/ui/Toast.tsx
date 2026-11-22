@@ -18,7 +18,7 @@ export function Toast() {
           <View class={`flex-row items-center gap-3 rounded-(--radius) border px-4 py-3 ${TONE[t().tone]}`}>
             <Text testID="toast-text" class="flex-1 text-sm text-foreground">{t().text}</Text>
             <If when={t().retry}>
-              {(retry) => <Button testID="toast-retry" size="sm" label="Thử lại" onPress={() => { dismiss(); retry()(); }} />}
+              {(retry) => <Button testID="toast-retry" size="sm" label="Thử lại" onPress={() => { const run = retry(); dismiss(); run(); }} />}
             </If>
           </View>
         </View>
