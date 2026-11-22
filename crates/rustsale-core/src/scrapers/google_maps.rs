@@ -1689,6 +1689,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore = "needs real cloak-runtime sidecar; run with --include-ignored"]
     async fn test_google_maps_scraper_search() {
         let port = std::net::TcpListener::bind("127.0.0.1:0")
             .unwrap()
