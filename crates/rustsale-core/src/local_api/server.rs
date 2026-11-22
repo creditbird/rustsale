@@ -48,7 +48,7 @@ fn clients_path(conversation: &ConversationState) -> Option<PathBuf> {
 
 /// Starts the local HTTP API on 127.0.0.1 only. Clients authenticate with a
 /// per-client token (hashed in the clients file) or the legacy env token.
-pub fn spawn(conversation: Arc<ConversationState>) {
+pub fn spawn(conversation: Arc<ConversationState>, port_override: Option<u16>) {
     let legacy = std::env::var(TOKEN_ENV_VAR).ok();
     let legacy = legacy.as_deref().filter(|v| !v.trim().is_empty());
     if legacy.is_some() {
@@ -64,10 +64,12 @@ pub fn spawn(conversation: Arc<ConversationState>) {
         return;
     }
 
-    let port = std::env::var(PORT_ENV_VAR)
-        .ok()
-        .and_then(|value| value.trim().parse::<u16>().ok())
-        .unwrap_or(DEFAULT_PORT);
+    let port = port_override.unwrap_or_else(|| {
+        std::env::var(PORT_ENV_VAR)
+            .ok()
+            .and_then(|value| value.trim().parse::<u16>().ok())
+            .unwrap_or(DEFAULT_PORT)
+    });
 
     let state = ApiState {
         conversation,

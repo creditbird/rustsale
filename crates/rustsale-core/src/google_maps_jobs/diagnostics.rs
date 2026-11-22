@@ -94,6 +94,21 @@ pub fn init_structured_logging(log_dir: &Path) -> Result<DiagnosticsGuard> {
     Ok(DiagnosticsGuard { _workers: workers })
 }
 
+/// Like [`init_structured_logging`], but a process whose host already owns the global logger (the
+/// NSH runtime sets its own, in a packaged app and in its test runner) keeps that one: the core
+/// then writes no log files of its own and the returned guard is empty.
+pub fn init_structured_logging_or_inherit(log_dir: &Path) -> Result<DiagnosticsGuard> {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info,rustsale_crm_lib=info"));
+    let (subscriber, workers) = build_subscriber(log_dir, filter)?;
+    match subscriber.try_init() {
+        Ok(()) => Ok(DiagnosticsGuard { _workers: workers }),
+        Err(_) => Ok(DiagnosticsGuard {
+            _workers: Vec::new(),
+        }),
+    }
+}
+
 pub fn redact_sensitive_fields(value: Value) -> Value {
     match value {
         Value::Object(values) => Value::Object(

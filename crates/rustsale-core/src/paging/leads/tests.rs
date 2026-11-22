@@ -1,0 +1,247 @@
+//! Synthetic data only.
+
+use super::*;
+use crate::db::init_db;
+use std::collections::HashSet;
+
+fn conn() -> Connection {
+    init_db(":memory:").expect("in-memory db")
+}
+
+fn insert(conn: &Connection, name: &str, company: &str, status: &str, value: f64) -> i64 {
+    conn.execute(
+        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+         VALUES (?1, ?2, ?3, ?4, '2026-01-01', 'owner', ?5, '0900000000')",
+        rusqlite::params![name, company, status, value, format!("{name}@example.test")],
+    )
+    .expect("insert lead");
+    conn.last_insert_rowid()
+}
+
+fn seed(conn: &Connection, n: usize) {
+    for i in 0..n {
+        // Many duplicates in the sort keys on purpose.
+        insert(
+            conn,
+            &format!("Lead {}", i % 4),
+            &format!("Company {}", i % 3),
+            if i % 2 == 0 { "New" } else { "Won" },
+            f64::from(u32::try_from(i % 5).expect("small")),
+        );
+    }
+}
+
+fn walk(conn: &Connection, query: &LeadQuery, limit: u32) -> Vec<i32> {
+    let mut ids = Vec::new();
+    let mut cursor: Option<String> = None;
+    loop {
+        let page = get_leads_page_internal(conn, query, cursor.as_deref(), limit).expect("page");
+        ids.extend(page.items.iter().filter_map(|l| l.id));
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break,
+        }
+    }
+    ids
+}
+
+#[test]
+fn every_sort_walks_all_rows_once_in_both_directions() {
+    let conn = conn();
+    seed(&conn, 23);
+    for sort in [
+        LeadSort::Id,
+        LeadSort::Name,
+        LeadSort::Company,
+        LeadSort::Status,
+        LeadSort::Value,
+        LeadSort::Owner,
+        LeadSort::LastActivity,
+    ] {
+        for descending in [false, true] {
+            let query = LeadQuery {
+                sort,
+                descending,
+                ..LeadQuery::default()
+            };
+            let ids = walk(&conn, &query, 5);
+            let unique: HashSet<_> = ids.iter().copied().collect();
+            assert_eq!(ids.len(), 23, "{sort:?} desc={descending}: gap or repeat");
+            assert_eq!(unique.len(), 23, "{sort:?} desc={descending}: repeat");
+        }
+    }
+}
+
+#[test]
+fn paged_order_equals_the_unpaged_order() {
+    let conn = conn();
+    seed(&conn, 31);
+    let query = LeadQuery {
+        sort: LeadSort::Name,
+        ..LeadQuery::default()
+    };
+    let whole = get_leads_page_internal(&conn, &query, None, 200).expect("whole");
+    assert!(whole.next_cursor.is_none());
+    let whole_ids: Vec<_> = whole.items.iter().filter_map(|l| l.id).collect();
+    assert_eq!(walk(&conn, &query, 4), whole_ids);
+    assert_eq!(whole.total, 31);
+}
+
+#[test]
+fn descending_is_the_reverse_of_ascending() {
+    let conn = conn();
+    seed(&conn, 17);
+    let asc = LeadQuery {
+        sort: LeadSort::Value,
+        ..LeadQuery::default()
+    };
+    let desc = LeadQuery {
+        descending: true,
+        ..asc.clone()
+    };
+    let mut forward = walk(&conn, &asc, 3);
+    forward.reverse();
+    assert_eq!(walk(&conn, &desc, 3), forward);
+}
+
+#[test]
+fn rows_inserted_mid_scroll_do_not_shift_later_pages() {
+    let conn = conn();
+    seed(&conn, 10);
+    let by_name = LeadQuery {
+        sort: LeadSort::Name,
+        ..LeadQuery::default()
+    };
+    let expected = walk(&conn, &by_name, 200);
+    let first = get_leads_page_internal(&conn, &by_name, None, 4).expect("first");
+    // A row that sorts before the cursor appears while the user scrolls.
+    insert(&conn, "A first", "X", "New", 1.0);
+    let second =
+        get_leads_page_internal(&conn, &by_name, first.next_cursor.as_deref(), 4).expect("second");
+    let first_ids: Vec<_> = first.items.iter().filter_map(|l| l.id).collect();
+    let second_ids: Vec<_> = second.items.iter().filter_map(|l| l.id).collect();
+    assert_eq!(first_ids, expected[..4]);
+    assert_eq!(
+        second_ids,
+        expected[4..8],
+        "page 2 must not shift or repeat"
+    );
+}
+
+#[test]
+fn search_is_case_insensitive_and_wildcards_are_literal() {
+    let conn = conn();
+    insert(&conn, "Alpha", "Acme", "New", 1.0);
+    insert(&conn, "100% real", "Acme", "New", 1.0);
+    insert(&conn, "1000 real", "Acme", "New", 1.0);
+    let by = |text: &str| {
+        let query = LeadQuery {
+            search: Some(text.to_string()),
+            ..LeadQuery::default()
+        };
+        get_leads_page_internal(&conn, &query, None, 50).expect("page")
+    };
+    assert_eq!(by("ALPHA").total, 1);
+    assert_eq!(by("100%").total, 1, "% must match literally");
+    assert_eq!(by("acme").total, 3);
+    assert_eq!(by("   ").total, 3, "blank search means no filter");
+    assert_eq!(by("zzz").items.len(), 0);
+}
+
+#[test]
+fn status_and_category_filters_apply_before_paging() {
+    let conn = conn();
+    seed(&conn, 12);
+    conn.execute("INSERT INTO categories (name) VALUES ('cat')", [])
+        .expect("category");
+    let category = i32::try_from(conn.last_insert_rowid()).expect("small id");
+    for id in 1..=5 {
+        conn.execute(
+            "INSERT INTO lead_categories (lead_id, category_id) VALUES (?1, ?2)",
+            rusqlite::params![id, category],
+        )
+        .expect("link");
+    }
+    let by_category = LeadQuery {
+        category_id: Some(category),
+        ..LeadQuery::default()
+    };
+    assert_eq!(walk(&conn, &by_category, 2), vec![1, 2, 3, 4, 5]);
+
+    let both = LeadQuery {
+        category_id: Some(category),
+        status: Some("New".to_string()),
+        ..LeadQuery::default()
+    };
+    let page = get_leads_page_internal(&conn, &both, None, 50).expect("page");
+    assert_eq!(page.total, 3);
+    assert!(page.items.iter().all(|l| l.status == "New"));
+}
+
+#[test]
+fn search_and_status_and_cursor_use_distinct_parameters() {
+    let conn = conn();
+    seed(&conn, 20);
+    let query = LeadQuery {
+        search: Some("lead".to_string()),
+        status: Some("Won".to_string()),
+        sort: LeadSort::Name,
+        ..LeadQuery::default()
+    };
+    let ids = walk(&conn, &query, 3);
+    assert_eq!(ids.len(), 10);
+}
+
+#[test]
+fn a_cursor_for_another_sort_is_rejected() {
+    let conn = conn();
+    seed(&conn, 10);
+    let by_name = LeadQuery {
+        sort: LeadSort::Name,
+        ..LeadQuery::default()
+    };
+    let page = get_leads_page_internal(&conn, &by_name, None, 3).expect("page");
+    let cursor = page.next_cursor.expect("more rows");
+    let by_value = LeadQuery {
+        sort: LeadSort::Value,
+        ..LeadQuery::default()
+    };
+    assert!(matches!(
+        get_leads_page_internal(&conn, &by_value, Some(&cursor), 3),
+        Err(PageError::InvalidCursor(_))
+    ));
+    let reversed = LeadQuery {
+        descending: true,
+        ..by_name
+    };
+    assert!(matches!(
+        get_leads_page_internal(&conn, &reversed, Some(&cursor), 3),
+        Err(PageError::InvalidCursor(_))
+    ));
+    assert!(matches!(
+        get_leads_page_internal(&conn, &LeadQuery::default(), Some("garbage"), 3),
+        Err(PageError::InvalidCursor(_))
+    ));
+}
+
+#[test]
+fn page_size_is_clamped_and_total_is_the_filtered_count() {
+    let conn = conn();
+    seed(&conn, 7);
+    let page = get_leads_page_internal(&conn, &LeadQuery::default(), None, 0).expect("page");
+    assert_eq!(page.items.len(), 7);
+    assert_eq!(page.total, 7);
+    let one = get_leads_page_internal(&conn, &LeadQuery::default(), None, 1).expect("page");
+    assert_eq!(one.items.len(), 1);
+    assert_eq!(one.total, 7);
+    assert!(one.next_cursor.is_some());
+}
+
+#[test]
+fn empty_table_gives_an_empty_last_page() {
+    let conn = conn();
+    let page = get_leads_page_internal(&conn, &LeadQuery::default(), None, 10).expect("page");
+    assert!(page.items.is_empty());
+    assert_eq!(page.total, 0);
+    assert!(page.next_cursor.is_none());
+}
