@@ -314,8 +314,6 @@ impl ScrapeJobRunner {
                 .map_err(|error| anyhow!(error))?;
             self.wait_for_idle(Duration::from_secs(5)).await?;
         } else {
-            // Never global-shut-down: that closed whatever job *was* running
-            // and then waited five seconds for an idle slot (A8).
             self.processor
                 .shutdown_for(job_id)
                 .await
@@ -407,8 +405,9 @@ impl ScrapeJobRunner {
         let nominal = base.saturating_mul(1u32 << exponent);
         let nominal_micros = nominal.as_micros().min(u128::from(u64::MAX)) as u64;
         let span = (nominal_micros / 4).max(1);
-        let jittered = nominal_micros.saturating_sub(span)
-            + rand::thread_rng().gen_range(0..=span.saturating_mul(2));
+        let jittered = nominal_micros
+            .saturating_sub(span)
+            .saturating_add(rand::thread_rng().gen_range(0..=span.saturating_mul(2)));
         Duration::from_micros(jittered)
     }
 
