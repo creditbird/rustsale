@@ -799,20 +799,26 @@ impl ScrapeJobRunner {
                             TransitionCause::System,
                         )
                         .await?;
+                    // `None` means the unit list could not be read: report the
+                    // pending count as unknown rather than a misleading 0.
                     let pending_units = match self.repository.list_units(job_id).await {
-                        Ok(units) => units
-                            .iter()
-                            .filter(|unit| unit.status == ScrapeUnitStatus::Pending)
-                            .count(),
+                        Ok(units) => Some(
+                            units
+                                .iter()
+                                .filter(|unit| unit.status == ScrapeUnitStatus::Pending)
+                                .count(),
+                        ),
                         Err(error) => {
                             tracing::warn!(job_id, error = %error, "failed to count pending scrape units");
-                            0
+                            None
                         }
                     };
                     let message = if terminal.status == ScrapeJobStatus::Partial {
+                        let pending_text = pending_units
+                            .map_or_else(|| "unknown".to_string(), |count| count.to_string());
                         format!(
                             "Scrape job stopped: {} unit(s) failed, {} pending — Retry Failed Units to continue",
-                            terminal.failed_units, pending_units
+                            terminal.failed_units, pending_text
                         )
                     } else {
                         "Scrape job failed after unit failure".to_string()
