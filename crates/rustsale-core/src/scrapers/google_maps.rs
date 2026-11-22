@@ -248,7 +248,9 @@ impl GoogleMapsScraper {
     /// a place-level error kind rather than being folded into the search-level
     /// terminal states.
     pub async fn scrape_place(&self, place_url: &str) -> Result<PlaceCandidate, ScrapeJobError> {
-        self.session.navigate(place_url).await?;
+        self.session
+            .navigate(&place_navigation_url(place_url))
+            .await?;
         self.delay().await;
         let state = self.wait_for_page_state().await?;
         if state != GoogleMapsPageState::Ready {
@@ -626,6 +628,18 @@ fn candidate_dedup_key(candidate: &PlaceCandidate) -> String {
     )
 }
 
+/// Place pages must carry the same language hint as search pages. Canonical
+/// URLs intentionally drop every query parameter, so the hint has to be added
+/// again when the detail page is opened (C18).
+fn place_navigation_url(url: &str) -> String {
+    let trimmed = url.trim();
+    if trimmed.contains("hl=") {
+        return trimmed.to_string();
+    }
+    let separator = if trimmed.contains('?') { '&' } else { '?' };
+    format!("{trimmed}{separator}hl=en")
+}
+
 fn canonicalize_place_url(url: &str) -> Option<String> {
     let trimmed = url.trim();
     if !(trimmed.starts_with("https://") || trimmed.starts_with("http://")) {
@@ -911,12 +925,14 @@ mod typed_tests {
 
     struct FakeBrowserAutomation {
         steps: Mutex<VecDeque<Step>>,
+        navigated: Mutex<Vec<String>>,
     }
 
     impl FakeBrowserAutomation {
         fn new(steps: Vec<Step>) -> Self {
             Self {
                 steps: Mutex::new(steps.into()),
+                navigated: Mutex::new(Vec::new()),
             }
         }
 
@@ -947,7 +963,8 @@ mod typed_tests {
             Ok(())
         }
 
-        async fn navigate(&self, _url: &str, _timeout: Duration) -> Result<(), ScrapeJobError> {
+        async fn navigate(&self, url: &str, _timeout: Duration) -> Result<(), ScrapeJobError> {
+            self.navigated.lock().unwrap().push(url.to_string());
             match self.pop() {
                 Step::Navigate(result) => result,
                 _ => panic!("expected navigate call"),
@@ -1325,6 +1342,39 @@ mod typed_tests {
             listing.place_urls,
             vec![first.to_string(), second.to_string()]
         );
+        automation.assert_exhausted();
+    }
+
+    #[tokio::test]
+    async fn place_navigation_url_keeps_hl_param() {
+        let place_url = "https://www.google.com/maps/place/Cafe-Two";
+        let (scraper, automation) = scripted_scraper(vec![
+            Step::Navigate(Ok(())),
+            Step::Health(Ok(GoogleMapsPageState::Ready)),
+            Step::Evaluate(Ok(json!({
+                "placeId": "place-2",
+                "canonicalUrl": place_url,
+                "name": "Cafe Two",
+                "phone": null,
+                "address": null,
+                "website": null,
+                "facebook": null,
+                "zalo": null,
+                "latitude": null,
+                "longitude": null
+            }))),
+        ])
+        .await;
+
+        scraper.scrape_place(place_url).await.unwrap();
+
+        let navigated = automation.navigated.lock().unwrap();
+        let last = navigated.last().expect("place page was not opened");
+        assert!(
+            last.contains("hl=en"),
+            "place URL dropped the language hint: {last}"
+        );
+        drop(navigated);
         automation.assert_exhausted();
     }
 
