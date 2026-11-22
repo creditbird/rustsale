@@ -373,7 +373,7 @@ TSX must never receive a whole large list. Sorting/filtering stays in Rust.
 
 | Data | Exists today | Gap (P1 core work) |
 |---|---|---|
-| Messages | `get_conversation_timeline / get_contact_timeline / get_identity_timeline(before: TimelineCursor, limit)` -> `TimelinePage { items, next_cursor, snapshot_sequence }` (keyset, newest first) | none for reading; needs "jump to message" window |
+| Messages | `get_conversation_timeline / get_contact_timeline / get_identity_timeline(before: TimelineCursor, limit)` -> `TimelinePage { items, next_cursor, snapshot_sequence }`. Keyset paging backwards in time: a page is the newest `limit` messages older than `before`, **listed oldest first** (last item = newest). `next_cursor` is the oldest message of a **full** page (`{ occurred_at, message_id }` in core, `{ occurredAt, messageId }` in JS) and goes back as `before`; it is `null` when the page is short (nothing older). Older pages are prepended. v2 relies on this order; do not reverse it in the UI | none for reading; needs "jump to message" window |
 | Conversation inbox | `list_conversation_inbox` returns **all** `InboxItem` | cursor/limit + filter/sort (unread, channel, search) |
 | Leads | `get_outreach_leads_page(category, segmentation, channel, search, filters...)` -> `OutreachLeadsPage` (paged, filtered in SQL); `get_leads`, `get_leads_by_category` return **all** rows | `get_leads_page(filter, sort, cursor/limit)` for the leads table (4.6k rows target < 100 ms) |
 | Google Maps places (scrape results) | **no** UI-facing command; repository has `list_results_for_import / list_results_for_enrichment` (whole job) | `list_google_maps_results(job_id, filter, sort, cursor, limit)` + total counts |
