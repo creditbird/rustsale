@@ -1,0 +1,95 @@
+//! The AI copilot: intent, reply suggestions, proposals and the lead evidence context.
+
+use crate::error::CoreApiError;
+use crate::runtime::{on_blocking, on_core, state_of};
+use nsh_core::JsonValue;
+use nsh_core::prelude::*;
+use rustsale_core::ai::commands as ai;
+use rustsale_core::commands::DbState;
+
+/// A JS number as a lead id, refusing values an `i32` cannot hold.
+fn lead_id(value: f64) -> Result<i32, CoreApiError> {
+    if value.is_finite() && value >= f64::from(i32::MIN) && value <= f64::from(i32::MAX) {
+        Ok(value as i32)
+    } else {
+        Err(CoreApiError::invalid("lead id is out of range"))
+    }
+}
+
+/// A JS number as a row id; anything not finite becomes 0, which the core reports as missing.
+fn id(value: f64) -> i64 {
+    if value.is_finite() { value as i64 } else { 0 }
+}
+
+/// The local AI copilot. The two generation calls use the provider the core was configured with
+/// (`OPENAI_API_KEY`, Gemini, Claude, Ollama or the heuristic mock); the rest read the CRM ledger.
+#[module]
+pub struct Ai;
+
+#[module]
+impl Ai {
+    /// Classifies the intent of `text` and resolves `{ intent, confidence, detected_language,
+    /// matched_keywords, reasoning, is_heuristic_match }`. Falls back to the heuristic classifier
+    /// when no provider is configured.
+    pub async fn classify_intent(text: String) -> Result<JsonValue, CoreApiError> {
+        on_core(move |_h| async move {
+            Ok::<_, CoreApiError>(ai::classify_customer_intent(text).await?)
+        })
+        .await
+    }
+
+    /// Generates reply suggestions for lead `leadId` from the CRM evidence and the policy gate.
+    /// `conversationId` and `customPrompt` may be absent; the answer is `{ conversation_id,
+    /// variants, ... }` as the core returns it.
+    pub async fn smart_reply_suggestions(
+        lead_id_: f64,
+        conversation_id: Option<f64>,
+        custom_prompt: Option<String>,
+    ) -> Result<JsonValue, CoreApiError> {
+        let lead = lead_id(lead_id_)?;
+        let conversation = conversation_id.filter(|n| n.is_finite()).map(|n| n as i64);
+        on_core(move |h| async move {
+            let state = state_of::<DbState>(&h)?;
+            Ok::<_, CoreApiError>(
+                ai::generate_smart_reply_suggestions(lead, conversation, custom_prompt, state)
+                    .await?,
+            )
+        })
+        .await
+    }
+
+    /// AI action proposals waiting for review.
+    pub async fn pending_proposals() -> Result<JsonValue, CoreApiError> {
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            Ok::<_, CoreApiError>(ai::get_pending_ai_proposals(state)?)
+        })
+        .await
+    }
+
+    /// Reviews proposal `proposalId` as `APPROVED`, `REJECTED`, `APPLIED` or `PENDING`, recording
+    /// `reviewer`.
+    pub async fn review_proposal(
+        proposal_id: f64,
+        status: String,
+        reviewer: String,
+    ) -> Result<JsonValue, CoreApiError> {
+        let proposal = id(proposal_id);
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            Ok::<_, CoreApiError>(ai::review_ai_proposal(proposal, status, reviewer, state)?)
+        })
+        .await
+    }
+
+    /// The CRM evidence of lead `leadId` that the copilot reads: the lead, its deal, recent
+    /// messages and the journey stage.
+    pub async fn lead_evidence_context(lead_id_: f64) -> Result<JsonValue, CoreApiError> {
+        let lead = lead_id(lead_id_)?;
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            Ok::<_, CoreApiError>(ai::get_lead_evidence_context(lead, state)?)
+        })
+        .await
+    }
+}

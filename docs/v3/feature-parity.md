@@ -225,11 +225,11 @@
 
 | ID | Nhóm | Tính năng (1 câu) | Màn hình v2 (file .svelte) | Backend (file:hàm hoặc command) | Ghi chú | Trạng thái v3 |
 |---|---|---|---|---|---|---|
-| AI-01 | AI | Phân loại ý định khách từ text, fallback heuristic | AICopilotBar.svelte | src-tauri/src/ai/commands.rs:classify_customer_intent | Provider từ env: OpenAI, Gemini, Claude, Ollama, Mock | Chưa xuất |
-| AI-02 | AI | Sinh gợi ý trả lời từ evidence CRM và policy gate | AICopilotBar.svelte | src-tauri/src/ai/commands.rs:generate_smart_reply_suggestions | Ghi evidence log và cập nhật journey state | Chưa xuất |
-| AI-03 | AI | Liệt kê proposal AI đang chờ duyệt | AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:get_pending_ai_proposals | Chỉ trạng thái PENDING | Chưa xuất |
-| AI-04 | AI | Duyệt, từ chối hoặc đánh dấu proposal | AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:review_ai_proposal | Chấp nhận APPROVED, REJECTED, APPLIED, PENDING | Chưa xuất |
-| AI-05 | AI | Đọc evidence CRM của lead cho AI | AICopilotBar.svelte, AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:get_lead_evidence_context | Lead, deal, message gần đây, journey | Chưa xuất |
+| AI-01 | AI | Phân loại ý định khách từ text, fallback heuristic | AICopilotBar.svelte | src-tauri/src/ai/commands.rs:classify_customer_intent | Provider từ env: OpenAI, Gemini, Claude, Ollama, Mock | Đã xuất `Ai.classifyIntent` — bọc, chưa gọi thử (cần provider AI) |
+| AI-02 | AI | Sinh gợi ý trả lời từ evidence CRM và policy gate | AICopilotBar.svelte | src-tauri/src/ai/commands.rs:generate_smart_reply_suggestions | Ghi evidence log và cập nhật journey state | Đã xuất `Ai.smartReplySuggestions` — bọc, chưa gọi thử (cần provider AI) |
+| AI-03 | AI | Liệt kê proposal AI đang chờ duyệt | AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:get_pending_ai_proposals | Chỉ trạng thái PENDING | Đã xuất `Ai.pendingProposals` |
+| AI-04 | AI | Duyệt, từ chối hoặc đánh dấu proposal | AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:review_ai_proposal | Chấp nhận APPROVED, REJECTED, APPLIED, PENDING | Đã xuất `Ai.reviewProposal` |
+| AI-05 | AI | Đọc evidence CRM của lead cho AI | AICopilotBar.svelte, AIApprovalQueue.svelte | src-tauri/src/ai/commands.rs:get_lead_evidence_context | Lead, deal, message gần đây, journey | Đã xuất `Ai.leadEvidenceContext` |
 
 ### 2.8 Nhóm IMPORT — 5 command
 

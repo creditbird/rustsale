@@ -1,7 +1,7 @@
 // `nsh test` runs this in a headless runner linked with the crate: the module is the real one, on a
 // throwaway data folder with the debug seed (3 synthetic leads, 2 deals). No real account or data.
 import { expect, test } from "nsh/test";
-import { Campaigns, Facebook, Host, LeadsMore, Zalo } from "rustsale/native";
+import { Ai, Campaigns, Facebook, Host, LeadsMore, Zalo } from "rustsale/native";
 
 type Row = Record<string, any>;
 const row = (value: unknown) => value as Row;
@@ -191,4 +191,11 @@ test("facebook: empty lists, rejected tokens and missing page errors", async () 
       scheduled_publish_time: null
     })
   ).rejects.toThrow();
+});
+
+test("ai: proposals start empty and invalid reviews or a missing lead reject", async () => {
+  await Host.start(dir);
+  expect(await Ai.pendingProposals()).toEqual([]);
+  await expect(Ai.reviewProposal(1, "MAYBE", "qa")).rejects.toThrow();
+  await expect(Ai.leadEvidenceContext(999_999)).rejects.toThrow();
 });

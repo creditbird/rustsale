@@ -1,6 +1,7 @@
 //! RustSale v3 native module: what `App.tsx` imports from `rustsale/native`.
 //! The only place TSX reaches `rustsale-core`.
 
+mod ai;
 mod campaigns;
 mod categories;
 mod conversation_actions;
@@ -25,6 +26,7 @@ use nsh_core::prelude::*;
 fn native(registry: &mut Registry) {
     registry
         .module::<host::Host>()
+        .module::<ai::Ai>()
         .module::<leads::Leads>()
         .module::<leads_more::LeadsMore>()
         .module::<deals::Deals>()
