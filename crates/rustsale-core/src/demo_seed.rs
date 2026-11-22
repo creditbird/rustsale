@@ -80,6 +80,35 @@ pub fn seed_demo_conversations(conn: &Connection) -> rusqlite::Result<DemoSeed> 
             )?;
         }
     }
+    // A sticker and a photo without text: the screen must label them, not draw empty bubbles.
+    let third: i64 = conn.query_row(
+        "SELECT id FROM channel_conversations WHERE external_thread_id = 'demo-thread-3'",
+        [],
+        |row| row.get(0),
+    )?;
+    for (i, kind) in ["sticker", "image"].into_iter().enumerate() {
+        conn.execute(
+            "INSERT INTO messages
+             (conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content,
+              content_json, provider_timestamp, ingested_at, status)
+             VALUES (?1, NULL, 'outbound', ?2, ?3, NULL, '{}', ?4, ?4, 'sent')",
+            params![
+                third,
+                format!("demo-thread-3-{kind}"),
+                kind,
+                format!("2026-07-20T08:{:02}:00.000Z", 10 + i)
+            ],
+        )?;
+    }
+    // One customer line after the last reply: the inbox shows it as unread until the chat is opened.
+    conn.execute(
+        "INSERT INTO messages
+         (conversation_id, sender_identity_id, direction, provider_message_id, content_type, text_content,
+          content_json, provider_timestamp, ingested_at, status)
+         VALUES (?1, (SELECT id FROM channel_identities WHERE external_id = 'demo-thread-3'), 'inbound',
+                 'demo-thread-3-unread', 'text', 'Bên mình còn hàng không ạ?', '{}', ?2, ?2, 'received')",
+        params![third, "2026-07-20T08:20:00.000Z"],
+    )?;
     Ok(DemoSeed {
         long_conversation_id,
         long_conversation_messages: 30,

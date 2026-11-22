@@ -178,6 +178,16 @@ fn serve(request: Request) {
     }
 }
 
+/// Hands an event to every `Host.onEvent` listener as if the core had emitted it (demo builds only).
+#[cfg(any(feature = "demo", rustsale_demo))]
+pub(crate) fn deliver_event(name: &str, payload: &JsonValue) {
+    EVENTS.with(|listeners| {
+        for (_, listener) in listeners.borrow().iter() {
+            listener.post((name.to_owned(), payload.clone()));
+        }
+    });
+}
+
 /// The pump: the only reader of the ports' requests. Runs on the engine thread.
 async fn pump(mut requests: mpsc::UnboundedReceiver<Request>) {
     while let Some(request) = requests.recv().await {
