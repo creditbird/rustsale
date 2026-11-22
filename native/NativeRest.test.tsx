@@ -2,7 +2,17 @@
 // throwaway data folder with the debug seed (3 synthetic leads, 2 deals). No real account or data.
 import { writeFile } from "node:fs/promises";
 import { expect, test } from "nsh/test";
-import { Ai, Campaigns, Facebook, Host, ImportLeads, LeadsMore, Util, Zalo } from "rustsale/native";
+import {
+  Ai,
+  Campaigns,
+  Desktop,
+  Facebook,
+  Host,
+  ImportLeads,
+  LeadsMore,
+  Util,
+  Zalo
+} from "rustsale/native";
 
 type Row = Record<string, any>;
 const row = (value: unknown) => value as Row;
@@ -247,4 +257,14 @@ test("util: greeting and hardware id", async () => {
   const hardware = row(await Util.hardwareId());
   expect(hardware.hardware_id.length).toBeGreaterThan(10);
   expect(typeof hardware.hostname).toBe("string");
+});
+
+test("desktop: focus sequence accepts newer updates and rejects older ones", async () => {
+  await Host.start(dir);
+  const first = row(await Desktop.setActiveConversationFocus(7, true, 10));
+  expect(first.accepted).toBe(true);
+  expect(first.backend_seq).toBe(10);
+  const stale = row(await Desktop.setActiveConversationFocus(8, true, 9));
+  expect(stale.accepted).toBe(false);
+  expect(stale.backend_seq).toBe(10);
 });

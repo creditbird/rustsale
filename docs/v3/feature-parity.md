@@ -271,8 +271,8 @@
 |---|---|---|---|---|---|---|
 | DESK-01 | DESK | Đọc cài đặt thông báo desktop | NotificationSettings.svelte | src-tauri/src/notification.rs:get_notification_settings | enabled, sound, privacy, mute groups | Đã xuất `Settings.notifications` |
 | DESK-02 | DESK | Lưu cài đặt thông báo desktop | NotificationSettings.svelte | src-tauri/src/notification.rs:update_notification_settings | Ghi vào app_metadata | Đã xuất `Settings.updateNotifications` |
-| DESK-03 | DESK | Đồng bộ hội thoại đang mở để chặn thông báo trùng | ConversationWorkspace.svelte | src-tauri/src/notification.rs:set_active_conversation_focus | Có sequence để chống event cũ | Chưa xuất |
-| DESK-04 | DESK | Gửi thông báo desktop thử | NotificationSettings.svelte | src-tauri/src/notification.rs:test_desktop_notification | Phát desktop-notification-sent với test=true | Chưa xuất |
+| DESK-03 | DESK | Đồng bộ hội thoại đang mở để chặn thông báo trùng | ConversationWorkspace.svelte | src-tauri/src/notification.rs:set_active_conversation_focus | Có sequence để chống event cũ | Đã xuất `Desktop.setActiveConversationFocus` |
+| DESK-04 | DESK | Gửi thông báo desktop thử | NotificationSettings.svelte | src-tauri/src/notification.rs:test_desktop_notification | Phát desktop-notification-sent với test=true | Đã xuất `Desktop.testNotification` — bọc, chưa gọi thử (cần desktop notification daemon) |
 | DESK-05 | DESK | Đọc cấu hình tray | NotificationSettings.svelte | src-tauri/src/tray.rs:get_tray_state | close_to_tray và dnd | Đã xuất `Settings.tray` |
 | DESK-06 | DESK | Bật hoặc tắt thu nhỏ xuống tray khi đóng cửa sổ | NotificationSettings.svelte | src-tauri/src/tray.rs:set_close_to_tray | Ghi app_metadata | Đã xuất `Settings.setCloseToTray` |
 | DESK-07 | DESK | Bật hoặc tắt Không làm phiền | NotificationSettings.svelte | src-tauri/src/tray.rs:set_tray_dnd | Phát tray-dnd-changed | Đã xuất `Settings.setDoNotDisturb` |
