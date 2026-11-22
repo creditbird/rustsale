@@ -412,7 +412,7 @@ impl GoogleMapsScraper {
                 false,
             )
         })?;
-        let name = raw.name.trim().to_string();
+        let name = clean_place_name(&raw.name);
         if name.is_empty() {
             return Err(scrape_error(
                 ScrapeErrorKind::SelectorChanged,
@@ -792,6 +792,95 @@ fn clean_optional(value: Option<String>) -> Option<String> {
         let trimmed = without_glyphs.trim().to_string();
         (!trimmed.is_empty()).then_some(trimmed)
     })
+}
+
+/// Some listings space a brand one glyph at a time ("r ê u . coffee") even
+/// though the sign reads as one word. Keep the listing's characters, drop the
+/// private-use icons, and rejoin only names that are dominated by
+/// single-character tokens so ordinary names ("Phúc Long Coffee & Tea") keep
+/// their real word spacing.
+fn clean_place_name(value: &str) -> String {
+    let without_glyphs: String = value
+        .chars()
+        .filter(|ch| !('\u{E000}'..='\u{F8FF}').contains(ch))
+        .collect();
+    let collapsed = collapse_whitespace(&without_glyphs);
+    rejoin_glyph_spaced_name(&collapsed)
+}
+
+fn collapse_whitespace(value: &str) -> String {
+    let mut collapsed = String::with_capacity(value.len());
+    let mut pending_space = false;
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            pending_space = !collapsed.is_empty();
+        } else {
+            if pending_space {
+                collapsed.push(' ');
+                pending_space = false;
+            }
+            collapsed.push(ch);
+        }
+    }
+    collapsed
+}
+
+fn rejoin_glyph_spaced_name(value: &str) -> String {
+    let tokens: Vec<&str> = value.split(' ').filter(|token| !token.is_empty()).collect();
+    if tokens.len() < 4 {
+        return value.to_string();
+    }
+    let single_tokens = tokens.iter().filter(|token| is_single_glyph(token)).count();
+    // A real multi-word name has at most one short token ("&", "A"), not
+    // three quarters of the name.
+    if single_tokens * 4 <= tokens.len() * 3 {
+        return value.to_string();
+    }
+    let mut joined = String::with_capacity(value.len());
+    for (index, token) in tokens.iter().enumerate() {
+        if index == 0 {
+            joined.push_str(token);
+            continue;
+        }
+        let previous = tokens[index - 1];
+        let token_starts_with_mark = token.chars().next().is_some_and(is_combining_mark);
+        let follows_name_punctuation =
+            is_single_glyph(previous) && previous.chars().last().is_some_and(is_name_punctuation);
+        let attached = token_starts_with_mark
+            || (is_single_glyph(previous) && is_single_glyph(token))
+            || follows_name_punctuation;
+        if !attached {
+            joined.push(' ');
+        }
+        joined.push_str(token);
+    }
+    joined
+}
+
+fn is_single_glyph(token: &str) -> bool {
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if is_combining_mark(first) {
+        return chars.next().is_none();
+    }
+    chars.all(is_combining_mark)
+}
+
+fn is_combining_mark(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{0300}'..='\u{036F}'
+            | '\u{1AB0}'..='\u{1AFF}'
+            | '\u{1DC0}'..='\u{1DFF}'
+            | '\u{20D0}'..='\u{20FF}'
+            | '\u{FE20}'..='\u{FE2F}'
+    )
+}
+
+fn is_name_punctuation(ch: char) -> bool {
+    matches!(ch, '.' | ',' | '·' | '-' | '_' | '\'' | '’')
 }
 
 fn scrape_error(
@@ -1188,6 +1277,36 @@ mod typed_tests {
         assert!(result.reached_end);
         assert_eq!(result.places.len(), 1);
         assert_eq!(result.places[0].name, "Cuc Gach Quan");
+        automation.assert_exhausted();
+    }
+
+    /// Google Maps lists this brand with one space between every glyph
+    /// ("r ê u . coffee"), while the storefront reads "rêu.coffee". The place
+    /// detail extraction must store the readable name, not the markup spacing.
+    #[tokio::test]
+    async fn place_detail_repairs_glyph_spaced_google_maps_name() {
+        let place_url = "https://www.google.com/maps/place/r%C3%AAu.coffee/@10.767,106.696,17z";
+        let (scraper, automation) = scripted_scraper(vec![
+            Step::Navigate(Ok(())),
+            Step::Health(Ok(GoogleMapsPageState::Ready)),
+            Step::Evaluate(Ok(json!({
+                "placeId": "place-1",
+                "canonicalUrl": place_url,
+                "name": "r ê u . coffee",
+                "phone": null,
+                "address": "12 Le Loi, District 1",
+                "website": null,
+                "facebook": null,
+                "zalo": null,
+                "latitude": 10.767,
+                "longitude": 106.696
+            }))),
+        ])
+        .await;
+
+        let place = scraper.scrape_place(place_url).await.unwrap();
+
+        assert_eq!(place.name, "rêu.coffee");
         automation.assert_exhausted();
     }
 
@@ -1833,6 +1952,34 @@ console.log(JSON.stringify({script}));
             Some("12 Le Loi".to_string())
         );
         assert_eq!(super::clean_optional(Some("\u{e0c8}".to_string())), None);
+    }
+
+    #[test]
+    fn clean_place_name_rejoins_maps_glyph_spacing() {
+        assert_eq!(
+            super::clean_place_name("\u{e0c8} r ê u . coffee"),
+            "rêu.coffee"
+        );
+    }
+
+    #[test]
+    fn clean_place_name_keeps_ordinary_word_spacing() {
+        assert_eq!(
+            super::clean_place_name("Phúc Long Coffee & Tea"),
+            "Phúc Long Coffee & Tea"
+        );
+    }
+
+    #[test]
+    fn clean_place_name_keeps_decomposed_vietnamese_glyphs_together() {
+        assert_eq!(
+            super::clean_place_name("Phu\u{0301}c Long Coffee & Tea"),
+            "Phu\u{0301}c Long Coffee & Tea"
+        );
+        assert_eq!(
+            super::clean_place_name("r e\u{0302} u . coffee"),
+            "re\u{0302}u.coffee"
+        );
     }
 
     #[test]
