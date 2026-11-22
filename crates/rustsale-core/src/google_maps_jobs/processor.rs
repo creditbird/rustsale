@@ -56,7 +56,17 @@ impl GoogleMapsUnitProcessor {
             .is_some_and(|active| active.job_id != job.id)
         {
             if let Some(previous) = active.take() {
-                previous.manager.close().await?;
+                // A browser from the previous job that refuses to close must
+                // not block the new job; its sidecar may already be gone (C16).
+                if let Err(error) = previous.manager.close().await {
+                    tracing::warn!(
+                        target: "google_maps_scraper",
+                        job_id = %job.id,
+                        previous_job_id = %previous.job_id,
+                        error = %error.message,
+                        "failed to close previous browser; continuing with the new job"
+                    );
+                }
             }
         }
         if let Some(existing) = active.as_ref() {
@@ -703,6 +713,51 @@ mod tests {
         assert!(!enrichment_is_unresolved(&EnrichmentOutcome::not_found()));
     }
 
+    struct FailingShutdownAutomation;
+
+    #[async_trait]
+    impl BrowserAutomation for FailingShutdownAutomation {
+        async fn runtime_status(&self) -> Result<RuntimeStatus, ScrapeJobError> {
+            Ok(RuntimeStatus::installed_for_test())
+        }
+
+        async fn ensure_runtime(&self) -> Result<RuntimeStatus, ScrapeJobError> {
+            Ok(RuntimeStatus::installed_for_test())
+        }
+
+        async fn launch(&self, _request: LaunchRequest) -> Result<(), ScrapeJobError> {
+            Ok(())
+        }
+
+        async fn navigate(&self, _url: &str, _timeout: Duration) -> Result<(), ScrapeJobError> {
+            Ok(())
+        }
+
+        async fn evaluate(
+            &self,
+            _script: &str,
+            _timeout: Duration,
+        ) -> Result<Value, ScrapeJobError> {
+            Ok(Value::Null)
+        }
+
+        async fn screenshot(&self, _path: &Path) -> Result<(), ScrapeJobError> {
+            Ok(())
+        }
+
+        async fn health_check(&self) -> Result<GoogleMapsPageState, ScrapeJobError> {
+            Ok(GoogleMapsPageState::Ready)
+        }
+
+        async fn shutdown(&self) -> Result<(), ScrapeJobError> {
+            Err(ScrapeJobError {
+                kind: ScrapeErrorKind::Disconnected,
+                message: "browser already gone".to_string(),
+                retryable: true,
+            })
+        }
+    }
+
     struct DiagnosticAutomation {
         screenshot_paths: std::sync::Mutex<Vec<PathBuf>>,
     }
@@ -757,6 +812,41 @@ mod tests {
         async fn shutdown(&self) -> Result<(), ScrapeJobError> {
             Ok(())
         }
+    }
+
+    #[tokio::test]
+    async fn previous_browser_close_failure_does_not_block_next_job() {
+        let path = std::env::temp_dir().join(format!(
+            "rustsale-processor-close-failure-{}.db",
+            rand::random::<u64>()
+        ));
+        let repository =
+            Arc::new(ScrapeJobRepository::new(path.to_string_lossy().to_string()).unwrap());
+        let processor =
+            GoogleMapsUnitProcessor::new(repository, Arc::new(ScrapeEventPublisher::new(8)));
+        let previous = Arc::new(BrowserManager::with_automation(
+            1,
+            Arc::new(FailingShutdownAutomation),
+        ));
+        previous.start(true).await.unwrap();
+        *processor.active_browser.lock().await = Some(ActiveBrowser {
+            job_id: "previous-job".to_string(),
+            manager: previous,
+        });
+
+        let job = test_job(None);
+        let manager = processor
+            .browser_for(&job)
+            .await
+            .expect("a failed close must not block the next job");
+
+        assert!(Arc::strong_count(&manager) >= 1);
+        let active = processor.active_browser.lock().await;
+        assert_eq!(
+            active.as_ref().map(|active| active.job_id.as_str()),
+            Some(job.id.as_str())
+        );
+        let _ = std::fs::remove_file(path);
     }
 
     #[tokio::test]
