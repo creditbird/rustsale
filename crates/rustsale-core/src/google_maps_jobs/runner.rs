@@ -799,9 +799,37 @@ impl ScrapeJobRunner {
                             TransitionCause::System,
                         )
                         .await?;
-                    self.events
-                        .publish_job(&terminal, "Scrape job stopped after unit failure")
-                        .await;
+                    let pending_units = match self.repository.list_units(job_id).await {
+                        Ok(units) => units
+                            .iter()
+                            .filter(|unit| unit.status == ScrapeUnitStatus::Pending)
+                            .count(),
+                        Err(error) => {
+                            tracing::warn!(job_id, error = %error, "failed to count pending scrape units");
+                            0
+                        }
+                    };
+                    let message = if terminal.status == ScrapeJobStatus::Partial {
+                        format!(
+                            "Scrape job stopped: {} unit(s) failed, {} pending — Retry Failed Units to continue",
+                            terminal.failed_units, pending_units
+                        )
+                    } else {
+                        "Scrape job failed after unit failure".to_string()
+                    };
+                    self.events.publish_job(&terminal, message).await;
+                    log_scrape_event(
+                        "job_stopped",
+                        Some(&terminal.id),
+                        Some(&unit.id),
+                        Some(&format!("{:?}", terminal.stage).to_ascii_lowercase()),
+                        Some(unit.attempt_count),
+                        Some(&error_kind),
+                        json!({
+                            "failed_units": terminal.failed_units,
+                            "pending_units": pending_units,
+                        }),
+                    );
                     self.processor
                         .shutdown()
                         .await
