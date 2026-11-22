@@ -765,6 +765,8 @@ impl ScrapeJobRepository {
                      businesses_discovered=(
                          SELECT COUNT(*) FROM google_maps_scrape_results WHERE job_id=?2
                      ),
+                     last_error_kind=NULL,
+                     last_error_message=NULL,
                      event_sequence=event_sequence + 1,
                      version=version + 1,
                      updated_at=?3
@@ -3283,5 +3285,54 @@ mod tests {
             .await
             .unwrap());
         assert!(context.repository.list_jobs().await.unwrap().is_empty());
+    }
+
+    /// A unit that succeeds after a failed one must not report the old
+    /// failure: every later `Completed unit` event reads the job's error.
+    #[tokio::test]
+    async fn completed_unit_clears_the_previous_job_error() {
+        let context = TestRepository::new();
+        let mut job = sample_job(ScrapeJobStatus::Running);
+        job.total_units = 2;
+        context.repository.create_job(job).await.unwrap();
+        context
+            .repository
+            .insert_units(
+                "job-1",
+                vec![
+                    sample_unit("unit-1", "keyword:coffee", ScrapeUnitStatus::Running),
+                    sample_unit("unit-2", "keyword:tea", ScrapeUnitStatus::Running),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let failed = context
+            .repository
+            .checkpoint_failed_unit(
+                "job-1",
+                "unit-1",
+                ScrapeJobError {
+                    kind: ScrapeErrorKind::EvaluationTimeout,
+                    message: "place timed out".to_string(),
+                    retryable: true,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            failed.last_error_kind,
+            Some(ScrapeErrorKind::EvaluationTimeout)
+        );
+
+        let completed = context
+            .repository
+            .checkpoint_completed_unit("job-1", "unit-2", Vec::new(), Vec::new())
+            .await
+            .unwrap();
+        assert_eq!(completed.last_error_kind, None);
+        assert_eq!(completed.last_error_message, None);
+        assert_eq!(completed.failed_units, 1);
+        assert_eq!(completed.processed_units, 2);
     }
 }
