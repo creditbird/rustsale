@@ -577,6 +577,70 @@ fn test_resync_with_rotated_attachment_url_is_idempotent() {
     assert_eq!(attachment_count(&conn), 1);
 }
 
+fn stored_attachment_urls(conn: &Connection) -> Vec<(String, String)> {
+    let mut stmt = conn
+        .prepare("SELECT provider_attachment_id, remote_url FROM message_attachments ORDER BY id")
+        .unwrap();
+    stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .unwrap()
+        .collect::<Result<_, _>>()
+        .unwrap()
+}
+
+#[test]
+fn test_resync_with_rotated_attachment_url_stores_the_new_url() {
+    let mut conn = create_test_db();
+
+    let first = thread_with_attachments(vec![attachment_node(
+        "att_1",
+        "https://cdn.example/a.jpg?oh=aaa&oe=1",
+    )]);
+    FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &first)
+        .unwrap();
+
+    let second = thread_with_attachments(vec![attachment_node(
+        "att_1",
+        "https://cdn.example/a.jpg?oh=bbb&oe=2",
+    )]);
+    FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &second)
+        .unwrap();
+
+    assert_eq!(
+        stored_attachment_urls(&conn),
+        vec![(
+            "att_1".to_string(),
+            "https://cdn.example/a.jpg?oh=bbb&oe=2".to_string()
+        )]
+    );
+}
+
+#[test]
+fn test_rotated_url_that_another_attachment_holds_keeps_the_batch_alive() {
+    let mut conn = create_test_db();
+
+    let first = thread_with_attachments(vec![
+        attachment_node("att_a", "https://cdn.example/a.jpg"),
+        attachment_node("att_b", "https://cdn.example/b.jpg"),
+    ]);
+    FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &first)
+        .unwrap();
+
+    // att_a now reports the URL att_b already owns: updating would break the
+    // (message_id, remote_url) index, so the stored row stays as it was.
+    let second =
+        thread_with_attachments(vec![attachment_node("att_a", "https://cdn.example/b.jpg")]);
+    FacebookMessengerNormalizer::ingest_conversations_batch(&mut conn, 1, "page_123", &second)
+        .expect("a URL clash between two attachments must not abort the batch");
+
+    assert_eq!(
+        stored_attachment_urls(&conn),
+        vec![
+            ("att_a".to_string(), "https://cdn.example/a.jpg".to_string()),
+            ("att_b".to_string(), "https://cdn.example/b.jpg".to_string()),
+        ]
+    );
+}
+
 #[test]
 fn test_same_attachment_id_repeated_in_one_message_is_stored_once() {
     let mut conn = create_test_db();

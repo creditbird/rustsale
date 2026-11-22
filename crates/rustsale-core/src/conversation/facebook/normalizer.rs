@@ -289,18 +289,40 @@ impl FacebookMessengerNormalizer {
                             serde_json::to_string(att).unwrap_or_else(|_| "{}".to_string());
 
                         if let Some(url) = remote_url {
-                            // No conflict target on purpose: the table has two unique
-                            // indexes, (message_id, remote_url) and (message_id,
+                            // The table has two partial unique indexes,
+                            // (message_id, remote_url) and (message_id,
                             // provider_attachment_id). Facebook re-signs CDN URLs on every
-                            // poll, so a re-ingested attachment usually conflicts only on
-                            // the provider id; naming one index let the other abort the
-                            // whole batch and the poll then failed identically forever.
-                            tx.execute(
+                            // poll, so a re-ingested attachment conflicts on the provider
+                            // id only. With a provider id the row is upserted on that
+                            // index and takes the freshly signed URL (the stored one has
+                            // expired); the guard skips the update when another row of the
+                            // message already holds that URL, which would trip the other
+                            // index. Without a provider id nothing identifies the row, so
+                            // a conflict on either index just keeps the stored one.
+                            let sql = if att.id.is_some() {
                                 "INSERT INTO message_attachments (
                                     message_id, provider_attachment_id, attachment_type, file_name,
                                     mime_type, size_bytes, remote_url, thumbnail_url, metadata_json, created_at
                                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-                                ON CONFLICT DO NOTHING",
+                                ON CONFLICT(message_id, provider_attachment_id)
+                                    WHERE provider_attachment_id IS NOT NULL
+                                DO UPDATE SET remote_url = excluded.remote_url
+                                WHERE message_attachments.remote_url IS NOT excluded.remote_url
+                                  AND NOT EXISTS (
+                                      SELECT 1 FROM message_attachments other
+                                      WHERE other.message_id = excluded.message_id
+                                        AND other.remote_url = excluded.remote_url
+                                        AND other.id <> message_attachments.id
+                                  )"
+                            } else {
+                                "INSERT INTO message_attachments (
+                                    message_id, provider_attachment_id, attachment_type, file_name,
+                                    mime_type, size_bytes, remote_url, thumbnail_url, metadata_json, created_at
+                                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+                                ON CONFLICT DO NOTHING"
+                            };
+                            tx.execute(
+                                sql,
                                 params![
                                     message_id,
                                     att.id,
