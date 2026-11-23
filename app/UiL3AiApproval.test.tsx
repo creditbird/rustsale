@@ -128,7 +128,7 @@ test("approve, reject and edit call the review export and clear the queue", asyn
 
   await app.press("id:ai-approve-11");
   await app.waitUntil(() => reviewed.some((r) => r.id === 11 && r.status === "APPROVED" && r.reviewer === "Human Reviewer"));
-  await app.waitUntil(() => has(app, "Đã duyệt và xếp lịch gửi tin nhắn thành công!"));
+  await app.waitUntil(() => has(app, "Bản v3 chưa tự gửi tin"));
   await app.waitUntil(() => !has(app, `Duyệt ${stamp}`));
 
   await app.press("id:ai-reject-12");
@@ -137,7 +137,7 @@ test("approve, reject and edit call the review export and clear the queue", asyn
   await app.waitUntil(() => has(app, "Không có tin nhắn nào đang chờ duyệt"));
 });
 
-test("editing opens the note and approves the stored text", async () => {
+test("an edited text cannot be approved, the stored text can", async () => {
   const stamp = Date.now();
   await Host.start(dir);
   const pending = [proposal(21, null, "zalo", `Sửa ${stamp}`)];
@@ -149,9 +149,27 @@ test("editing opens the note and approves the stored text", async () => {
   await app.waitFor("id:ai-edit-text");
   await app.waitUntil(() => has(app, "Bản v3 chưa có API lưu nội dung đã sửa"));
   await app.type("id:ai-edit-text", ` đã sửa`);
-  await app.press("id:ai-edit-save");
-  await app.waitUntil(() => reviewed.some((r) => r.id === 21 && r.status === "APPROVED" && r.reviewer === "Human Reviewer (Edited)"));
-  await app.waitUntil(() => !app.shows("id:ai-edit-text"));
+  await app.waitUntil(() => has(app, "không thể duyệt bản này"));
+  // The button is disabled for an edited text, so pressing it must be refused.
+  let refused = false;
+  try { await app.press("id:ai-edit-save"); } catch { refused = true; }
+  if (!refused) throw new Error("the save button must be disabled for an edited text");
+  await new Promise((r) => setTimeout(r, 400));
+  if (reviewed.length !== 0) throw new Error("an edited text must not be approved");
+
+  await app.clear("id:ai-edit-text");
+  await app.type("id:ai-edit-text", `Sửa ${stamp}`);
+  await app.waitUntil(() => has(app, "chỉ duyệt được nội dung gốc"));
+});
+
+test("the approved and rejected tabs say the history is not readable yet", async () => {
+  const stamp = Date.now();
+  await Host.start(dir);
+  const app = await openQueue(modulesFor([proposal(41, null, "zalo", `Tab ${stamp}`)], []));
+  await app.waitUntil(() => has(app, `Tab ${stamp}`));
+  await app.press("id:ai-filter-APPROVED");
+  await app.waitFor("id:ai-history-note");
+  await app.waitUntil(() => !has(app, "Không có tin nhắn nào đang chờ duyệt"));
 });
 
 test("a provider failure shows the error and retry loads the queue again", async () => {

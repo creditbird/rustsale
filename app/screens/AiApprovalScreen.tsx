@@ -130,7 +130,7 @@ function ProposalCard(props: { proposal: AiProposal; state: AiApprovalState }) {
               disabled={st.reviewing()} onPress={() => { void st.reject(p); }} />
             <Button testID={`ai-edit-${p.id ?? 0}`} size="sm" label="Chỉnh sửa"
               disabled={st.reviewing()} onPress={() => st.openEdit(p)} />
-            <Button testID={`ai-approve-${p.id ?? 0}`} size="sm" variant="primary" label="Duyệt & Gửi ngay"
+            <Button testID={`ai-approve-${p.id ?? 0}`} size="sm" variant="primary" label="Duyệt"
               disabled={st.reviewing()} onPress={() => { void st.approve(p); }} />
           </View>
         </If>
@@ -153,13 +153,15 @@ function EditModal(props: { state: AiApprovalState }) {
         <Input testID="ai-edit-text" multiline value={st.editedContent()}
           class="h-32 rounded-(--radius) border border-input bg-background px-3 py-2 text-sm text-foreground focus:border-ring"
           onValue={(v) => st.editedContent.set(v)} />
-        <Text testID="ai-edit-note" class="text-[11px] text-muted-foreground">
-          Bản v3 chưa có API lưu nội dung đã sửa: duyệt sẽ gửi nội dung gốc của đề xuất.
+        <Text testID="ai-edit-note" class={st.editChanged() ? "text-[11px] text-destructive" : "text-[11px] text-muted-foreground"}>
+          {st.editChanged()
+            ? "Bản v3 chưa lưu được nội dung đã sửa nên không thể duyệt bản này. Hãy khôi phục nội dung gốc hoặc Huỷ rồi Từ chối."
+            : "Bản v3 chưa có API lưu nội dung đã sửa: chỉ duyệt được nội dung gốc của đề xuất."}
         </Text>
         <View class="flex-row items-center justify-between border-t border-border pt-2">
           <Button label="Huỷ" onPress={st.closeEdit} disabled={st.reviewing()} />
-          <Button testID="ai-edit-save" variant="primary" label="Lưu & Duyệt gửi"
-            disabled={st.reviewing()} onPress={() => { void st.saveAndApprove(); }} />
+          <Button testID="ai-edit-save" variant="primary" label="Duyệt nội dung gốc"
+            disabled={st.reviewing() || st.editChanged()} onPress={() => { void st.saveAndApprove(); }} />
         </View>
       </View>
     </Modal>
@@ -190,10 +192,10 @@ export function AiApprovalScreen() {
             <View class="min-w-0 flex-1 gap-1">
               <View class="flex-row items-center gap-2">
                 <Text class="text-lg font-semibold text-foreground">Hàng đợi duyệt tin AI (Human-in-the-Loop)</Text>
-                <Badge label={`${st.filtered().length} tin chờ duyệt`} tone="neutral" />
+                <Badge label={`${st.proposals().length} tin chờ duyệt`} tone="neutral" />
               </View>
               <Text class="text-xs text-muted-foreground">
-                Mọi tin nhắn outbound do AI Agent soạn đều dừng ở đây để nhân viên kiểm duyệt hoặc chỉnh sửa trước khi gửi khách.
+                Mọi tin nhắn outbound do AI Agent soạn đều dừng ở đây để nhân viên kiểm duyệt. Bản v3 chỉ ghi trạng thái duyệt, chưa tự gửi tin.
               </Text>
             </View>
             <Button testID="ai-refresh" size="sm" label="Làm mới" disabled={st.loading()}
@@ -225,7 +227,14 @@ export function AiApprovalScreen() {
           <If when={st.ready() && st.loading() && st.proposals().length === 0}>
             <View class="gap-2"><Skeleton class="h-32" /><Skeleton class="h-32" /></View>
           </If>
-          <If when={st.ready() && st.filtered().length === 0}>
+          <If when={st.statusFilter() !== "PENDING"}>
+            <View testID="ai-history-note" class="rounded-(--radius) border border-border bg-muted/30 p-3">
+              <Text class="text-xs text-muted-foreground">
+                Bản v3 chưa có API đọc các đề xuất đã duyệt hoặc đã từ chối, nên tab này chỉ hiện đề xuất đang chờ. Danh sách trống không có nghĩa là chưa xử lý đề xuất nào.
+              </Text>
+            </View>
+          </If>
+          <If when={st.ready() && st.filtered().length === 0 && st.statusFilter() === "PENDING"}>
             <EmptyState title="Không có tin nhắn nào đang chờ duyệt"
               hint="Tất cả đề xuất của AI đã được xử lý xong." />
           </If>

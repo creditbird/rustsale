@@ -152,19 +152,21 @@ export function useAiApproval() {
     }
   };
 
-  const review = async (proposal: AiProposal, status: "APPROVED" | "REJECTED", reviewer: string) => {
-    if (proposal.id === null || reviewing()) return;
+  const review = async (proposal: AiProposal, status: "APPROVED" | "REJECTED", reviewer: string): Promise<boolean> => {
+    if (proposal.id === null || reviewing()) return false;
     reviewing.set(true);
     error.set(null);
     try {
       await Ai.reviewProposal(proposal.id, status, reviewer);
       showSuccess(status === "APPROVED"
-        ? "Đã duyệt và xếp lịch gửi tin nhắn thành công!"
+        ? "Đã ghi trạng thái ĐÃ DUYỆT. Bản v3 chưa tự gửi tin: cần gửi thủ công qua hội thoại."
         : "Đã từ chối đề xuất AI.");
       await load();
+      return true;
     } catch (e) {
       const f = report(e, { retry: () => { void review(proposal, status, reviewer); } });
       error.set(f.message);
+      return false;
     } finally {
       reviewing.set(false);
     }
@@ -178,12 +180,16 @@ export function useAiApproval() {
     editOpen.set(true);
   };
   const closeEdit = () => { if (!reviewing()) editOpen.set(false); };
+  /** True when the typed text differs from the stored one: the core cannot keep that edit yet. */
+  const editChanged = computed(() => {
+    const p = editing();
+    return p !== null && editedContent() !== p.proposed_content;
+  });
   const saveAndApprove = async () => {
     const p = editing();
-    if (p === null) return;
+    if (p === null || editChanged()) return;
     // The core has no export that rewrites a proposal's text: the review below approves the stored text.
-    await review(p, "APPROVED", "Human Reviewer (Edited)");
-    editOpen.set(false);
+    if (await review(p, "APPROVED", "Human Reviewer (Edited)")) editOpen.set(false);
   };
 
   const closeEvidence = () => { evidenceFor.set(null); evidence.set(null); evidenceError.set(null); };
@@ -208,7 +214,7 @@ export function useAiApproval() {
 
   return {
     proposals, leadInfo, ready, loading, failed, error, success, search, statusFilter, filtered, reviewing,
-    editOpen, editing, editedContent, openEdit, closeEdit, saveAndApprove,
+    editOpen, editing, editedContent, editChanged, openEdit, closeEdit, saveAndApprove,
     evidenceFor, evidence, evidenceLoading, evidenceError, toggleEvidence, closeEvidence,
     load, approve, reject,
   };
