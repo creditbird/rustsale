@@ -5496,8 +5496,16 @@ mod tests {
             add_outreach_test_lead(&mut conn, "Has Zalo Zero", "nz@example.com", "0901234568");
         let empty = add_outreach_test_lead(&mut conn, "Empty Phone", "empty@example.com", "");
         let spaces = add_outreach_test_lead(&mut conn, "Spaces Phone", "spaces@example.com", "   ");
+        let whitespace = add_outreach_test_lead(
+            &mut conn,
+            "Whitespace Phone",
+            "white@example.com",
+            "\t\n\r  \t",
+        );
         let zalo_only = add_outreach_test_lead(&mut conn, "Zalo Only", "zalo@example.com", "");
         conn.execute("UPDATE leads SET has_zalo = 0 WHERE id = ?1", [no_zalo])
+            .unwrap();
+        conn.execute("UPDATE leads SET zalo_reached = 1 WHERE id = ?1", [vn])
             .unwrap();
         conn.execute(
             "UPDATE leads SET zalo_uid = '123456789' WHERE id = ?1",
@@ -5517,9 +5525,25 @@ mod tests {
         for id in [vn, intl, landline, no_zalo] {
             assert!(whatsapp_ids.contains(&id), "whatsapp must keep lead {id}");
         }
-        for id in [empty, spaces, zalo_only] {
+        for id in [empty, spaces, whitespace, zalo_only] {
             assert!(!whatsapp_ids.contains(&id), "whatsapp must drop lead {id}");
         }
+
+        let mut whatsapp_unreached_query = outreach_query("whatsapp", "all");
+        whatsapp_unreached_query.filter_unreached = true;
+        let whatsapp_unreached =
+            commands::get_outreach_leads_page_internal(&conn, &whatsapp_unreached_query, None, 50)
+                .unwrap();
+        let whatsapp_unreached_ids: Vec<i32> = whatsapp_unreached
+            .items
+            .iter()
+            .filter_map(|lead| lead.id)
+            .collect();
+        assert_eq!(
+            whatsapp_unreached.total, 4,
+            "zalo_reached must not filter the WhatsApp channel"
+        );
+        assert!(whatsapp_unreached_ids.contains(&vn));
 
         let zalo = commands::get_outreach_leads_page_internal(
             &conn,

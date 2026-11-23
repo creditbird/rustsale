@@ -131,8 +131,14 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
             );
         }
         "whatsapp" => {
-            // WhatsApp only needs a reachable phone number: no Zalo UID and no has_zalo gate.
-            sql.push_str(" AND (l.phone IS NOT NULL AND TRIM(l.phone) != '')");
+            // WhatsApp only needs a phone that is not empty once spaces and control whitespace are
+            // removed; no Zalo UID and no has_zalo gate.
+            sql.push_str(
+                " AND (
+                    l.phone IS NOT NULL
+                    AND REPLACE(REPLACE(REPLACE(REPLACE(l.phone, ' ', ''), CHAR(9), ''), CHAR(10), ''), CHAR(13), '') != ''
+                )",
+            );
         }
         _ => {
             sql.push_str(
@@ -169,7 +175,7 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
         }
     }
 
-    if query.filter_unreached {
+    if query.filter_unreached && query.channel != "whatsapp" {
         sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
     }
     if query.filter_mobile_only {
@@ -179,33 +185,46 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
     }
 
     let history_table = match query.channel.as_str() {
-        "email" => "email_outreach_history",
-        // Rejected above: WhatsApp accepts only the "all" segmentation.
-        "whatsapp" => "",
-        _ => "outreach_history",
+        "email" => Some("email_outreach_history"),
+        "zalo" => Some("outreach_history"),
+        // WhatsApp has no outreach-history segmentation (only "all" reaches this point).
+        "whatsapp" => None,
+        _ => None,
+    };
+    // A segmentation that needs history must never build SQL with no table name.
+    let history_for_segmentation = || {
+        history_table.ok_or_else(|| {
+            format!(
+                "Invalid segmentation '{}' for the whatsapp channel: only all is supported",
+                query.segmentation
+            )
+        })
     };
 
     match query.segmentation.as_str() {
         "never_sent" => {
+            let table = history_for_segmentation()?;
             if query.channel == "zalo" {
                 sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
                 sql.push_str(" AND COALESCE(l.zalo_status, '') NOT IN ('BLOCKED_STRANGER', 'VERIFIED_NOT_EXIST', 'NOT_FOUND', 'INVALID_PHONE')");
             }
             sql.push_str(&format!(
-                " AND NOT EXISTS (SELECT 1 FROM {history_table} history WHERE history.lead_id = l.id AND history.status = 'SUCCESS')"
+                " AND NOT EXISTS (SELECT 1 FROM {table} history WHERE history.lead_id = l.id AND history.status = 'SUCCESS')"
             ));
         }
         "last_failed" => {
+            let table = history_for_segmentation()?;
             sql.push_str(&format!(
-                " AND (SELECT history.status FROM {history_table} history WHERE history.lead_id = l.id ORDER BY history.sent_at DESC, history.id DESC LIMIT 1) = 'FAILED'"
+                " AND (SELECT history.status FROM {table} history WHERE history.lead_id = l.id ORDER BY history.sent_at DESC, history.id DESC LIMIT 1) = 'FAILED'"
             ));
         }
         "template_success" => {
+            let table = history_for_segmentation()?;
             let template_id = query
                 .filter_template_id
                 .ok_or_else(|| "Template ID is required for success filtering".to_string())?;
             sql.push_str(&format!(
-                " AND EXISTS (SELECT 1 FROM {history_table} history WHERE history.lead_id = l.id AND history.template_id = ? AND history.status = 'SUCCESS')"
+                " AND EXISTS (SELECT 1 FROM {table} history WHERE history.lead_id = l.id AND history.template_id = ? AND history.status = 'SUCCESS')"
             ));
             params.push(Value::Integer(i64::from(template_id)));
         }
