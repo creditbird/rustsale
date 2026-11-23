@@ -88,6 +88,20 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
     let mut sql = String::from(" FROM leads l WHERE 1 = 1");
     let mut params = Vec::new();
 
+    if !matches!(query.channel.as_str(), "zalo" | "email" | "whatsapp") {
+        return Err(format!(
+            "Invalid outreach channel '{}': expected zalo, email or whatsapp",
+            query.channel
+        ));
+    }
+    // WhatsApp has no outreach-history segmentation; the shared picker hides it.
+    if query.channel == "whatsapp" && !matches!(query.segmentation.as_str(), "all" | "") {
+        return Err(format!(
+            "Invalid segmentation '{}' for the whatsapp channel: only all is supported",
+            query.segmentation
+        ));
+    }
+
     if let Some(category_id) = query.category_id {
         sql.push_str(
             " AND EXISTS (SELECT 1 FROM lead_categories lc WHERE lc.lead_id = l.id AND lc.category_id = ?)",
@@ -110,9 +124,19 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
         }
     }
 
-    if query.channel != "email" {
-        sql.push_str(
-            " AND (
+    match query.channel.as_str() {
+        "email" => {
+            sql.push_str(
+                " AND (l.email IS NOT NULL AND TRIM(l.email) != '' AND l.email LIKE '%@%')",
+            );
+        }
+        "whatsapp" => {
+            // WhatsApp only needs a reachable phone number: no Zalo UID and no has_zalo gate.
+            sql.push_str(" AND (l.phone IS NOT NULL AND TRIM(l.phone) != '')");
+        }
+        _ => {
+            sql.push_str(
+                " AND (
                 (
                     l.zalo_uid IS NOT NULL
                     AND LOWER(TRIM(REPLACE(REPLACE(REPLACE(l.zalo_uid, CHAR(9), ''), CHAR(10), ''), CHAR(13), ''))) NOT IN ('', '0', '-0', '-1', 'null', 'undefined')
@@ -136,14 +160,13 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
                     )
                 )
             )",
-        );
-        if query.filter_verified_zalo {
-            sql.push_str(" AND l.has_zalo = 1");
-        } else {
-            sql.push_str(" AND COALESCE(l.has_zalo, 1) != 0");
+            );
+            if query.filter_verified_zalo {
+                sql.push_str(" AND l.has_zalo = 1");
+            } else {
+                sql.push_str(" AND COALESCE(l.has_zalo, 1) != 0");
+            }
         }
-    } else {
-        sql.push_str(" AND (l.email IS NOT NULL AND TRIM(l.email) != '' AND l.email LIKE '%@%')");
     }
 
     if query.filter_unreached {
@@ -155,15 +178,16 @@ fn build_outreach_lead_filter(query: &OutreachLeadQuery) -> Result<(String, Vec<
         );
     }
 
-    let history_table = if query.channel == "email" {
-        "email_outreach_history"
-    } else {
-        "outreach_history"
+    let history_table = match query.channel.as_str() {
+        "email" => "email_outreach_history",
+        // Rejected above: WhatsApp accepts only the "all" segmentation.
+        "whatsapp" => "",
+        _ => "outreach_history",
     };
 
     match query.segmentation.as_str() {
         "never_sent" => {
-            if query.channel != "email" {
+            if query.channel == "zalo" {
                 sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
                 sql.push_str(" AND COALESCE(l.zalo_status, '') NOT IN ('BLOCKED_STRANGER', 'VERIFIED_NOT_EXIST', 'NOT_FOUND', 'INVALID_PHONE')");
             }
