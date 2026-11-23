@@ -444,6 +444,15 @@ function ZaloAccounts() {
     } else if (name === "zalo-qr-error" && qrOpen()) {
       qrError.set("Đăng nhập Zalo thất bại. Thử lại.");
       qrStatus.set("");
+    } else if (name === "zalo-qr-expired" && qrOpen()) {
+      // The core ends the login on expiry; without this the dialog would keep a dead code on screen.
+      qrImage.set(null);
+      qrError.set("Mã QR đã hết hạn. Đóng hộp thoại rồi thêm lại.");
+      qrStatus.set("");
+    } else if (name === "zalo-qr-declined" && qrOpen()) {
+      qrImage.set(null);
+      qrError.set("Bạn đã từ chối đăng nhập trên điện thoại.");
+      qrStatus.set("");
     }
   });
   cleanup(stop);
