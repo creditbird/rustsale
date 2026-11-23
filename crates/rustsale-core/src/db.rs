@@ -1057,8 +1057,8 @@ pub fn update_outreach_template(
 }
 
 pub fn delete_outreach_template(conn: &Connection, id: i32) -> Result<()> {
-    conn.execute("DELETE FROM outreach_templates WHERE id = ?1", [id])?;
-    Ok(())
+    let changed = conn.execute("DELETE FROM outreach_templates WHERE id = ?1", [id])?;
+    ensure_row_changed(changed)
 }
 
 pub fn create_category(conn: &Connection, name: &str) -> Result<i32> {
@@ -1067,8 +1067,8 @@ pub fn create_category(conn: &Connection, name: &str) -> Result<i32> {
 }
 
 pub fn delete_category(conn: &Connection, id: i32) -> Result<()> {
-    conn.execute("DELETE FROM categories WHERE id = ?1", [id])?;
-    Ok(())
+    let changed = conn.execute("DELETE FROM categories WHERE id = ?1", [id])?;
+    ensure_row_changed(changed)
 }
 
 pub fn add_lead_to_category(conn: &Connection, lead_id: i32, category_id: i32) -> Result<()> {
@@ -1293,8 +1293,8 @@ pub fn get_smtp_server_by_id(
 }
 
 pub fn delete_smtp_server(conn: &Connection, id: i32) -> Result<()> {
-    conn.execute("DELETE FROM smtp_servers WHERE id = ?1", [id])?;
-    Ok(())
+    let changed = conn.execute("DELETE FROM smtp_servers WHERE id = ?1", [id])?;
+    ensure_row_changed(changed)
 }
 
 pub fn create_email_template(
@@ -1329,8 +1329,8 @@ pub fn update_email_template(
 }
 
 pub fn delete_email_template(conn: &Connection, id: i32) -> Result<()> {
-    conn.execute("DELETE FROM email_templates WHERE id = ?1", [id])?;
-    Ok(())
+    let changed = conn.execute("DELETE FROM email_templates WHERE id = ?1", [id])?;
+    ensure_row_changed(changed)
 }
 
 pub fn get_email_templates(conn: &Connection) -> Result<Vec<crate::models::EmailTemplate>> {
@@ -2133,8 +2133,8 @@ pub fn delete_template_folder(conn: &Connection, id: i64) -> Result<()> {
         "UPDATE templates SET folder_id = NULL WHERE folder_id = ?1",
         [id],
     )?;
-    conn.execute("DELETE FROM template_folders WHERE id = ?1", [id])?;
-    Ok(())
+    let changed = conn.execute("DELETE FROM template_folders WHERE id = ?1", [id])?;
+    ensure_row_changed(changed)
 }
 
 #[allow(dead_code)]
@@ -2319,8 +2319,8 @@ pub fn update_template(
 
 #[allow(dead_code)]
 pub fn delete_template(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM templates WHERE id = ?1", [id])?;
-    Ok(())
+    let changed = conn.execute("DELETE FROM templates WHERE id = ?1", [id])?;
+    ensure_row_changed(changed)
 }
 
 #[allow(dead_code)]

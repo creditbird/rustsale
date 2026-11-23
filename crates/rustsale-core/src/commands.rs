@@ -2867,7 +2867,13 @@ pub fn delete_outreach_template(id: i32, state: State<DbState>) -> Result<(), St
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_outreach_template(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_outreach_template_internal(&conn, id)
+}
+
+/// Deletes an outreach template; one that is already gone is "outreach template <id> not found".
+pub fn delete_outreach_template_internal(conn: &Connection, id: i32) -> Result<(), String> {
+    crate::db::delete_outreach_template(conn, id)
+        .map_err(|e| db_write_error(e, "outreach template", i64::from(id)))
 }
 
 pub async fn send_zalo_outreach(
@@ -4575,7 +4581,12 @@ pub fn delete_category(state: State<'_, DbState>, id: i32) -> Result<(), String>
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_category(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_category_internal(&conn, id)
+}
+
+/// Deletes a category; a category that is already gone is "category <id> not found".
+pub fn delete_category_internal(conn: &Connection, id: i32) -> Result<(), String> {
+    crate::db::delete_category(conn, id).map_err(|e| db_write_error(e, "category", i64::from(id)))
 }
 
 /// Associates multiple leads with a category.
@@ -5432,7 +5443,13 @@ pub fn delete_smtp_server(id: i32, state: State<DbState>) -> Result<(), String> 
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_smtp_server(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_smtp_server_internal(&conn, id)
+}
+
+/// Deletes an SMTP server; one that is already gone is "SMTP server <id> not found".
+pub fn delete_smtp_server_internal(conn: &Connection, id: i32) -> Result<(), String> {
+    crate::db::delete_smtp_server(conn, id)
+        .map_err(|e| db_write_error(e, "SMTP server", i64::from(id)))
 }
 
 pub async fn test_smtp_connection(host: String, port: i32) -> Result<String, String> {
@@ -5500,7 +5517,13 @@ pub fn delete_email_template(id: i32, state: State<DbState>) -> Result<(), Strin
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_email_template(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_email_template_internal(&conn, id)
+}
+
+/// Deletes an email template; one that is already gone is "email template <id> not found".
+pub fn delete_email_template_internal(conn: &Connection, id: i32) -> Result<(), String> {
+    crate::db::delete_email_template(conn, id)
+        .map_err(|e| db_write_error(e, "email template", i64::from(id)))
 }
 
 pub fn replace_email_template_variables(template: &str, lead: &Lead) -> String {
@@ -8623,7 +8646,12 @@ pub fn delete_template(id: i64, state: State<DbState>) -> Result<(), String> {
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_template(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_template_internal(&conn, id)
+}
+
+/// Deletes a template; one that is already gone is "template <id> not found".
+pub fn delete_template_internal(conn: &Connection, id: i64) -> Result<(), String> {
+    crate::db::delete_template(conn, id).map_err(|e| db_write_error(e, "template", id))
 }
 
 pub fn get_template_folders(
@@ -8654,7 +8682,13 @@ pub fn delete_template_folder(id: i64, state: State<DbState>) -> Result<(), Stri
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_template_folder(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_template_folder_internal(&conn, id)
+}
+
+/// Deletes a template folder; one that is already gone is "template folder <id> not found".
+pub fn delete_template_folder_internal(conn: &Connection, id: i64) -> Result<(), String> {
+    crate::db::delete_template_folder(conn, id)
+        .map_err(|e| db_write_error(e, "template folder", id))
 }
 
 pub fn increment_template_usage(id: i64, state: State<DbState>) -> Result<(), String> {
