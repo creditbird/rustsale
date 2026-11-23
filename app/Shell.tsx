@@ -7,6 +7,7 @@ import { ConversationScreen } from "./screens/ConversationScreen";
 import { TemplatesScreen } from "./screens/TemplatesScreen";
 import { ScraperScreen } from "./screens/ScraperScreen";
 import { CategoriesScreen } from "./screens/CategoriesScreen";
+import { ContactsScreen } from "./screens/ContactsScreen";
 import { Placeholder } from "./screens/Placeholder";
 
 function SidebarItem(props: { id: (typeof NAV)[number]["id"]; label: string; glyph: string }) {
@@ -30,6 +31,7 @@ function pick(r: RouteId) {
   if (r === "template_center") return <TemplatesScreen />;
   if (r === "scraper") return <ScraperScreen />;
   if (r === "categories") return <CategoriesScreen />;
+  if (r === "contacts") return <ContactsScreen />;
   return <Placeholder title={NAV.find((n) => n.id === r)?.label ?? ""} />;
 }
 
