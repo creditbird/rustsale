@@ -1617,3 +1617,75 @@ mod tests {
         );
     }
 }
+
+/// RS#53 verification only (A-U5): worst-case enrichment time per website, in virtual time.
+#[cfg(test)]
+mod verify53 {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct PublicDns;
+    #[async_trait]
+    impl DnsResolver for PublicDns {
+        async fn resolve(&self, _host: &str, port: u16) -> Result<Vec<SocketAddr>, ScrapeJobError> {
+            Ok(vec![SocketAddr::new(IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)), port)])
+        }
+    }
+
+    /// Every request takes `delay`; `redirects` extra hops precede every HTML page except robots.
+    struct SlowSite {
+        delay: Duration,
+        redirects: usize,
+        seen: Mutex<HashMap<String, usize>>,
+        count: Mutex<usize>,
+    }
+    #[async_trait]
+    impl HttpTransport for SlowSite {
+        async fn execute(&self, request: PinnedHttpRequest) -> Result<RawHttpResponse, ScrapeJobError> {
+            *self.count.lock().unwrap() += 1;
+            tokio::time::sleep(self.delay.min(request.request_timeout)).await;
+            let path = request.url.path().to_string();
+            if path == "/robots.txt" {
+                return Ok(RawHttpResponse { status: 404, content_type: Some("text/plain".into()), location: None, body: vec![] });
+            }
+            let hop = {
+                let mut seen = self.seen.lock().unwrap();
+                let n = seen.entry(path.clone()).or_insert(0);
+                *n += 1;
+                *n
+            };
+            if hop <= self.redirects {
+                return Ok(RawHttpResponse::redirect(&format!("{path}?h={hop}")));
+            }
+            // After the redirects the same path (with query) serves the page.
+            let _ = &request.url;
+            let page = if path == "/" {
+                "<html><body><a href='/contact'>Contact</a><a href='/lien-he'>Liên hệ</a><a href='/about'>About us</a><a href='/gioi-thieu'>Giới thiệu</a></body></html>"
+            } else {
+                "<html><body>nothing here</body></html>"
+            };
+            Ok(RawHttpResponse::html(page))
+        }
+    }
+
+    async fn run(delay_s: u64, redirects: usize) -> (u64, usize) {
+        let site = Arc::new(SlowSite { delay: Duration::from_secs(delay_s), redirects, seen: Mutex::new(HashMap::new()), count: Mutex::new(0) });
+        let client = SafeHttpClient::with_backend(Arc::new(PublicDns), site.clone());
+        let enricher = EmailEnricher::new(client);
+        let t0 = tokio::time::Instant::now();
+        let out = enricher.find_email(Url::parse("https://slow.example.test/").unwrap()).await;
+        let elapsed = t0.elapsed().as_secs();
+        let n = *site.count.lock().unwrap();
+        println!("A-U5 delay={delay_s}s redirects={redirects}: result={:?} elapsed={elapsed}s requests={n}", out.as_ref().map(|o| o.is_some()).map_err(|e| e.kind));
+        (elapsed, n)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn au5_worst_case_enrichment_time() {
+        run(1, 0).await; // healthy site, 1 s/request
+        run(14, 0).await; // slow but valid: 14 s/request, no redirects
+        run(14, 1).await; // slow + one redirect per page
+        run(15, 3).await; // pathological: 15 s/request, 3 redirects per page
+    }
+}
