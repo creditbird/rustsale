@@ -11,6 +11,7 @@ import { ContactsScreen } from "./screens/ContactsScreen";
 import { OutreachScreen } from "./screens/OutreachScreen";
 import { EmailOutreachScreen } from "./screens/EmailOutreachScreen";
 import { WhatsAppOutreachScreen } from "./screens/WhatsAppOutreachScreen";
+import { AiApprovalScreen } from "./screens/AiApprovalScreen";
 import { Placeholder } from "./screens/Placeholder";
 
 function SidebarItem(props: { id: (typeof NAV)[number]["id"]; label: string; glyph: string }) {
@@ -38,6 +39,7 @@ function pick(r: RouteId) {
   if (r === "outreach") return <OutreachScreen />;
   if (r === "email_outreach") return <EmailOutreachScreen />;
   if (r === "whatsapp_outreach") return <WhatsAppOutreachScreen />;
+  if (r === "ai_approval") return <AiApprovalScreen />;
   return <Placeholder title={NAV.find((n) => n.id === r)?.label ?? ""} />;
 }
 
