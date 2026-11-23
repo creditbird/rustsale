@@ -193,6 +193,82 @@ mod outreach_complete {
     }
 }
 
+/// AI Approval: the lists of every status, saving the edited text, and review of a missing id.
+mod ai_approval {
+    use crate::ai;
+    use crate::db;
+
+    fn proposal(conn: &rusqlite::Connection, text: &str) -> i64 {
+        db::create_ai_action_proposal(conn, None, None, "zalo", text, "because").unwrap()
+    }
+
+    #[test]
+    fn list_returns_every_status_or_one() {
+        let conn = db::init_db(":memory:").unwrap();
+        let pending = proposal(&conn, "pending one");
+        let approved = proposal(&conn, "approved one");
+        let rejected = proposal(&conn, "rejected one");
+        ai::review_ai_proposal_internal(&conn, approved, "APPROVED", "Reviewer").unwrap();
+        ai::review_ai_proposal_internal(&conn, rejected, "rejected", "Reviewer").unwrap();
+
+        let ids = |status: Option<&str>| -> Vec<i64> {
+            ai::list_ai_proposals_internal(&conn, status)
+                .unwrap()
+                .into_iter()
+                .filter_map(|p| p.id)
+                .collect()
+        };
+        assert_eq!(ids(None), vec![rejected, approved, pending]);
+        assert_eq!(ids(Some("ALL")), vec![rejected, approved, pending]);
+        assert_eq!(ids(Some("PENDING")), vec![pending]);
+        assert_eq!(ids(Some("approved")), vec![approved]);
+        assert_eq!(ids(Some("REJECTED")), vec![rejected]);
+        assert!(ai::list_ai_proposals_internal(&conn, Some("DONE"))
+            .unwrap_err()
+            .contains("Invalid status"));
+    }
+
+    #[test]
+    fn edited_text_is_saved_and_survives_the_review() {
+        let conn = db::init_db(":memory:").unwrap();
+        let id = proposal(&conn, "first draft");
+        ai::edit_ai_proposal_content_internal(&conn, id, "  final wording  ").unwrap();
+        ai::review_ai_proposal_internal(&conn, id, "APPROVED", "Reviewer (Edited)").unwrap();
+        let saved = db::get_ai_action_proposal(&conn, id).unwrap().unwrap();
+        assert_eq!(saved.proposed_content, "final wording");
+        assert_eq!(saved.status, "APPROVED");
+    }
+
+    #[test]
+    fn edit_refuses_a_blank_missing_reviewed_or_oversized_proposal() {
+        let conn = db::init_db(":memory:").unwrap();
+        let id = proposal(&conn, "draft");
+        let blank = ai::edit_ai_proposal_content_internal(&conn, id, "   ").unwrap_err();
+        assert!(blank.starts_with("Invalid proposal content"), "{blank}");
+        let huge = "x".repeat(ai::MAX_PROPOSAL_CONTENT_CHARS + 1);
+        let long = ai::edit_ai_proposal_content_internal(&conn, id, &huge).unwrap_err();
+        assert!(long.starts_with("Invalid proposal content"), "{long}");
+        assert_eq!(
+            ai::edit_ai_proposal_content_internal(&conn, 9999, "text").unwrap_err(),
+            "AI proposal 9999 not found"
+        );
+        ai::review_ai_proposal_internal(&conn, id, "REJECTED", "Reviewer").unwrap();
+        let done = ai::edit_ai_proposal_content_internal(&conn, id, "late edit").unwrap_err();
+        assert!(done.contains("already REJECTED"), "{done}");
+        let kept = db::get_ai_action_proposal(&conn, id).unwrap().unwrap();
+        assert_eq!(kept.proposed_content, "draft");
+    }
+
+    #[test]
+    fn reviewing_a_missing_proposal_is_not_found() {
+        let conn = db::init_db(":memory:").unwrap();
+        assert_eq!(
+            ai::review_ai_proposal_internal(&conn, 4242, "APPROVED", "Reviewer").unwrap_err(),
+            "AI proposal 4242 not found"
+        );
+    }
+}
+
 /// N2 timing harness (ignored): `INT7_BENCH_DB=/tmp/.../rustsale.db cargo test --release
 /// -p rustsale-core int7_core_test::n2_inbox_bench -- --ignored --nocapture`. Only ever point it
 /// at a copy of the data: it opens the file read-write like the app does.

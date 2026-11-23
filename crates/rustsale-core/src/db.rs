@@ -2077,13 +2077,26 @@ pub fn update_ai_action_proposal_status(
         conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%SZ', 'now')", [], |row| {
             row.get(0)
         })?;
-    conn.execute(
+    let changed = conn.execute(
         "UPDATE ai_action_proposals
          SET status = ?1, reviewed_by = ?2, reviewed_at = ?3
          WHERE id = ?4",
         rusqlite::params![status, reviewed_by, now, id],
     )?;
-    Ok(())
+    ensure_row_changed(changed)
+}
+
+/// Replaces the text of a proposal that is still `PENDING`; `false` when no such row matched.
+pub fn update_ai_action_proposal_content(
+    conn: &Connection,
+    id: i64,
+    content: &str,
+) -> Result<bool> {
+    let changed = conn.execute(
+        "UPDATE ai_action_proposals SET proposed_content = ?1 WHERE id = ?2 AND status = 'PENDING'",
+        rusqlite::params![content, id],
+    )?;
+    Ok(changed > 0)
 }
 
 // ============================================================================
