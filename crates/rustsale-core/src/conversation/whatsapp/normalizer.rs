@@ -452,6 +452,16 @@ impl From<&AppliedWhatsAppMessage> for i64 {
     }
 }
 
+/// A CRM lead's phone, prepared once so many lookups do not redo the work.
+#[derive(Debug, Clone)]
+pub struct LeadPhone {
+    id: i64,
+    /// ASCII digits of the phone (never empty).
+    digits: String,
+    /// The phone as E.164 digits with the default Vietnam prefix, when it is a phone.
+    e164: Option<String>,
+}
+
 pub struct WhatsAppNormalizer;
 
 impl WhatsAppNormalizer {
@@ -508,49 +518,74 @@ impl WhatsAppNormalizer {
     /// - 0 matching leads -> None
     /// - >1 matching leads (duplicate phone in CRM) -> None (never guess arbitrarily).
     pub fn resolve_lead_by_phone(conn: &Connection, phone_raw: &str) -> Result<Option<i64>> {
-        let phone_raw = phone_raw.trim();
-        if phone_raw.is_empty() {
+        let Some(target_digits) = Self::lookup_digits(phone_raw) else {
             return Ok(None);
-        }
-
-        // Clean user digits or normalized E.164
-        let target_e164 =
-            phone::normalize_e164(phone_raw, Some("84")).or_else(|| phone::jid_to_phone(phone_raw));
-
-        let target_e164 = match target_e164 {
-            Some(p) => p,
-            None => return Ok(None),
         };
-        let target_digits: String = target_e164.chars().filter(|c| c.is_ascii_digit()).collect();
-        if target_digits.is_empty() {
-            return Ok(None);
-        }
+        let leads = Self::load_lead_phones(conn)?;
+        Ok(Self::match_lead_phones(&leads, &target_digits))
+    }
 
-        // Query leads with non-empty phone
+    /// Same rules as [`Self::resolve_lead_by_phone`] over a list loaded once with
+    /// [`Self::load_lead_phones`], so a loop over many numbers reads `leads` once.
+    pub fn resolve_lead_by_phone_in(leads: &[LeadPhone], phone_raw: &str) -> Option<i64> {
+        let target_digits = Self::lookup_digits(phone_raw)?;
+        Self::match_lead_phones(leads, &target_digits)
+    }
+
+    /// Leads that have a non-empty phone, with the digit forms the matcher needs
+    /// worked out once.
+    pub fn load_lead_phones(conn: &Connection) -> rusqlite::Result<Vec<LeadPhone>> {
         let mut stmt = conn
             .prepare("SELECT id, phone FROM leads WHERE phone IS NOT NULL AND TRIM(phone) != ''")?;
-
-        let mut matching_lead_ids = HashSet::new();
         let rows = stmt.query_map([], |row| {
             let id: i64 = row.get(0)?;
             let phone: String = row.get(1)?;
             Ok((id, phone))
         })?;
-
-        for item in rows {
-            let (id, lead_phone) = item?;
-            let lead_phone_clean = lead_phone.trim();
-            if lead_phone_clean.is_empty() {
+        let mut leads = Vec::new();
+        for row in rows {
+            let (id, phone) = row?;
+            let phone = phone.trim();
+            if phone.is_empty() {
                 continue;
             }
-
-            let lead_digits: String = lead_phone_clean
-                .chars()
-                .filter(|c| c.is_ascii_digit())
-                .collect();
-            if lead_digits.is_empty() {
+            let digits: String = phone.chars().filter(|c| c.is_ascii_digit()).collect();
+            if digits.is_empty() {
                 continue;
             }
+            leads.push(LeadPhone {
+                id,
+                e164: phone::normalize_e164(phone, Some("84")),
+                digits,
+            });
+        }
+        Ok(leads)
+    }
+
+    /// Digits of the number to look up, or `None` when it is blank or not a phone.
+    fn lookup_digits(phone_raw: &str) -> Option<String> {
+        let phone_raw = phone_raw.trim();
+        if phone_raw.is_empty() {
+            return None;
+        }
+
+        // Clean user digits or normalized E.164
+        let target_e164 = phone::normalize_e164(phone_raw, Some("84"))
+            .or_else(|| phone::jid_to_phone(phone_raw))?;
+        let target_digits: String = target_e164.chars().filter(|c| c.is_ascii_digit()).collect();
+        if target_digits.is_empty() {
+            None
+        } else {
+            Some(target_digits)
+        }
+    }
+
+    fn match_lead_phones(leads: &[LeadPhone], target_digits: &str) -> Option<i64> {
+        let mut matching_lead_ids = HashSet::new();
+
+        for lead in leads {
+            let id = lead.id;
+            let lead_digits = lead.digits.as_str();
 
             // 1. Direct digit equality
             if lead_digits == target_digits {
@@ -559,7 +594,7 @@ impl WhatsAppNormalizer {
             }
 
             // 2. Normalized E.164 equality with default Vietnam "84"
-            if let Some(norm_lead) = phone::normalize_e164(lead_phone_clean, Some("84")) {
+            if let Some(norm_lead) = lead.e164.as_deref() {
                 if norm_lead == target_digits {
                     matching_lead_ids.insert(id);
                     continue;
@@ -575,7 +610,7 @@ impl WhatsAppNormalizer {
             }
 
             // 4. National / domestic format with leading 0 (e.g. 0901234567, 013926842913, 13926842913)
-            let sub_lead = lead_digits.strip_prefix('0').unwrap_or(&lead_digits);
+            let sub_lead = lead_digits.strip_prefix('0').unwrap_or(lead_digits);
             if sub_lead.len() >= 7 && target_digits.ends_with(sub_lead) {
                 let cc_len = target_digits.len() - sub_lead.len();
                 if (1..=4).contains(&cc_len) {
@@ -585,7 +620,7 @@ impl WhatsAppNormalizer {
             }
 
             // 5. Vice-versa: target has leading 0 or national format, lead has full international format
-            let sub_target = target_digits.strip_prefix('0').unwrap_or(&target_digits);
+            let sub_target = target_digits.strip_prefix('0').unwrap_or(target_digits);
             if sub_target.len() >= 7 && lead_digits.ends_with(sub_target) {
                 let cc_len = lead_digits.len() - sub_target.len();
                 if (1..=4).contains(&cc_len) {
@@ -596,10 +631,10 @@ impl WhatsAppNormalizer {
         }
 
         if matching_lead_ids.len() == 1 {
-            Ok(matching_lead_ids.into_iter().next())
+            matching_lead_ids.into_iter().next()
         } else {
             // 0 or >1 matches (ambiguous) -> None
-            Ok(None)
+            None
         }
     }
 
