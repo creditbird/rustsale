@@ -90,6 +90,7 @@ Build được sau khi cài `webkitgtk-6.0` 2.54.3 (chủ đồng ý 22/11). Lý
 - Metadata gói không khai phụ thuộc: `nsh/app.json` chỉ có name/id/version/schemes, `.desktop` không có trường nào về gói; `RustSale.tar.gz` chỉ chứa binary + bundle, không kèm thư viện. Người dùng cuối phải tự cài `webkitgtk-6.0` (Arch), `libwebkitgtk-6.0-4` (Debian/Ubuntu 24.04+), `webkitgtk6.0` (Fedora), kèm GTK 4.14+. Đó là vài trăm MB phụ thuộc cho một app không dùng WebView.
 - Nguyên nhân: nsh-cli luôn bật feature `webview` của `nsh-platform-linux` khi build host app mixed (`HOST_ONLY_FEATURES`, mục trên).
 - Đề xuất (chưa làm, không vá nsh-cli): (1) gói `.deb`/`.rpm`/PKGBUILD tự ta viết cho bản phát hành, khai `Depends: libwebkitgtk-6.0-4, libgtk-4-1`; (2) hỏi upstream nsh (github.com/longbridge/nsh) cho tắt feature `webview` với app không dùng WebView; khi có, binary không còn kéo WebKit. Trong lúc chờ: chọn (1). Nakroth quyết có mở issue upstream không.
+- Đã làm (24/11, #49): `packaging/linux/` (`.deb` khai `libwebkitgtk-6.0-4`, `libgtk-4-1 (>= 4.14)`; PKGBUILD khai `webkitgtk-6.0`, `gtk4`; spec `.rpm`). Binary build trên Arch còn cần glibc 2.44 và `libssl.so.4` (OpenSSL 4), nên `.deb` chỉ cài được trên distro mới bằng máy build; bản cho Debian 13 / Ubuntu 24.04 phải build trong chính distro đó (xem `packaging/linux/README.md`).
 
 ## 4c. Sửa khựng khi cuộn bảng khách (22/11 10:00 đến 10:13)
 

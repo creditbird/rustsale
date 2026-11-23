@@ -8,7 +8,7 @@ packages here declare those dependencies, which the plain nsh `.tar.gz` does not
 | Format | Files | Declares |
 |---|---|---|
 | `.deb` (Debian 13+, Ubuntu 24.04+) | `build-deb.sh` | `Depends: libc6 (>= <runner floor>), libwebkitgtk-6.0-4, libgtk-4-1 (>= 4.14)` |
-| Arch `PKGBUILD` | `PKGBUILD` + `build-tarball.sh` | `depends=(webkitgtk-6.0 gtk4)` |
+| Arch `PKGBUILD` | `PKGBUILD` + `build-tarball.sh` | `depends=(webkitgtk-6.0 gtk4 openssl glibc)` |
 | `.rpm` (Fedora) | `rustsale.spec`, `build-rpm.sh` | `Requires: webkitgtk6.0, gtk4 >= 4.14` |
 
 Install tree (the same in all three): `/opt/rustsale/` (runner and bundle), `/usr/bin/rustsale` (symlink),
@@ -28,6 +28,19 @@ packaging/linux/build-rpm.sh     <nsh-output-dir> <out-dir>   # needs rpmbuild (
 
 Without `dpkg-deb` (Arch, for example) `build-deb.sh` assembles the archive with `ar` and `tar`.
 `build-*.sh` refuse a runner that carries `Demo.seed`/`Demo.prepare`, and `build.sh` refuses `RUSTSALE_DEMO=1`.
+
+## Where each package runs (checked 24/11/2026)
+
+The runner is linked against the libraries of the machine that built it (here Arch: glibc 2.44, OpenSSL 4).
+`build-deb.sh` writes that floor into `Depends` (`libc6 (>= 2.44)`) and warns about `libssl.so.4`.
+
+| Target | Result |
+|---|---|
+| Arch Linux (clean container, `pacman -U`) | pulls `webkitgtk-6.0`, `gtk4`, `openssl`; `ldd` has no `not found`; the app starts and keeps running under Xvfb |
+| Ubuntu 24.04 (glibc 2.39, OpenSSL 3) | `apt install ./rustsale_*.deb` is refused (`libc6 (>= 2.44)`); the binary would also need `libssl.so.4`, which Ubuntu does not ship |
+
+So the `.deb` is only installable on a distro at least as new as the build machine. For Debian 13 / Ubuntu 24.04, build the
+runner inside that distro (a container with `libwebkitgtk-6.0-dev`, `libgtk-4-dev`), then run the same scripts on its output.
 
 ## Build-time settings (not in the repo)
 

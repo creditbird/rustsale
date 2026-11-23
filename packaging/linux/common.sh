@@ -54,3 +54,13 @@ assert_no_demo() {
     return 1
   fi
 }
+
+# Says which libraries the runner needs that the declared packages do not obviously bring along. The runner
+# is built on the build machine's libraries, so an OpenSSL 4 soname means it only runs where OpenSSL 4 exists.
+warn_needed() {
+  local lib
+  for lib in $(readelf -d "$1" 2>/dev/null | sed -n 's/.*NEEDED.*\[\(.*\)\]/\1/p' | grep -E '^lib(ssl|crypto)\.so'); do
+    echo "warning: the runner needs $lib; Debian 13 and Ubuntu 24.04 ship OpenSSL 3 (libssl.so.3), so this build runs only on OpenSSL-4 systems" >&2
+  done
+  echo "note: the runner needs glibc >= $(min_glibc "$1"); build on the oldest distro you support" >&2
+}

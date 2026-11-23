@@ -16,6 +16,7 @@ ROOT="$WORK/root"
 mkdir -p "$ROOT" "$OUT"
 stage_tree "$SRC" "$ROOT"
 assert_no_demo "$(find_runner "$SRC")"
+warn_needed "$(find_runner "$SRC")"
 
 GLIBC="$(min_glibc "$(find_runner "$SRC")")"
 DEPENDS="libwebkitgtk-6.0-4, libgtk-4-1 (>= $GTK_MIN)"
