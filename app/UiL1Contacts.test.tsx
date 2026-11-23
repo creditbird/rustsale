@@ -52,3 +52,17 @@ test("opening a contact shows the shared detail panel", async () => {
   await app.waitUntil(() => has(app, "lienhe@example.com"));
   expect(has(app, name)).toBe(true);
 });
+
+test("a long name does not push the Đóng button out of the detail panel", async () => {
+  const name = `Phòng Khám Vật Lý Trị Liệu Tân Phú Therapy ${Date.now()} Chi Nhánh Số Một`;
+  await Host.start(dir);
+  const id = (await Leads.add({ name, status: "Converted" })) as number;
+  const app = await open("./App.tsx");
+  await app.setViewport(1280, 800);
+  await app.press("id:nav-contacts");
+  await app.waitFor(`id:contact-row-${id}`);
+  await app.press(`id:contact-row-${id}`);
+  await app.waitFor("id:lead-detail");
+  expect(app.shows("id:lead-close")).toBe(true);
+  expect(has(app, "Đóng")).toBe(true);
+});

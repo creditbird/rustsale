@@ -6,6 +6,8 @@ export interface InputProps {
   placeholder?: string;
   testID?: string;
   onSubmit?: () => void;
+  /** Takes the keyboard focus once shown: a field in a dialog that opens to be typed in. */
+  autoFocus?: boolean;
 }
 
 /** A single-line text field on the theme's input tokens. */
@@ -15,6 +17,7 @@ export function Input(props: InputProps) {
       testID={props.testID}
       value={props.value}
       placeholder={props.placeholder}
+      autoFocus={props.autoFocus}
       returnKeyType="search"
       onChange={({ value }) => props.onValue(value)}
       onSubmit={() => props.onSubmit?.()}
