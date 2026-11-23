@@ -37,6 +37,7 @@ The runner is linked against the libraries of the machine that built it (here Ar
 | Target | Result |
 |---|---|
 | Arch Linux (clean container, `pacman -U`) | pulls `webkitgtk-6.0`, `gtk4`, `openssl`; `ldd` has no `not found`; the app starts and keeps running under Xvfb |
+| Fedora 45 (clean container, `dnf install ./rustsale-*.rpm`) | pulls `webkitgtk6.0` and `gtk4`; `ldd` has no `not found` (Fedora 45 ships OpenSSL 4) |
 | Ubuntu 24.04 (glibc 2.39, OpenSSL 3) | `apt install ./rustsale_*.deb` is refused (`libc6 (>= 2.44)`); the binary would also need `libssl.so.4`, which Ubuntu does not ship |
 
 So the `.deb` is only installable on a distro at least as new as the build machine. For Debian 13 / Ubuntu 24.04, build the

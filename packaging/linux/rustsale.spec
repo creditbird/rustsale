@@ -7,6 +7,9 @@ Summary:        Sales CRM for customer conversations and outreach
 License:        Proprietary
 BuildArch:      x86_64
 AutoReqProv:    no
+# A prebuilt runner: nothing to strip or split into debuginfo.
+%global debug_package %{nil}
+%global __strip /bin/true
 # The runner links WebKitGTK 6.0 and GTK 4 at load time (DT_NEEDED), even though the app opens no web view.
 Requires:       webkitgtk6.0
 Requires:       gtk4 >= 4.14
