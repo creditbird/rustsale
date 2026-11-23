@@ -2,28 +2,11 @@ import { List, signal, Text, View } from "nsh";
 import { Button as Base } from "nsh/base";
 import { Leads, LeadsMore } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Modal, Skeleton } from "../ui";
-import type { BadgeTone } from "../ui/Badge";
+import { LeadDetail, STATUSES, money, tone, type Activity, type Lead } from "../components/LeadDetail";
 import { startCore, type Page } from "../stores/core";
 import { pager } from "../stores/paged";
 import { notify, report } from "../stores/toast";
 
-export interface Lead {
-  id: number;
-  name: string;
-  company: string | null;
-  status: string;
-  owner: string | null;
-  value: number | null;
-  currency: string | null;
-  email: string | null;
-  phone: string | null;
-  about: string | null;
-  address: string | null;
-  last_activity: string | null;
-}
-interface Activity { id: number; activity_type: string; content: string; created_at: string }
-
-export const STATUSES = ["New", "Contacted", "Qualified", "Proposal", "Won", "Lost", "Converted"];
 const SORTS: { key: string; label: string; w: string }[] = [
   { key: "name", label: "Tên", w: "flex-[2]" },
   { key: "company", label: "Công ty", w: "flex-[2]" },
@@ -31,19 +14,6 @@ const SORTS: { key: string; label: string; w: string }[] = [
   { key: "owner", label: "Phụ trách", w: "flex-1" },
   { key: "value", label: "Giá trị", w: "flex-1" },
 ];
-
-/** A deal value as people say it: millions as "15 tr", smaller as the plain number. */
-export function money(value: number | null, currency: string | null): string {
-  if (!value) return "—";
-  const unit = currency && currency !== "VND" ? ` ${currency}` : "";
-  return value >= 1_000_000 ? `${Math.round(value / 100_000) / 10} tr${unit}` : `${value}${unit}`;
-}
-
-function tone(status: string): BadgeTone {
-  if (status === "Won" || status === "Converted" || status === "Qualified") return "success";
-  if (status === "Lost") return "danger";
-  return "neutral";
-}
 
 /** Leads: a cursor-paged table filtered and sorted in the core, a detail panel and an add dialog. */
 export function LeadsScreen() {
@@ -184,29 +154,12 @@ export function LeadsScreen() {
       </View>
       <If when={selected()}>
         {(lead) => (
-          <View testID="lead-detail" class="w-[340px] gap-3 border-l border-border bg-card p-5">
-            <View class="flex-row items-center justify-between">
-              <Text testID="lead-detail-name" class="text-lg font-semibold text-foreground">{lead().name}</Text>
-              <Button testID="lead-close" label="Đóng" variant="ghost" size="sm" onPress={() => selected.set(null)} />
-            </View>
-            <Text class="text-sm text-muted-foreground">{lead().company ?? "—"}</Text>
-            <Text class="text-sm text-foreground">{`${lead().email ?? "—"} · ${lead().phone ?? "—"}`}</Text>
-            <Text class="text-sm text-muted-foreground">{lead().about ?? ""}</Text>
-            <View class="flex-row flex-wrap gap-2">
-              <Each of={STATUSES} key={(s) => s}>
-                {(s) => (
-                  <Button testID={`set-status-${s()}`} label={s()} size="sm"
-                    variant={lead().status === s() ? "primary" : "secondary"}
-                    onPress={() => { void setStatus(lead(), s()); }} />
-                )}
-              </Each>
-            </View>
-            <Text class="mt-2 text-xs font-medium text-muted-foreground">Hoạt động gần đây</Text>
-            <If when={activities().length === 0}><Text class="text-sm text-muted-foreground">Chưa có hoạt động.</Text></If>
-            <Each of={activities().slice(0, 6)} key={(a) => String(a.id)}>
-              {(a) => <Text class="text-sm text-foreground">{`${a().activity_type}: ${a().content}`}</Text>}
-            </Each>
-          </View>
+          <LeadDetail
+            lead={lead}
+            activities={activities}
+            onClose={() => selected.set(null)}
+            onStatus={(next) => { void setStatus(lead(), next); }}
+          />
         )}
       </If>
       <Modal open={adding()} title="Thêm khách" onClose={() => adding.set(false)}>
