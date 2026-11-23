@@ -1,8 +1,8 @@
 import { List, Text, View } from "nsh";
-import { Button as Base } from "nsh/base";
+import { Button as Base, Select } from "nsh/base";
 import { Badge, Button, EmptyState, Input, Skeleton } from "../ui";
 import { tone } from "../components/LeadDetail";
-import { SEGMENTATIONS, type OutreachPicker } from "../stores/outreach";
+import { SEGMENTATIONS, type OutreachPicker, type Segmentation } from "../stores/outreach";
 
 export interface OutreachLeadsProps {
   pick: OutreachPicker;
@@ -11,6 +11,8 @@ export interface OutreachLeadsProps {
   zalo: boolean;
   /** Hide the outreach-history segmentation on screens that do not use it (WhatsApp). */
   showSegmentation?: boolean;
+  /** Outreach templates of the channel, for the "successful template match" segmentation. */
+  templates?: { id: number; name: string }[];
 }
 
 const COLUMNS: { label: string; w: string }[] = [
@@ -24,6 +26,17 @@ const COLUMNS: { label: string; w: string }[] = [
 export function OutreachLeads(props: OutreachLeadsProps) {
   const p = props.pick;
   const t = (name: string) => `${props.prefix}-${name}`;
+  const chooseSegmentation = (key: Segmentation) => {
+    if (key === "template_success") {
+      const first = props.templates?.[0]?.id ?? null;
+      p.setSegmentationAndTemplate(key, p.filterTemplateId() ?? first);
+      return;
+    }
+    p.setSegmentation(key);
+  };
+  const categoryName = () => p.categories().find((c) => c.id === p.categoryId())?.name ?? "Tất cả danh mục";
+  const templateName = () =>
+    (props.templates ?? []).find((tpl) => tpl.id === p.filterTemplateId())?.name ?? "Chọn mẫu đã gửi";
 
   return (
     <View class="flex-1 gap-2">
@@ -31,14 +44,55 @@ export function OutreachLeads(props: OutreachLeadsProps) {
         <View class="w-64">
           <Input testID={t("search")} value={p.search()} placeholder="Tìm tên, công ty, SĐT…" onValue={p.setSearch} />
         </View>
+        <View class="w-48">
+          <Select testID={t("category")}
+            items={[{ value: "", title: "Tất cả danh mục" },
+              ...p.categories().map((c) => ({ value: String(c.id), title: c.name }))]}
+            value={p.categoryId() === null ? "" : String(p.categoryId())}
+            placeholder="Tất cả danh mục"
+            onChange={({ value }) => p.setCategory(value === null || value === "" ? null : Number(value))}
+            trigger={
+              <View testID={t("category-trigger")} class="h-9 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
+                <Text class="truncate text-sm text-foreground">{categoryName()}</Text>
+                <Text class="text-xs text-muted-foreground">▾</Text>
+              </View>
+            }
+            itemClass="px-3 py-2 selected:bg-accent"
+            renderItem={(entry) => (
+              <View testID={t(`category-item-${entry.value === "" ? "all" : entry.value}`)}>
+                <Text class="text-sm text-foreground">{entry.title}</Text>
+              </View>
+            )} />
+        </View>
         <If when={props.showSegmentation ?? true}>
           <Each of={SEGMENTATIONS} key={(s) => s.key}>
             {(s) => (
               <Button testID={t(`seg-${s().key}`)} label={s().label} size="sm"
                 variant={p.segmentation() === s().key ? "primary" : "secondary"}
-                onPress={() => p.setSegmentation(s().key)} />
+                onPress={() => chooseSegmentation(s().key)} />
             )}
           </Each>
+        </If>
+        <If when={(props.showSegmentation ?? true) && p.segmentation() === "template_success"}>
+          <View class="w-52">
+            <Select testID={t("seg-template")}
+              items={(props.templates ?? []).map((tpl) => ({ value: String(tpl.id), title: tpl.name }))}
+              value={p.filterTemplateId() === null ? null : String(p.filterTemplateId())}
+              placeholder="Chọn mẫu đã gửi"
+              onChange={({ value }) => p.setFilterTemplate(value === null ? null : Number(value))}
+              trigger={
+                <View testID={t("seg-template-trigger")} class="h-9 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
+                  <Text class="truncate text-sm text-foreground">{templateName()}</Text>
+                  <Text class="text-xs text-muted-foreground">▾</Text>
+                </View>
+              }
+              itemClass="px-3 py-2 selected:bg-accent"
+              renderItem={(entry) => (
+                <View testID={t(`seg-template-item-${entry.value}`)}>
+                  <Text class="text-sm text-foreground">{entry.title}</Text>
+                </View>
+              )} />
+          </View>
         </If>
         <If when={props.zalo}>
           <Button testID={t("filter-verified")} label="Có Zalo" size="sm"

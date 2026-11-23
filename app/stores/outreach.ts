@@ -1,5 +1,5 @@
 import { computed, signal } from "nsh";
-import { LeadsMore } from "rustsale/native";
+import { Leads, LeadsMore } from "rustsale/native";
 import { startCore, type Page } from "./core";
 import { pager } from "./paged";
 import { report } from "./toast";
@@ -17,12 +17,13 @@ export interface OutreachLead {
   zalo_reached: number | null;
 }
 
-export type Segmentation = "all" | "never_sent" | "last_failed";
+export type Segmentation = "all" | "never_sent" | "last_failed" | "template_success";
 
 export const SEGMENTATIONS: { key: Segmentation; label: string }[] = [
   { key: "all", label: "Tất cả" },
   { key: "never_sent", label: "Chưa gửi" },
   { key: "last_failed", label: "Gửi lỗi gần nhất" },
+  { key: "template_success", label: "Khớp mẫu đã gửi" },
 ];
 
 const PAGE_SIZE = 50;
@@ -36,6 +37,8 @@ export function useOutreachLeads(channel: "zalo" | "email") {
   const search = signal("");
   const segmentation = signal<Segmentation>("all");
   const categoryId = signal<number | null>(null);
+  const filterTemplateId = signal<number | null>(null);
+  const categories = signal<{ id: number; name: string }[]>([]);
   const verifiedZalo = signal(false);
   const unreached = signal(false);
   const mobileOnly = signal(false);
@@ -47,7 +50,7 @@ export function useOutreachLeads(channel: "zalo" | "email") {
   const filters = (): Record<string, unknown> => ({
     categoryId: categoryId() ?? undefined,
     segmentation: segmentation(),
-    filterTemplateId: undefined,
+    filterTemplateId: filterTemplateId() ?? undefined,
     channel,
     search: search().trim() || undefined,
     filterVerifiedZalo: verifiedZalo(),
@@ -101,6 +104,26 @@ export function useOutreachLeads(channel: "zalo" | "email") {
     categoryId.set(value);
     refilter();
   };
+  const setFilterTemplate = (value: number | null) => {
+    if (filterTemplateId() === value) return;
+    filterTemplateId.set(value);
+    refilter();
+  };
+  /** Chooses `template_success` and its template together, so the core never sees one without the other. */
+  const setSegmentationAndTemplate = (value: Segmentation, templateId: number | null) => {
+    segmentation.set(value);
+    filterTemplateId.set(templateId);
+    refilter();
+  };
+
+  const loadCategories = async () => {
+    try {
+      await startCore();
+      categories.set((await Leads.categories()) as { id: number; name: string }[]);
+    } catch (e) {
+      report(e, { retry: () => { void loadCategories(); } });
+    }
+  };
   const toggleVerified = () => { verifiedZalo.set(!verifiedZalo()); refilter(); };
   const toggleUnreached = () => { unreached.set(!unreached()); refilter(); };
   const toggleMobile = () => { mobileOnly.set(!mobileOnly()); refilter(); };
@@ -142,11 +165,14 @@ export function useOutreachLeads(channel: "zalo" | "email") {
   const hasMore = computed(() => list.ready() && list.items().length < list.total());
 
   void list.reload();
+  void loadCategories();
 
   return {
-    search, segmentation, categoryId, verifiedZalo, unreached, mobileOnly,
+    search, segmentation, categoryId, filterTemplateId, categories,
+    verifiedZalo, unreached, mobileOnly,
     list, failed, allMatch, chosenCount, isChosen,
-    setSearch, setSegmentation, setCategory, toggleVerified, toggleUnreached, toggleMobile,
+    setSearch, setSegmentation, setCategory, setFilterTemplate, setSegmentationAndTemplate,
+    toggleVerified, toggleUnreached, toggleMobile,
     toggle, selectAll, clearChoice, resolve, reload,
     more: () => { void list.more(); }, hasMore,
   };

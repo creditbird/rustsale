@@ -333,7 +333,7 @@ export function OutreachScreen() {
 
       <View class="flex-1 gap-3 p-5">
         <Text class="text-xl font-semibold text-foreground">Chọn lead nhận tin</Text>
-        <OutreachLeads pick={pick} prefix="zalo" zalo={true} />
+        <OutreachLeads pick={pick} prefix="zalo" zalo={true} templates={templates()} />
       </View>
 
       <Modal open={editing() !== null} title={editing() === "new" ? "Thêm mẫu tin" : "Sửa mẫu tin"}

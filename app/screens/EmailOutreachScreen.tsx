@@ -261,7 +261,7 @@ export function EmailOutreachScreen() {
 
       <View class="flex-1 gap-3 p-5">
         <Text class="text-xl font-semibold text-foreground">Chọn lead nhận email</Text>
-        <OutreachLeads pick={pick} prefix="email" zalo={false} />
+        <OutreachLeads pick={pick} prefix="email" zalo={false} templates={templates()} />
       </View>
 
       <Modal open={editing() !== null} title={editing() === "new" ? "Thêm mẫu email" : "Sửa mẫu email"}

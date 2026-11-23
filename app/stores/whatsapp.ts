@@ -170,7 +170,6 @@ function validateNumber(value: string, min: number, max: number): number | null 
 export function useWhatsAppOutreach() {
   const accounts = signal<WhatsAppAccount[]>([]);
   const campaigns = signal<WhatsAppCampaign[]>([]);
-  const categories = signal<{ id: number; name: string }[]>([]);
   const ready = signal(false);
   const loading = signal(false);
   const loadFailed = signal(false);
@@ -244,12 +243,6 @@ export function useWhatsAppOutreach() {
   const recipientCount = computed(() =>
     recipientMode() === "manual" ? parsedManual().length : pick.chosenCount(),
   );
-  const categoryLabel = computed(() => {
-    const id = pick.categoryId();
-    if (id === null) return "Tất cả danh mục";
-    return categories().find((c) => c.id === id)?.name ?? "Tất cả danh mục";
-  });
-
   const loadCampaigns = async () => {
     try {
       await startCore();
@@ -270,7 +263,6 @@ export function useWhatsAppOutreach() {
       const accs = (await ConversationNetwork.whatsappAccounts().catch(() => [])) as WhatsAppAccount[];
       accounts.set(accs);
       if (accs.length > 0 && chosenAccounts().length === 0) chosenAccounts.set([accs[0].id]);
-      categories.set((await Leads.categories().catch(() => [])) as { id: number; name: string }[]);
       await loadCampaigns();
     } finally {
       loading.set(false);
@@ -443,10 +435,10 @@ export function useWhatsAppOutreach() {
   void load();
 
   return {
-    accounts, campaigns, categories, ready, loading, loadFailed,
+    accounts, campaigns, ready, loading, loadFailed,
     statusFilter, searchQuery, filtered, statusCount,
     totalCampaigns, runningCampaigns, totalSent, totalDelivered, totalRead, totalSkipped, deliveryReadRate,
-    pick, categoryLabel,
+    pick,
     createOpen, creating, createError, name, chosenAccounts, template, minDelay, maxDelay,
     burstLimit, burstPause, quietEnabled, quietStart, quietEnd, timezone,
     recipientMode, manualPhones, parsedManual, recipientCount, renderedPreview,

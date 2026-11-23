@@ -1,5 +1,5 @@
 import { List, Scroll, Text, View } from "nsh";
-import { Progress, Select } from "nsh/base";
+import { Progress } from "nsh/base";
 import { Badge, Button, Checkbox, EmptyState, ErrorState, Input, Modal, Skeleton } from "../ui";
 import type { BadgeTone } from "../ui/Badge";
 import { OutreachLeads } from "./OutreachLeads";
@@ -161,8 +161,6 @@ function RecipientRow(props: { row: CampaignRecipient }) {
 
 function CreateCampaignModal(props: { wa: WhatsAppState }) {
   const wa = props.wa;
-  const categoryItems = () => [{ value: "", title: "Tất cả danh mục" },
-    ...wa.categories().map((c) => ({ value: String(c.id), title: c.name }))];
   return (
     <Modal open={wa.createOpen()} title="Tạo chiến dịch WhatsApp" onClose={wa.closeCreate}
       class="m-auto w-[960px] rounded-(--radius) border border-border bg-popover p-5">
@@ -286,22 +284,6 @@ function CreateCampaignModal(props: { wa: WhatsAppState }) {
 
               <If when={wa.recipientMode() === "crm"}>
                 <View class="gap-2">
-                  <View class="flex-row items-center gap-2">
-                    <Text class="text-[11px] text-muted-foreground">Danh mục:</Text>
-                    <View class="flex-1">
-                      <Select testID="wa-category" items={categoryItems()}
-                        value={wa.pick.categoryId() === null ? "" : String(wa.pick.categoryId())}
-                        placeholder={wa.categoryLabel()}
-                        onChange={({ value }) => wa.pick.setCategory(value === null || value === "" ? null : Number(value))}
-                        trigger={
-                          <View class="h-9 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
-                            <Text class="truncate text-sm text-foreground">{wa.categoryLabel()}</Text>
-                            <Text class="text-xs text-muted-foreground">▾</Text>
-                          </View>
-                        }
-                        itemClass="px-3 py-2 selected:bg-accent" />
-                    </View>
-                  </View>
                   <Checkbox testID="wa-target-all" checked={wa.pick.allMatch()}
                     onChange={(v) => { if (v) wa.pick.selectAll(); else wa.pick.clearChoice(); }}
                     label="Gửi tất cả lead khớp bộ lọc (bỏ chọn để tự chọn từng lead)" />
