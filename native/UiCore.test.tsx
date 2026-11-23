@@ -79,19 +79,19 @@ test("ui2 item6: GoogleMaps.runtimeStatus without the sidecar is unavailable", a
   await expectError(GoogleMaps.runtimeStatus(), "unavailable");
 });
 
-test("ui2 #51.1: a fractional, huge or wrong-type id in a body says \"id is out of range\"", async () => {
+test("ui2 #51.1 / int7 N5: a fractional, huge or wrong-type id in a body says the id has the wrong type", async () => {
   await Host.start(dir);
   for (const leadId of [1.5, 1e20, "7", null]) {
     await expectError(
       Deals.create({ leadId, title: "Bad id", stage: "New" }),
       "invalid_request",
-      "id is out of range"
+      "id has the wrong type: it must be a whole number"
     );
   }
   await expectError(
     ConversationActions.linkIdentity({ identityId: 2.5, leadId: 1 }),
     "invalid_request",
-    "id is out of range"
+    "id has the wrong type: it must be a whole number"
   );
 });
 
