@@ -29,6 +29,8 @@ export function CategoriesScreen() {
   const addSearch = signal("");
   const addRows = signal<Lead[]>([]);
   const adding = signal(false);
+  const saving = signal(false);
+  const removingLead = signal(false);
 
   const available = computed(() => addRows().filter((r) => !leads().some((l) => l.id === r.id)));
 
@@ -72,7 +74,9 @@ export function CategoriesScreen() {
     creating.set(true);
   };
   const submitCreate = async () => {
+    if (saving()) return;
     if (newName().trim() === "") { formError.set("Cần nhập tên danh mục."); return; }
+    saving.set(true);
     try {
       await Categories.create(newName().trim());
       creating.set(false);
@@ -81,6 +85,8 @@ export function CategoriesScreen() {
     } catch (e) {
       const f = report(e, { retry: () => { void submitCreate(); } });
       if (f.action === "fix") formError.set(f.message);
+    } finally {
+      saving.set(false);
     }
   };
   const confirmRemove = async () => {
@@ -137,7 +143,8 @@ export function CategoriesScreen() {
   };
   const removeLead = async (lead: Lead) => {
     const id = selectedId();
-    if (id === null) return;
+    if (id === null || removingLead()) return;
+    removingLead.set(true);
     try {
       await Categories.removeLeads([lead.id], id);
       notify("Đã bỏ lead khỏi danh mục", "success");
@@ -147,6 +154,8 @@ export function CategoriesScreen() {
         refresh: () => { void loadLeads(id); },
         retry: () => { void removeLead(lead); },
       });
+    } finally {
+      removingLead.set(false);
     }
   };
 
