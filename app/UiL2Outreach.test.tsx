@@ -81,3 +81,23 @@ test("running without a Zalo account shows the error and sends nothing", async (
   await app.waitUntil(() => has(app, "Chưa có tài khoản Zalo"));
   expect(has(app, "Đang gửi")).toBe(false);
 });
+
+test("a campaign's progress outlives the screen and a failed run frees the button", async () => {
+  await Host.start(dir);
+  const app = await open("./harness/EventApp.tsx");
+  await app.setViewport(1280, 800);
+  await app.press("id:nav-outreach");
+  await app.waitFor("id:zalo-search");
+  await app.press("id:emit-out-progress");
+  await app.waitUntil(() => has(app, "Đang gửi 2/5 L2P"));
+  await app.press("id:nav-leads");
+  await app.waitFor("id:emit-out-log");
+  await app.press("id:emit-out-log");
+  await app.wait(300);
+  await app.press("id:nav-outreach");
+  await app.waitFor("id:zalo-search");
+  await app.waitUntil(() => has(app, "Đang gửi 2/5 L2P"));
+  await app.waitUntil(() => has(app, "Dòng log L2Q khi rời màn"));
+  await app.press("id:emit-out-failed");
+  await app.waitUntil(() => has(app, "Session not found L2R"));
+});

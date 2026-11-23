@@ -1,10 +1,11 @@
 import { cleanup, signal, Text, View, Scroll } from "nsh";
 import { Button as Base, Progress } from "nsh/base";
-import { Campaigns, Host, Zalo } from "rustsale/native";
+import { Campaigns, Zalo } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Modal, Skeleton } from "../ui";
 import { notify, report } from "../stores/toast";
 import { startCore } from "../stores/core";
 import { useOutreachLeads } from "../stores/outreach";
+import { zaloCampaign } from "../stores/campaign";
 import { OutreachLeads } from "./OutreachLeads";
 
 interface ZaloAccount {
@@ -22,17 +23,6 @@ interface OutreachTemplate {
   image_url: string | null;
   created_at: string;
 }
-
-interface LogLine {
-  id: number;
-  text: string;
-}
-
-interface ProgressEvent { progress?: number; status?: string; message?: string }
-interface LogEvent { message?: string }
-interface CompleteEvent { total_sent?: number; message?: string }
-
-const MAX_LOGS = 50;
 
 function accountLabel(account: ZaloAccount): string {
   const name = account.display_name?.trim();
@@ -62,12 +52,9 @@ export function OutreachScreen() {
   const removing = signal<OutreachTemplate | null>(null);
   const deleting = signal(false);
 
-  const starting = signal(false);
+  const campaign = zaloCampaign;
+  const { starting, progress, status, logs } = campaign;
   const runError = signal<string | null>(null);
-  const progress = signal(0);
-  const status = signal("");
-  const logs = signal<LogLine[]>([]);
-  let logSeq = 0;
 
   const interDelay = signal("3");
   const burstEnabled = signal(true);
@@ -75,12 +62,6 @@ export function OutreachScreen() {
   const burstDelay = signal("30");
 
   const pick = useOutreachLeads("zalo");
-
-  const appendLog = (text: string) => {
-    logSeq += 1;
-    const next = logs().concat([{ id: logSeq, text }]);
-    logs.set(next.length > MAX_LOGS ? next.slice(next.length - MAX_LOGS) : next);
-  };
 
   const loadAccounts = async () => {
     try {
@@ -205,6 +186,13 @@ export function OutreachScreen() {
       runError.set("Chọn ít nhất một tài khoản Zalo để chạy.");
       return;
     }
+    const offline = accounts().filter(
+      (a) => chosenAccounts().includes(a.account_key) && a.runtime_status === "disconnected",
+    );
+    if (offline.length > 0) {
+      runError.set(`Tài khoản ${offline.map(accountLabel).join(", ")} chưa kết nối. Kết nối lại trong Cài đặt hoặc bỏ chọn.`);
+      return;
+    }
     const template = chosenTemplate();
     if (template === null) {
       runError.set("Chọn một mẫu tin để chạy chiến dịch.");
@@ -219,16 +207,12 @@ export function OutreachScreen() {
       runError.set(delays);
       return;
     }
-    starting.set(true);
-    progress.set(0);
-    status.set("Đang chuẩn bị…");
-    logs.set([]);
+    campaign.begin();
     try {
       const ids = await pick.resolve();
       if (ids.length === 0) {
         runError.set("Không có lead nào phù hợp để gửi.");
-        starting.set(false);
-        status.set("");
+        campaign.abort();
         return;
       }
       await Campaigns.startZaloOutreach(
@@ -236,37 +220,17 @@ export function OutreachScreen() {
         burstEnabled(), delays.burstMax, delays.burstDelay, delays.inter,
       );
       status.set(`Đang gửi tới ${ids.length} lead…`);
-      appendLog(`Bắt đầu gửi tới ${ids.length} lead.`);
+      campaign.appendLog(`Bắt đầu gửi tới ${ids.length} lead.`);
       notify(`Đã bắt đầu gửi tới ${ids.length} lead`, "success");
     } catch (e) {
       const f = report(e, { retry: () => { void run(); } });
       if (f.action === "fix") runError.set(f.message);
-      starting.set(false);
-      status.set("");
+      campaign.abort();
     }
   };
 
-  // The core reports the campaign through events; re-read the leads when it ends.
-  const stop = Host.onEvent((name, payload) => {
-    if (name === "outreach-progress") {
-      const event = payload as ProgressEvent;
-      if (typeof event.progress === "number") progress.set(event.progress);
-      if (typeof event.message === "string" && event.message !== "") appendLog(event.message);
-    } else if (name === "outreach-log") {
-      const event = payload as LogEvent;
-      if (typeof event.message === "string" && event.message !== "") appendLog(event.message);
-    } else if (name === "outreach-complete") {
-      const event = payload as CompleteEvent;
-      const sent = typeof event.total_sent === "number" ? event.total_sent : 0;
-      progress.set(100);
-      starting.set(false);
-      status.set(`Đã gửi ${sent} tin.`);
-      appendLog(typeof event.message === "string" ? event.message : `Hoàn tất: ${sent} tin.`);
-      notify(`Đã gửi ${sent} tin`, "success");
-      void pick.list.reload();
-    }
-  });
-  cleanup(stop);
+  // The campaign state outlives the screen; only the lead list needs a re-read when a run ends.
+  cleanup(campaign.onDone(() => { void pick.list.reload(); }));
 
   void loadAccounts();
   void loadTemplates();

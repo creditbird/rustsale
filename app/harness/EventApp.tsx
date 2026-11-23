@@ -21,6 +21,9 @@ function EventApp() {
         <Button testID="emit-delta" size="sm" label="delta" onPress={() => Demo.emit("conversation-message-delta", { conversationId: 1, message: message(987654, "tin mới từ sự kiện") })} />
         <Button testID="emit-invalidated" size="sm" label="invalidated" onPress={() => Demo.emit("conversation-invalidated", { conversationId: 1 })} />
         <Button testID="emit-updated" size="sm" label="updated" onPress={() => Demo.emit("conversation-updated", { conversationId: 1, message: message(987655, "không được hiện") })} />
+        <Button testID="emit-out-progress" size="sm" label="out-progress" onPress={() => Demo.emit("outreach-progress", { progress: 40, status: "running", message: "Đang gửi 2/5 L2P" })} />
+        <Button testID="emit-out-log" size="sm" label="out-log" onPress={() => Demo.emit("outreach-log", { message: "Dòng log L2Q khi rời màn" })} />
+        <Button testID="emit-out-failed" size="sm" label="out-failed" onPress={() => Demo.emit("outreach-progress", { progress: 0, status: "failed", message: "Session not found L2R" })} />
         <Button testID="emit-scrape" size="sm" label="scrape" onPress={() => Demo.emit("google-maps-scrape-job-event", {})} />
       </View>
     </View>

@@ -1,10 +1,11 @@
 import { cleanup, signal, Text, View, Scroll } from "nsh";
 import { Button as Base, Progress } from "nsh/base";
-import { Campaigns, Host, Templates } from "rustsale/native";
+import { Campaigns, Templates } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Modal, Skeleton } from "../ui";
 import { notify, report } from "../stores/toast";
 import { startCore } from "../stores/core";
 import { useOutreachLeads } from "../stores/outreach";
+import { emailCampaign } from "../stores/campaign";
 import { OutreachLeads } from "./OutreachLeads";
 
 interface SmtpAccount {
@@ -26,17 +27,6 @@ interface EmailTemplate {
   created_at: string;
 }
 
-interface LogLine {
-  id: number;
-  text: string;
-}
-
-interface ProgressEvent { progress?: number; status?: string; message?: string }
-interface LogEvent { message?: string }
-interface CompleteEvent { total_sent?: number; message?: string }
-
-const MAX_LOGS = 50;
-
 /** Email outreach: SMTP accounts, email templates, lead selection, and a campaign with progress and logs. */
 export function EmailOutreachScreen() {
   const smtp = signal<SmtpAccount[]>([]);
@@ -55,20 +45,11 @@ export function EmailOutreachScreen() {
   const removing = signal<EmailTemplate | null>(null);
   const deleting = signal(false);
 
-  const starting = signal(false);
+  const campaign = emailCampaign;
+  const { starting, progress, status, logs } = campaign;
   const runError = signal<string | null>(null);
-  const progress = signal(0);
-  const status = signal("");
-  const logs = signal<LogLine[]>([]);
-  let logSeq = 0;
 
   const pick = useOutreachLeads("email");
-
-  const appendLog = (text: string) => {
-    logSeq += 1;
-    const next = logs().concat([{ id: logSeq, text }]);
-    logs.set(next.length > MAX_LOGS ? next.slice(next.length - MAX_LOGS) : next);
-  };
 
   const loadSmtp = async () => {
     try {
@@ -174,51 +155,27 @@ export function EmailOutreachScreen() {
     const template = chosenTemplate();
     if (template === null) { runError.set("Chọn một mẫu email để gửi."); return; }
     if (pick.chosenCount() === 0) { runError.set("Chọn ít nhất một lead để gửi."); return; }
-    starting.set(true);
-    progress.set(0);
-    status.set("Đang chuẩn bị…");
-    logs.set([]);
+    campaign.begin();
     try {
       const ids = await pick.resolve();
       if (ids.length === 0) {
         runError.set("Không có lead nào phù hợp để gửi.");
-        starting.set(false);
-        status.set("");
+        campaign.abort();
         return;
       }
       await Campaigns.sendEmailOutreach(smtpId, template, ids);
       status.set(`Đang gửi tới ${ids.length} lead…`);
-      appendLog(`Bắt đầu gửi email tới ${ids.length} lead.`);
+      campaign.appendLog(`Bắt đầu gửi email tới ${ids.length} lead.`);
       notify(`Đã bắt đầu gửi tới ${ids.length} lead`, "success");
     } catch (e) {
       const f = report(e, { retry: () => { void run(); } });
       if (f.action === "fix") runError.set(f.message);
-      starting.set(false);
-      status.set("");
+      campaign.abort();
     }
   };
 
-  // The core reports the campaign through events; re-read the leads when it ends.
-  const stop = Host.onEvent((name, payload) => {
-    if (name === "email-outreach-progress") {
-      const event = payload as ProgressEvent;
-      if (typeof event.progress === "number") progress.set(event.progress);
-      if (typeof event.message === "string" && event.message !== "") appendLog(event.message);
-    } else if (name === "email-outreach-log") {
-      const event = payload as LogEvent;
-      if (typeof event.message === "string" && event.message !== "") appendLog(event.message);
-    } else if (name === "email-outreach-complete") {
-      const event = payload as CompleteEvent;
-      const sent = typeof event.total_sent === "number" ? event.total_sent : 0;
-      progress.set(100);
-      starting.set(false);
-      status.set(`Đã gửi ${sent} email.`);
-      appendLog(typeof event.message === "string" ? event.message : `Hoàn tất: ${sent} email.`);
-      notify(`Đã gửi ${sent} email`, "success");
-      void pick.list.reload();
-    }
-  });
-  cleanup(stop);
+  // The campaign state outlives the screen; only the lead list needs a re-read when a run ends.
+  cleanup(campaign.onDone(() => { void pick.list.reload(); }));
 
   void loadSmtp();
   void loadTemplates();
@@ -248,7 +205,7 @@ export function EmailOutreachScreen() {
                     <View class="flex-1 gap-0.5">
                       <Text class="truncate text-sm text-foreground">{account().name}</Text>
                       <Text class="truncate text-xs text-muted-foreground">
-                        {`${account().host}:${account().port} · ${account().from_email}`}
+                        {`${account().host}:${account().port} · ${account().from_email || "—"}`}
                       </Text>
                     </View>
                     <Badge label={account().security || "SMTP"} tone="neutral" />

@@ -17,7 +17,7 @@ const COLUMNS: { label: string; w: string }[] = [
   { label: "Tên", w: "flex-[2]" },
   { label: "Công ty", w: "flex-[2]" },
   { label: "Liên hệ", w: "flex-[2]" },
-  { label: "Trạng thái", w: "flex-1" },
+  { label: "Trạng thái", w: "w-28" },
 ];
 
 /** The lead table both outreach screens share: filters, select-all with exclusions, paging and a run count. */
@@ -96,12 +96,12 @@ export function OutreachLeads(props: OutreachLeadsProps) {
                   {p.isChosen(row().id) ? "✓" : "○"}
                 </Text>
               </View>
-              <Text class="truncate flex-[2] text-sm text-foreground">{row().name}</Text>
+              <Text class="truncate flex-[2] pr-2 text-sm text-foreground">{row().name}</Text>
               <Text class="truncate flex-[2] pr-2 text-sm text-muted-foreground">{row().company ?? ""}</Text>
               <Text class="truncate flex-[2] pr-2 text-sm text-muted-foreground">
                 {row().phone ?? row().email ?? "—"}
               </Text>
-              <View class="flex-1"><Badge label={row().status} tone={tone(row().status)} /></View>
+              <View class="w-28"><Badge label={row().status} tone={tone(row().status)} /></View>
             </Base>
           )}
         </List>
