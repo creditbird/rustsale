@@ -1,6 +1,7 @@
 import { expect, test } from "nsh/test";
 import { bodyOf, hhmm, mergeMessages, type TimelineMessage } from "./stores/format";
 import { failure, MESSAGE_FOR_CODE } from "./stores/core";
+import { runtimeVerdict } from "./stores/scraperRuntime";
 
 const msg = (id: number, at: string, text: string | null = "x", type = "text"): TimelineMessage => ({
   id, direction: "inbound", contentType: type, textContent: text, occurredAt: at, status: "received",
@@ -45,4 +46,13 @@ test("every native code maps to a Vietnamese sentence, never the core's English 
   }
   expect(failure(Object.assign(new Error("x"), { code: "unavailable" }), { unavailable: "kênh chưa đăng nhập" }).message).toBe("kênh chưa đăng nhập");
   expect(MESSAGE_FOR_CODE.invalid_request.length).toBeGreaterThan(0);
+});
+
+test("scraper runtime check: only unavailable means the browser is not installed", () => {
+  const err = (code: string) => Object.assign(new Error("x"), { code });
+  expect(runtimeVerdict(err("unavailable"))).toEqual({ label: "chưa sẵn sàng", toast: false });
+  for (const code of ["not_found", "internal", "invalid_request"]) {
+    expect(runtimeVerdict(err(code))).toEqual({ label: "không kiểm tra được", toast: true });
+  }
+  expect(runtimeVerdict("boom").toast).toBe(true);
 });

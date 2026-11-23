@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=RustSale
+GenericName=Sales CRM
+Comment=Customer conversations, outreach and lead management
+Exec=rustsale
+Icon=rustsale
+Terminal=false
+Categories=Office;
+StartupNotify=true
+StartupWMClass=com.rustsale.crm.v3
