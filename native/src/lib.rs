@@ -8,6 +8,8 @@ mod conversation_actions;
 mod conversation_network;
 mod conversations;
 mod deals;
+#[cfg(any(feature = "demo", rustsale_demo))]
+mod demo;
 mod desktop;
 mod error;
 mod facebook;
@@ -49,6 +51,9 @@ fn native(registry: &mut Registry) {
         .module::<settings::Settings>()
         .module::<util::Util>()
         .module::<zalo::Zalo>();
+    // Synthetic data for tests: not exported by a release or `nsh package` build.
+    #[cfg(any(feature = "demo", rustsale_demo))]
+    registry.module::<demo::Demo>();
 }
 
 #[cfg(test)]
@@ -59,6 +64,20 @@ mod tests {
     fn every_export_has_a_doc_comment() {
         let missing = super::registry().undocumented();
         assert!(missing.is_empty(), "undocumented exports: {missing:?}");
+    }
+
+    #[cfg(not(any(feature = "demo", rustsale_demo)))]
+    #[test]
+    fn a_release_build_has_no_demo_export() {
+        let text = declarations(&super::registry(), &[]);
+        assert!(
+            !text.contains("Demo"),
+            "Demo must not be exported without the demo feature"
+        );
+        assert!(
+            !text.contains("seed"),
+            "no seed export without the demo feature"
+        );
     }
 
     #[test]

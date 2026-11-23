@@ -8,6 +8,12 @@ description = "RustSale v3 native module: the only place TSX reaches rustsale-co
 # Own workspace so the NSH hosts build this crate alone; the core joins by path.
 [workspace]
 
+[features]
+# Synthetic data for screen tests (`Demo.prepare`, `Demo.seed`). Off by default: a release or
+# `nsh package` build has no such export. `nsh` cannot pass cargo features, so `build.rs` also turns
+# it on when the environment has RUSTSALE_DEMO=1 (set it for `nsh test` and `nsh check` only).
+demo = []
+
 [dependencies]
 nsh-core = "0.6.1"
 nsh-base = "0.6.1"

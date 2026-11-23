@@ -1,0 +1,19 @@
+{
+  "name": "RustSale",
+  "id": "com.rustsale.crm.v3",
+  "version": "0.1.0",
+  "build": 1,
+  "rust": "../native",
+  "theme": "theme.json",
+  "window": {
+    "title": "RustSale",
+    "defaultSize": {
+      "width": 1280,
+      "height": 800
+    },
+    "minSize": {
+      "width": 960,
+      "height": 600
+    }
+  }
+}

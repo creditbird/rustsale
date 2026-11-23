@@ -18,7 +18,8 @@ production until v3 passes full QA and the cutover. Tech lead: Nakroth.
 work stay in Rust (`rustsale-core`), exported to TSX through the app crate's
 `#[native_module("rustsale/native")]` (modules, classes, Rust components for hot paths).
 TSX only describes UI and handles events (QuickJS). Read the nsh skill `mixed.md` + `tsx.md`.
-No WebView. On Linux the native GTK 4 backend is the default; GPUI optional, not default.
+No WebView. **Release targets are the native hosts (Nakroth decision 22/11, replaces the earlier "gpui default"):** `nsh package --target linux` (GTK 4), `macos` (AppKit), `windows` (Win32); updates through `nsh/updater` + `nsh update-manifest`. **GPUI is run-only** (`nsh run --target gpui`): used for dev and comparison, never blocks a release, and we do not write our own GPUI host crate. Inter (OFL) ships in `app/assets/fonts`, so text never depends on system fonts. Screens that would need a WebView (Facebook/Zalo QR login, external pages) open the system browser through the opener instead of embedding one.
+**Open risk** (22/11, đã đo): GTK4 build được khi có `webkitgtk-6.0`; cold start ~1,65x gpui (wall), cuộn bảng p95 commit ~2,8x gpui, RAM rảnh ~170 MB. Chi tiết ở `perf.md` mục 4b. Máy build Linux cần `webkitgtk-6.0` dù app không dùng WebView. Binary linux liên kết cứng `libwebkitgtk-6.0.so.4` (DT_NEEDED), nên máy người dùng cũng cần `webkitgtk-6.0` lúc chạy; gói tar không khai phụ thuộc (perf.md 4b).
 Targets: Linux (primary), Windows, macOS — same as v2's release matrix.
 
 ```
