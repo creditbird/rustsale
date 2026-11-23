@@ -1,5 +1,5 @@
 import { computed, signal } from "nsh";
-import { Campaigns, ConversationNetwork, Leads } from "rustsale/native";
+import { Campaigns, ConversationNetwork, LeadsMore } from "rustsale/native";
 import { startCore } from "./core";
 import { useOutreachLeads, type OutreachPicker } from "./outreach";
 import { notify, report } from "./toast";
@@ -54,8 +54,9 @@ export interface CampaignRecipient {
   last_error: string | null;
 }
 
-/** A lead row as `Leads.details` returns it, for the template variables. */
+/** A lead row as `LeadsMore.list` returns it, for the template variables. */
 interface LeadRow {
+  id: number;
   name?: string | null;
   company?: string | null;
   email?: string | null;
@@ -292,14 +293,14 @@ export function useWhatsAppOutreach() {
   const buildRecipients = async (ids: number[], body: string): Promise<{ rows: RecipientInput[]; skipped: number }> => {
     const rows: RecipientInput[] = [];
     let skipped = 0;
+    // One read of the lead list, not one `Leads.details` round trip per chosen lead.
+    const byId = new Map<number, LeadRow>();
+    if (ids.length > 0) {
+      for (const lead of (await LeadsMore.list()) as LeadRow[]) byId.set(lead.id, lead);
+    }
     for (const id of ids) {
-      let lead: LeadRow;
-      try {
-        lead = (await Leads.details(id)) as LeadRow;
-      } catch {
-        skipped += 1;
-        continue;
-      }
+      const lead = byId.get(id);
+      if (lead === undefined) { skipped += 1; continue; }
       const phone = lead.phone?.trim() ?? "";
       if (phone === "") { skipped += 1; continue; }
       rows.push({
