@@ -5,8 +5,8 @@ import type { Page } from "./core";
  * A cursor-paged list that never blocks the UI thread (every fetch is a native promise) and drops
  * the answer of a query that a newer one replaced. `reload` starts over, `more` appends the next page.
  */
-export function pager<T>(
-  fetchPage: (cursor: string | null) => Promise<Page<T>>,
+export function pager<T, C = string>(
+  fetchPage: (cursor: C | null) => Promise<Page<T, C>>,
   onError: (e: unknown, retry: () => void) => void,
 ) {
   const items = signal<T[]>([]);
@@ -14,7 +14,7 @@ export function pager<T>(
   const ready = signal(false);
   const loading = signal(false);
   let generation = 0;
-  let next: string | null = null;
+  let next: C | null = null;
   let busy = false;
 
   const reload = async (): Promise<void> => {
