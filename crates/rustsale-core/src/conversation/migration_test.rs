@@ -1593,3 +1593,75 @@ fn test_conversation_deltas_migration_deduplicates_prior_rows_and_is_idempotent(
     // 5. Test idempotency: re-running does not fail
     crate::conversation::migration::ensure_conversation_deltas_schema(&conn).unwrap();
 }
+
+static LEAD_SCANS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+fn count_lead_scans(event: rusqlite::trace::TraceEvent<'_>) {
+    if let rusqlite::trace::TraceEvent::Stmt(_, sql) = event {
+        if sql.contains("FROM leads WHERE phone IS NOT NULL") {
+            LEAD_SCANS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+}
+
+#[test]
+fn test_reconcile_scans_lead_phones_once_for_all_unlinked_whatsapp_identities() {
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE leads (id INTEGER PRIMARY KEY, name TEXT, phone TEXT)",
+        [],
+    )
+    .unwrap();
+    migrate(&conn).unwrap();
+    conn.execute(
+        "INSERT INTO channel_accounts (id, channel, provider_account_key, display_name, connection_status, capabilities_json, created_at, updated_at)
+         VALUES (1, 'whatsapp', 'wa_acc_01', 'My Account', 'connected', '{}', '2026-08-28T00:00:00Z', '2026-08-28T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO leads (id, name, phone) VALUES (1, 'Khach A', '0901234567')",
+        [],
+    )
+    .unwrap();
+    // 30 identities nobody matches stay unlinked and get re-checked on every start.
+    for n in 0..30 {
+        conn.execute(
+            "INSERT INTO channel_identities (channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
+             VALUES ('whatsapp', 1, 'phone', ?1, '2026-08-28T00:00:00Z', '2026-08-28T00:00:00Z')",
+            [format!("8470000{n:04}")],
+        )
+        .unwrap();
+    }
+    // One identity that does match a lead must still be linked.
+    conn.execute(
+        "INSERT INTO channel_identities (id, channel, channel_account_id, identity_namespace, external_id, created_at, updated_at)
+         VALUES (500, 'whatsapp', 1, 'phone', '84901234567', '2026-08-28T00:00:00Z', '2026-08-28T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    LEAD_SCANS.store(0, std::sync::atomic::Ordering::SeqCst);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
+        Some(count_lead_scans),
+    );
+    crate::conversation::migration::reconcile_duplicate_whatsapp_conversations_and_identities(
+        &conn,
+    )
+    .unwrap();
+    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+
+    let linked: Option<i64> = conn
+        .query_row(
+            "SELECT lead_id FROM channel_identities WHERE id = 500",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert_eq!(linked, Some(1));
+    assert!(
+        LEAD_SCANS.load(std::sync::atomic::Ordering::SeqCst) <= 1,
+        "the leads table was scanned once per identity"
+    );
+}

@@ -309,8 +309,26 @@ impl ConversationService {
         Ok(self.repository.list_inbox()?)
     }
 
+    /// Marks the inbound messages behind `key` read and tells every screen: one
+    /// `conversation-invalidated` event (reason `metadata`) per conversation whose unread count
+    /// changed. Nothing is published when no row changed.
     pub fn mark_conversation_read(&self, key: &str) -> Result<u64> {
-        Ok(self.repository.mark_conversation_read(key)?)
+        let (rows, conversation_ids) = self.repository.mark_conversation_read_with_ids(key)?;
+        for conversation_id in conversation_ids {
+            if let Some((lead_id, channel)) = self
+                .repository
+                .lookup_conversation_invalidation_info(conversation_id)?
+            {
+                self.events.publish(ConversationInvalidatedEvent {
+                    conversation_id,
+                    lead_id,
+                    channel,
+                    reason: ConversationInvalidationReason::Metadata,
+                    message_id: None,
+                });
+            }
+        }
+        Ok(rows)
     }
 
     pub fn get_contact_timeline(
@@ -348,6 +366,12 @@ impl ConversationService {
     }
 
     pub fn link_identity(&self, identity_id: i64, lead_id: i64) -> Result<()> {
+        if !self.repository.identity_exists(identity_id)? {
+            anyhow::bail!("identity {identity_id} not found");
+        }
+        if !self.repository.lead_exists(lead_id)? {
+            anyhow::bail!("lead {lead_id} not found");
+        }
         let conversation_id = self.repository.link_identity(identity_id, lead_id)?;
         self.events.publish(ConversationInvalidatedEvent {
             conversation_id,
@@ -768,6 +792,42 @@ impl ConversationService {
             self.events.publish_delta(delta.clone());
         }
         Ok(res)
+    }
+
+    /// Checks, without writing anything, that `request` can be queued: the conversation and the
+    /// account exist, the account owns the conversation and is connected.
+    pub fn check_send_target(
+        &self,
+        request: &super::types::SendConversationMessageRequest,
+    ) -> Result<(), super::error::SendTargetError> {
+        use super::error::SendTargetError;
+        let db = |error: rusqlite::Error| SendTargetError::Database(error.to_string());
+        let owner = self
+            .repository
+            .conversation_account_id(request.conversation_id)
+            .map_err(db)?
+            .ok_or(SendTargetError::ConversationNotFound(
+                request.conversation_id,
+            ))?;
+        let status = self
+            .repository
+            .account_connection_status(request.channel_account_id)
+            .map_err(db)?
+            .ok_or(SendTargetError::AccountNotFound(request.channel_account_id))?;
+        if owner != request.channel_account_id {
+            return Err(SendTargetError::AccountMismatch {
+                account_id: request.channel_account_id,
+                conversation_id: request.conversation_id,
+            });
+        }
+        // `connecting` and `degraded` still deliver; a dropped or rejected login does not.
+        if matches!(status.as_str(), "disconnected" | "invalid") {
+            return Err(SendTargetError::AccountUnavailable {
+                account_id: request.channel_account_id,
+                status,
+            });
+        }
+        Ok(())
     }
 
     pub fn enqueue_message(

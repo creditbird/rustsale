@@ -30,7 +30,9 @@ impl Conversations {
         .await
     }
 
-    /// Marks the conversation with inbox `key` read and resolves how many messages changed.
+    /// Marks the conversation with inbox `key` read and resolves how many messages changed. Emits
+    /// one `conversation-invalidated` event (reason `metadata`) per conversation whose unread count
+    /// changed, so inbox and badges refresh; nothing is emitted when no message changed.
     pub async fn mark_read(key: String) -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -39,8 +41,12 @@ impl Conversations {
         .await
     }
 
-    /// One page of the timeline of conversation `conversationId`, newest first. `before` is the
-    /// `nextBefore` of the previous page (`{ occurredAt, messageId }`), absent for the first.
+    /// One page of the timeline of conversation `conversationId`. A page holds the newest `limit`
+    /// messages older than `before`, listed **oldest first** (the last item is the newest, ready to
+    /// be drawn top to bottom). Resolves `{ items, nextCursor, snapshotSequence }`: `nextCursor`
+    /// (`{ occurredAt, messageId }`) is the oldest message of a full page and is passed back as
+    /// `before` to fetch the page before it; it is null when there is nothing older. `before` is
+    /// absent for the newest page. Older pages are therefore prepended to what is on screen.
     pub async fn timeline(
         conversation_id: f64,
         before: Option<JsonValue>,

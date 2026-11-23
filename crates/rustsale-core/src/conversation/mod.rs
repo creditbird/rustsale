@@ -30,6 +30,10 @@ pub mod commands_test;
 #[cfg(test)]
 mod forwarding_test;
 #[cfg(test)]
+mod link_target_test;
+#[cfg(test)]
+mod mark_read_event_test;
+#[cfg(test)]
 mod mentions_test;
 #[cfg(test)]
 mod migration_test;
@@ -46,6 +50,10 @@ mod repository_test;
 #[cfg(test)]
 mod retry_test;
 #[cfg(test)]
+mod send_target_test;
+#[cfg(test)]
 pub mod service_test;
 #[cfg(test)]
 mod staging_test;
+#[cfg(test)]
+mod timeline_order_test;

@@ -213,7 +213,10 @@ impl BrowserSupervisor {
         if !path.is_absolute() || !path.is_file() {
             return Err(scrape_error(
                 ScrapeErrorKind::RuntimeUnavailable,
-                format!("CloakBrowser sidecar not found: {}", path.display()),
+                format!(
+                    "CloakBrowser sidecar is unavailable (missing file): {}",
+                    path.display()
+                ),
                 false,
             ));
         }

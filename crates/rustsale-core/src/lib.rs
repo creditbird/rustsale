@@ -29,6 +29,8 @@ pub mod notification;
 pub mod paging;
 pub mod scrapers;
 pub mod tray;
+#[cfg(test)]
+mod ui2_core_test;
 
 use host::{AppHandle, Ports};
 
@@ -151,9 +153,11 @@ impl Core {
             },
         );
 
+        // `init_db` above already migrated this file; do not migrate it again.
         let repository = std::sync::Arc::new(
-            google_maps_jobs::repository::ScrapeJobRepository::new(db_path_str.to_string())
-                .map_err(|source| CoreError::GoogleMaps(source.to_string()))?,
+            google_maps_jobs::repository::ScrapeJobRepository::for_initialized_db(
+                db_path_str.to_string(),
+            ),
         );
         let events = std::sync::Arc::new(google_maps_jobs::events::ScrapeEventPublisher::default());
         let processor =

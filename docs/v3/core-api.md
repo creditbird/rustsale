@@ -330,7 +330,7 @@ subscription on the native module. Payloads are serde types in core.
 
 | Event | Payload | Source |
 |---|---|---|
-| `conversation-invalidated` | `ConversationInvalidatedEvent { conversation_id, lead_id, channel, reason, message_id }`; on broadcast lag `{ reason: "ReconcileRequired", skipped }` | conversation/events.rs |
+| `conversation-invalidated` | `ConversationInvalidatedEvent { conversation_id, lead_id, channel, reason, message_id }`; on broadcast lag `{ reason: "ReconcileRequired", skipped }`. Also emitted by `mark_conversation_read` (one per conversation whose unread count changed, `reason: "metadata"`, `message_id: null`; none when no message changed). The UI listens to this name, not to `conversation-updated`, which does not exist | conversation/events.rs |
 | `conversation-message-delta` | `ConversationMessageDeltaEvent { sequence, conversation_id, lead_id, channel, message, emitted_at_ms }` | conversation/events.rs |
 | `conversation-delta-lagged` | `{ skipped }` -> UI must call `resume_conversation_deltas(after_sequence, limit)` | conversation/events.rs |
 | `google-maps-scrape-job-event` | scrape job event (`google_maps_jobs::types`) | google_maps_jobs/events.rs |
@@ -373,7 +373,7 @@ TSX must never receive a whole large list. Sorting/filtering stays in Rust.
 
 | Data | Exists today | Gap (P1 core work) |
 |---|---|---|
-| Messages | `get_conversation_timeline / get_contact_timeline / get_identity_timeline(before: TimelineCursor, limit)` -> `TimelinePage { items, next_cursor, snapshot_sequence }` (keyset, newest first) | none for reading; needs "jump to message" window |
+| Messages | `get_conversation_timeline / get_contact_timeline / get_identity_timeline(before: TimelineCursor, limit)` -> `TimelinePage { items, next_cursor, snapshot_sequence }`. Keyset paging backwards in time: a page is the newest `limit` messages older than `before`, **listed oldest first** (last item = newest). `next_cursor` is the oldest message of a **full** page (`{ occurred_at, message_id }` in core, `{ occurredAt, messageId }` in JS) and goes back as `before`; it is `null` when the page is short (nothing older). Older pages are prepended. v2 relies on this order; do not reverse it in the UI | none for reading; needs "jump to message" window |
 | Conversation inbox | `list_conversation_inbox` returns **all** `InboxItem` | cursor/limit + filter/sort (unread, channel, search) |
 | Leads | `get_outreach_leads_page(category, segmentation, channel, search, filters...)` -> `OutreachLeadsPage` (paged, filtered in SQL); `get_leads`, `get_leads_by_category` return **all** rows | `get_leads_page(filter, sort, cursor/limit)` for the leads table (4.6k rows target < 100 ms) |
 | Google Maps places (scrape results) | **no** UI-facing command; repository has `list_results_for_import / list_results_for_enrichment` (whole job) | `list_google_maps_results(job_id, filter, sort, cursor, limit)` + total counts |

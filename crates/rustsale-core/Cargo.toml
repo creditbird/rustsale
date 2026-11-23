@@ -58,6 +58,8 @@ axum = "0.8"
 
 [dev-dependencies]
 tempfile = "3"
+# `trace` lets tests count the statements a migration runs.
+rusqlite = { version = "0.39.0", features = ["bundled", "trace"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 

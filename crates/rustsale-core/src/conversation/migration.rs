@@ -1837,14 +1837,23 @@ pub fn reconcile_duplicate_whatsapp_conversations_and_identities(conn: &Connecti
             .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
             .collect::<Result<Vec<_>>>()?;
 
+        // Read the lead phones once; the loop below runs for every unlinked identity.
+        // A schema without `leads` yet has nothing to match, as before.
+        let lead_phones =
+            crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::load_lead_phones(conn)
+                .unwrap_or_default();
+
         for (id, ext_id, d_name) in unlinked_rows {
             let phone =
                 crate::conversation::whatsapp::phone::resolve_lid_or_jid_to_phone(conn, &ext_id)
                     .or_else(|| crate::conversation::whatsapp::phone::jid_to_phone(&ext_id))
                     .unwrap_or_else(|| ext_id.clone());
 
-            let mut resolved_lead_id = crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::resolve_lead_by_phone(conn, &phone)
-                .unwrap_or(None);
+            let mut resolved_lead_id =
+                crate::conversation::whatsapp::normalizer::WhatsAppNormalizer::resolve_lead_by_phone_in(
+                    &lead_phones,
+                    &phone,
+                );
 
             if resolved_lead_id.is_none() {
                 if let Some(ref name) = d_name {

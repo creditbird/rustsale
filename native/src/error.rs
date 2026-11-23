@@ -2,7 +2,7 @@
 //! `code` is the stable string and whose `message` is for people.
 
 use nsh_core::element::JsError;
-use rustsale_core::conversation::error::ConversationCommandError;
+use rustsale_core::conversation::error::{ConversationCommandError, SendTargetError};
 use rustsale_core::paging::PageError;
 
 /// What a call into the core fails with.
@@ -126,6 +126,29 @@ impl From<PageError> for CoreApiError {
     }
 }
 
+/// A send target that cannot take the message: missing rows are `not_found`, an account of another
+/// conversation is `invalid_request`, an account that is not connected is `unavailable`.
+impl From<SendTargetError> for CoreApiError {
+    fn from(error: SendTargetError) -> Self {
+        let code = match &error {
+            SendTargetError::ConversationNotFound(_) | SendTargetError::AccountNotFound(_) => {
+                "not_found"
+            }
+            SendTargetError::AccountMismatch { .. } => "invalid_request",
+            SendTargetError::AccountUnavailable { .. } => "unavailable",
+            SendTargetError::Database(_) => "internal",
+        };
+        match error {
+            // The database text can carry SQL; it stays in the log.
+            SendTargetError::Database(detail) => {
+                eprintln!("[rustsale] send target check failed: {detail}");
+                Self::new(code, "database error")
+            }
+            other => Self::new(code, other.to_string()),
+        }
+    }
+}
+
 impl From<CoreApiError> for JsError {
     fn from(error: CoreApiError) -> Self {
         JsError::Error(error.message).with_code(&error.code)
@@ -224,6 +247,38 @@ mod tests {
         assert_eq!(
             CoreApiError::from(PageError::Internal("x".into())).code,
             "internal"
+        );
+    }
+
+    #[test]
+    fn send_target_errors_map_to_codes() {
+        let cases = [
+            (SendTargetError::ConversationNotFound(7), "not_found"),
+            (SendTargetError::AccountNotFound(9), "not_found"),
+            (
+                SendTargetError::AccountMismatch {
+                    account_id: 2,
+                    conversation_id: 3,
+                },
+                "invalid_request",
+            ),
+            (
+                SendTargetError::AccountUnavailable {
+                    account_id: 1,
+                    status: "disconnected".into(),
+                },
+                "unavailable",
+            ),
+            (SendTargetError::Database("disk".into()), "internal"),
+        ];
+        for (error, code) in cases {
+            assert_eq!(CoreApiError::from(error).code, code);
+        }
+        let hidden = CoreApiError::from(SendTargetError::Database("SELECT secret".into()));
+        assert_eq!(hidden.message, "database error");
+        assert_eq!(
+            CoreApiError::from(SendTargetError::AccountNotFound(9)).message,
+            "channel account 9 not found"
         );
     }
 

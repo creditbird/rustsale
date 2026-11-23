@@ -504,12 +504,13 @@ pub fn update_lead_status_internal(
     id: i32,
     status: String,
 ) -> Result<(), String> {
-    conn.execute(
-        "UPDATE leads SET status = ?1 WHERE id = ?2",
-        rusqlite::params![status, id],
-    )
-    .map_err(|e| format!("Database query error: {}", e))?;
-    Ok(())
+    let changed = conn
+        .execute(
+            "UPDATE leads SET status = ?1 WHERE id = ?2",
+            rusqlite::params![status, id],
+        )
+        .map_err(|e| format!("Database query error: {}", e))?;
+    require_changed(changed, "lead", i64::from(id))
 }
 
 pub fn get_deals(state: State<DbState>) -> Result<Vec<Deal>, String> {
@@ -559,12 +560,13 @@ pub fn update_deal_stage(id: i32, stage: String, state: State<DbState>) -> Resul
 }
 
 pub fn update_deal_stage_internal(conn: &Connection, id: i32, stage: String) -> Result<(), String> {
-    conn.execute(
-        "UPDATE deals SET stage = ?1 WHERE id = ?2",
-        rusqlite::params![stage, id],
-    )
-    .map_err(|e| format!("Database query error: {}", e))?;
-    Ok(())
+    let changed = conn
+        .execute(
+            "UPDATE deals SET stage = ?1 WHERE id = ?2",
+            rusqlite::params![stage, id],
+        )
+        .map_err(|e| format!("Database query error: {}", e))?;
+    require_changed(changed, "deal", i64::from(id))
 }
 
 pub fn create_deal(
@@ -591,6 +593,14 @@ pub fn create_deal_internal(
     currency: Option<String>,
 ) -> Result<Deal, String> {
     let valid_curr = validate_currency(currency.as_deref())?;
+    let lead_exists = conn
+        .query_row("SELECT 1 FROM leads WHERE id = ?1", [lead_id], |_| Ok(()))
+        .optional()
+        .map_err(|e| format!("Database query error: {}", e))?
+        .is_some();
+    if !lead_exists {
+        return Err(format!("lead {lead_id} not found"));
+    }
     let created_at = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO deals (lead_id, title, value, stage, created_at, currency) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
@@ -912,11 +922,11 @@ pub fn update_lead_with_currency_internal(
         .flatten()
         .unwrap_or_else(|| "VND".to_string())
     };
-    conn.execute(
+    let changed = conn.execute(
         "UPDATE leads SET name = ?1, company = ?2, status = ?3, value = ?4, owner = ?5, email = ?6, phone = ?7, about = ?8, address = ?9, currency = ?10 WHERE id = ?11",
         rusqlite::params![name, company, status, value, owner, email, phone, about, address, valid_curr, id],
     ).map_err(|e| format!("Database query error: {}", e))?;
-    Ok(())
+    require_changed(changed, "lead", i64::from(id))
 }
 
 pub fn delete_lead(id: i32, state: State<DbState>) -> Result<(), String> {
@@ -2838,8 +2848,18 @@ pub fn update_outreach_template(
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::update_outreach_template(&conn, id, &name, &content, image_url.as_deref())
-        .map_err(|e| format!("Database error: {}", e))
+    update_outreach_template_internal(&conn, id, &name, &content, image_url.as_deref())
+}
+
+pub fn update_outreach_template_internal(
+    conn: &Connection,
+    id: i32,
+    name: &str,
+    content: &str,
+    image_url: Option<&str>,
+) -> Result<(), String> {
+    crate::db::update_outreach_template(conn, id, name, content, image_url)
+        .map_err(|e| db_write_error(e, "outreach template", i64::from(id)))
 }
 
 pub fn delete_outreach_template(id: i32, state: State<DbState>) -> Result<(), String> {
@@ -5399,7 +5419,12 @@ pub fn save_smtp_server(server: SmtpServer, state: State<DbState>) -> Result<i32
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::save_smtp_server(&conn, &server).map_err(|e| format!("Database error: {}", e))
+    save_smtp_server_internal(&conn, &server)
+}
+
+pub fn save_smtp_server_internal(conn: &Connection, server: &SmtpServer) -> Result<i32, String> {
+    crate::db::save_smtp_server(conn, server)
+        .map_err(|e| db_write_error(e, "SMTP server", i64::from(server.id.unwrap_or(0))))
 }
 
 pub fn delete_smtp_server(id: i32, state: State<DbState>) -> Result<(), String> {
@@ -5456,8 +5481,18 @@ pub fn update_email_template(
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::update_email_template(&conn, id, &name, &subject, &content)
-        .map_err(|e| format!("Database error: {}", e))
+    update_email_template_internal(&conn, id, &name, &subject, &content)
+}
+
+pub fn update_email_template_internal(
+    conn: &Connection,
+    id: i32,
+    name: &str,
+    subject: &str,
+    content: &str,
+) -> Result<(), String> {
+    crate::db::update_email_template(conn, id, name, subject, content)
+        .map_err(|e| db_write_error(e, "email template", i64::from(id)))
 }
 
 pub fn delete_email_template(id: i32, state: State<DbState>) -> Result<(), String> {
@@ -8518,10 +8553,26 @@ pub fn get_template_by_id(
     crate::db::get_template_by_id(&conn, id).map_err(|e| format!("Database error: {}", e))
 }
 
+/// The channels a multi-channel template can be written for.
+pub const TEMPLATE_CHANNELS: [&str; 5] = ["zalo", "whatsapp", "messenger", "facebook", "email"];
+
+/// Refuses a template channel the app does not know.
+pub fn validate_template_channel(channel: &str) -> Result<(), String> {
+    if TEMPLATE_CHANNELS.contains(&channel) {
+        Ok(())
+    } else {
+        Err(format!(
+            "invalid template channel: expected one of {}",
+            TEMPLATE_CHANNELS.join(", ")
+        ))
+    }
+}
+
 pub fn create_template(
     input: crate::models::CreateTemplateInput,
     state: State<DbState>,
 ) -> Result<i64, String> {
+    validate_template_channel(&input.channel)?;
     let conn = state
         .conn
         .lock()
@@ -8533,11 +8584,38 @@ pub fn update_template(
     input: crate::models::UpdateTemplateInput,
     state: State<DbState>,
 ) -> Result<(), String> {
+    validate_template_channel(&input.channel)?;
     let conn = state
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::update_template(&conn, &input).map_err(|e| format!("Database error: {}", e))
+    update_template_internal(&conn, &input)
+}
+
+pub fn update_template_internal(
+    conn: &Connection,
+    input: &crate::models::UpdateTemplateInput,
+) -> Result<(), String> {
+    validate_template_channel(&input.channel)?;
+    crate::db::update_template(conn, input).map_err(|e| db_write_error(e, "template", input.id))
+}
+
+/// A write that touched no row means the target is gone: answer "<what> <id> not found".
+pub fn require_changed(changed: usize, what: &str, id: i64) -> Result<(), String> {
+    if changed == 0 {
+        Err(format!("{what} {id} not found"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Maps a failed write to a clean message. A write that touched no row is reported as
+/// "<what> <id> not found" so the API layer answers `not_found` instead of a silent success.
+pub fn db_write_error(error: rusqlite::Error, what: &str, id: i64) -> String {
+    match error {
+        rusqlite::Error::QueryReturnedNoRows => format!("{what} {id} not found"),
+        other => format!("Database error: {other}"),
+    }
 }
 
 pub fn delete_template(id: i64, state: State<DbState>) -> Result<(), String> {

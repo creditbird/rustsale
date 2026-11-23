@@ -191,8 +191,44 @@ pub(crate) fn args<T: serde::de::DeserializeOwned + Default>(
 
 /// A required JSON argument as `T`.
 pub(crate) fn body<T: serde::de::DeserializeOwned>(value: JsonValue) -> Result<T, CoreApiError> {
-    serde_json::from_value(value)
-        .map_err(|e| CoreApiError::invalid(format!("invalid argument: {e}")))
+    serde_path_to_error::deserialize(value).map_err(|error| body_error(&error))
+}
+
+/// A clean message for a body that did not deserialize. serde's own wording ("invalid type:
+/// floating point `1.5`, expected i64") is jargon for the person using the app, so a number or
+/// type fault in an id field says "id is out of range", one in another field names that field,
+/// and a missing field keeps serde's plain "missing field `x`".
+fn body_error(error: &serde_path_to_error::Error<serde_json::Error>) -> CoreApiError {
+    let detail = error.inner().to_string();
+    if detail.starts_with("missing field") || detail.starts_with("unknown field") {
+        let detail = detail.split(" at line ").next().unwrap_or(&detail);
+        return CoreApiError::invalid(format!("invalid argument: {detail}"));
+    }
+    let type_fault = detail.starts_with("invalid type")
+        || detail.starts_with("invalid value")
+        || detail.contains("out of range");
+    let field = error.path().iter().rev().find_map(|segment| match segment {
+        serde_path_to_error::Segment::Map { key } => Some(key.as_str()),
+        _ => None,
+    });
+    match (type_fault, field) {
+        (true, Some(field)) if is_id_field(field) => CoreApiError::invalid("id is out of range"),
+        (true, Some(field)) => CoreApiError::invalid(format!(
+            "invalid argument: `{field}` has the wrong type or is out of range"
+        )),
+        (true, None) => CoreApiError::invalid("invalid argument: wrong type or out of range"),
+        (false, _) => CoreApiError::invalid("invalid argument: the request is malformed"),
+    }
+}
+
+/// Whether a field name holds a row id: `id`, `ids`, `lead_id`, `leadId`, `channel_account_ids`...
+fn is_id_field(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower == "id"
+        || lower == "ids"
+        || lower.ends_with("_id")
+        || lower.ends_with("_ids")
+        || (name.ends_with("Id") || name.ends_with("Ids"))
 }
 
 /// A page size from JS: absent is 0 (the core then picks its default).
@@ -284,6 +320,80 @@ pub(crate) fn state_of<S: Send + Sync + 'static>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    #[allow(dead_code)]
+    struct Probe {
+        lead_id: i64,
+        other: Option<Vec<Inner>>,
+        name: String,
+        port: Option<u16>,
+    }
+
+    #[derive(Debug, serde::Deserialize)]
+    #[allow(dead_code)]
+    struct Inner {
+        id: u32,
+    }
+
+    fn message(value: JsonValue) -> (String, String) {
+        match body::<Probe>(value) {
+            Ok(_) => (String::new(), String::new()),
+            Err(error) => (error.code, error.message),
+        }
+    }
+
+    #[test]
+    fn id_faults_in_a_body_say_id_is_out_of_range() {
+        for lead_id in [
+            serde_json::json!(1.5),
+            serde_json::json!(1e20),
+            serde_json::json!("7"),
+            serde_json::json!(null),
+            serde_json::json!(true),
+        ] {
+            let (code, text) = message(serde_json::json!({ "leadId": lead_id, "name": "x" }));
+            assert_eq!(code, "invalid_request");
+            assert_eq!(text, "id is out of range", "{lead_id}");
+        }
+        // Nested ids and negative values for unsigned ids.
+        let (code, text) =
+            message(serde_json::json!({ "leadId": 1, "name": "x", "other": [{ "id": -1 }] }));
+        assert_eq!(
+            (code.as_str(), text.as_str()),
+            ("invalid_request", "id is out of range")
+        );
+        let (_, text) =
+            message(serde_json::json!({ "leadId": 1, "name": "x", "other": [{ "id": 2.5 }] }));
+        assert_eq!(text, "id is out of range");
+    }
+
+    #[test]
+    fn other_faults_keep_no_serde_wording() {
+        let (code, text) = message(serde_json::json!({ "leadId": 1, "name": 5 }));
+        assert_eq!(code, "invalid_request");
+        assert_eq!(
+            text,
+            "invalid argument: `name` has the wrong type or is out of range"
+        );
+        let (_, text) = message(serde_json::json!({ "leadId": 1, "name": "x", "port": 70000 }));
+        assert_eq!(
+            text,
+            "invalid argument: `port` has the wrong type or is out of range"
+        );
+        let (_, text) = message(serde_json::json!({ "leadId": 1 }));
+        assert_eq!(text, "invalid argument: missing field `name`");
+        for text in [
+            message(serde_json::json!({ "leadId": 1.5, "name": "x" })).1,
+            message(serde_json::json!({ "leadId": 1, "name": 5 })).1,
+            message(serde_json::json!({ "leadId": 1, "name": "x", "port": 70000 })).1,
+        ] {
+            assert!(!text.contains("expected"), "{text}");
+            assert!(!text.contains("floating point"), "{text}");
+            assert!(!text.contains("invalid type"), "{text}");
+        }
+    }
 
     #[test]
     fn live_folder_is_refused_in_any_spelling() {
