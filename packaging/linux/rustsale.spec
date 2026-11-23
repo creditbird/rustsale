@@ -13,6 +13,12 @@ AutoReqProv:    no
 # The runner links WebKitGTK 6.0 and GTK 4 at load time (DT_NEEDED), even though the app opens no web view.
 Requires:       webkitgtk6.0
 Requires:       gtk4 >= 4.14
+# AutoReqProv is off, so the floor of the build machine is declared by hand (the .deb does the same with
+# `libc6 (>= 2.44)`). Without it dnf installs the package on Fedora 44 and older, where the runner then fails to
+# start: it needs GLIBC_2.44 and libssl.so.4 / libcrypto.so.4 (OpenSSL 4).
+Requires:       glibc >= 2.44
+Requires:       libssl.so.4()(64bit)
+Requires:       libcrypto.so.4()(64bit)
 Source0:        rustsale-root.tar.gz
 
 %description
@@ -36,3 +42,4 @@ cp -a . %{buildroot}/
 %changelog
 * Mon Nov 23 2026 RustSale Packagers <packaging@rustsale.invalid> - 0.1.0-1
 - First Linux package: GTK 4 runner plus its declared dependencies
+- Require glibc >= 2.44 and the OpenSSL 4 sonames, so dnf refuses the install on Fedora 44 and older

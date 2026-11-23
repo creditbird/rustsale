@@ -11,7 +11,7 @@ license=('custom:proprietary')
 # The runner links webkitgtk-6.0 (libwebkitgtk-6.0.so.4, libjavascriptcoregtk-6.0.so.1) and gtk4 at load
 # time (DT_NEEDED), even though the app opens no web view: pacman must install both. The runner also links
 # libssl.so.4 / libcrypto.so.4 (openssl 4) and a recent glibc from the machine it was built on.
-depends=('webkitgtk-6.0' 'gtk4' 'openssl' 'glibc')
+depends=('webkitgtk-6.0' 'gtk4' 'openssl>=4' 'glibc>=2.44')
 options=('!strip' '!debug')
 source=("$pkgname-$pkgver-linux-x86_64.tar.gz")
 sha256sums=('SKIP')

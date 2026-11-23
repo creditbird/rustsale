@@ -8,8 +8,8 @@ packages here declare those dependencies, which the plain nsh `.tar.gz` does not
 | Format | Files | Declares |
 |---|---|---|
 | `.deb` (Debian 13+, Ubuntu 24.04+) | `build-deb.sh` | `Depends: libc6 (>= <runner floor>), libwebkitgtk-6.0-4, libgtk-4-1 (>= 4.14)` |
-| Arch `PKGBUILD` | `PKGBUILD` + `build-tarball.sh` | `depends=(webkitgtk-6.0 gtk4 openssl glibc)` |
-| `.rpm` (Fedora) | `rustsale.spec`, `build-rpm.sh` | `Requires: webkitgtk6.0, gtk4 >= 4.14` |
+| Arch `PKGBUILD` | `PKGBUILD` + `build-tarball.sh` | `depends=(webkitgtk-6.0 gtk4 'openssl>=4' 'glibc>=2.44')` |
+| `.rpm` (Fedora) | `rustsale.spec`, `build-rpm.sh` | `Requires: webkitgtk6.0, gtk4 >= 4.14, glibc >= 2.44, libssl.so.4, libcrypto.so.4` |
 
 Install tree (the same in all three): `/opt/rustsale/` (runner and bundle), `/usr/bin/rustsale` (symlink),
 `/usr/share/applications/com.rustsale.crm.v3.desktop`, `/usr/share/icons/hicolor/512x512/apps/rustsale.png`.
@@ -37,6 +37,7 @@ The runner is linked against the libraries of the machine that built it (here Ar
 | Target | Result |
 |---|---|
 | Arch Linux (clean container, `pacman -U`) | pulls `webkitgtk-6.0`, `gtk4`, `openssl`; `ldd` has no `not found`; the app starts and keeps running under Xvfb |
+| Fedora 44 (glibc 2.43, OpenSSL 3, clean container) | `dnf install ./rustsale-*.rpm` is refused (`glibc >= 2.44`, `libssl.so.4`) |
 | Fedora 45 (clean container, `dnf install ./rustsale-*.rpm`) | pulls `webkitgtk6.0` and `gtk4`; `ldd` has no `not found` (Fedora 45 ships OpenSSL 4) |
 | Ubuntu 24.04 (glibc 2.39, OpenSSL 3) | `apt install ./rustsale_*.deb` is refused (`libc6 (>= 2.44)`); the binary would also need `libssl.so.4`, which Ubuntu does not ship |
 
