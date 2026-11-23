@@ -92,7 +92,7 @@ export function OutreachLeads(props: OutreachLeadsProps) {
                   {p.isChosen(row().id) ? "✓" : "○"}
                 </Text>
               </View>
-              <Text class="truncate flex-[2] text-sm text-foreground">{row().name}</Text>
+              <Text class="truncate flex-[2] pr-2 text-sm text-foreground">{row().name}</Text>
               <Text class="truncate flex-[2] pr-2 text-sm text-muted-foreground">{row().company ?? ""}</Text>
               <Text class="truncate flex-[2] pr-2 text-sm text-muted-foreground">
                 {row().phone ?? row().email ?? "—"}

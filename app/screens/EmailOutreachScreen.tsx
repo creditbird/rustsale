@@ -205,7 +205,7 @@ export function EmailOutreachScreen() {
                     <View class="flex-1 gap-0.5">
                       <Text class="truncate text-sm text-foreground">{account().name}</Text>
                       <Text class="truncate text-xs text-muted-foreground">
-                        {`${account().host}:${account().port} · ${account().from_email}`}
+                        {`${account().host}:${account().port} · ${account().from_email || "—"}`}
                       </Text>
                     </View>
                     <Badge label={account().security || "SMTP"} tone="neutral" />
