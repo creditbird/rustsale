@@ -34,6 +34,15 @@ impl ScrapeJobRepository {
         })
     }
 
+    /// Builds the repository for a database file that `init_db` has already
+    /// migrated in this process (`Core::start`), so start-up migrates only once.
+    pub fn for_initialized_db(db_path: String) -> Self {
+        Self {
+            db_path: Arc::new(db_path),
+            busy_timeout: None,
+        }
+    }
+
     /// Shortens how long a connection waits for a lock so tests can exercise
     /// the retry path without holding a lock for the production 5 s timeout.
     #[cfg(test)]
@@ -1780,6 +1789,30 @@ mod tests {
             first_seen_at: "2026-07-26T00:00:00Z".to_string(),
             last_seen_at: "2026-07-26T00:00:00Z".to_string(),
         }
+    }
+
+    /// Item 8: `Core::start` has just run `init_db` on the same file, so it must be able
+    /// to build the repository without migrating the whole database a second time.
+    #[tokio::test]
+    async fn repository_for_an_initialized_db_works_without_a_second_init() {
+        let path = std::env::temp_dir().join(format!(
+            "rustsale-google-maps-initialized-{}.db",
+            rand::random::<u64>()
+        ));
+        let path_str = path.to_string_lossy().to_string();
+        drop(init_db(&path_str).unwrap());
+
+        let repository = ScrapeJobRepository::for_initialized_db(path_str);
+        repository
+            .create_job(sample_job(ScrapeJobStatus::Queued))
+            .await
+            .unwrap();
+        let job = repository.get_job("job-1").await.unwrap();
+        assert_eq!(job.map(|job| job.id), Some("job-1".to_string()));
+
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(path.with_extension("db-wal"));
+        let _ = std::fs::remove_file(path.with_extension("db-shm"));
     }
 
     #[tokio::test]
