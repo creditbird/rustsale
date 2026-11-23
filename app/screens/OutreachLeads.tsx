@@ -9,6 +9,8 @@ export interface OutreachLeadsProps {
   prefix: string;
   /** The Zalo-only toggles (verified Zalo, mobile numbers) hidden on the email screen. */
   zalo: boolean;
+  /** Hide the outreach-history segmentation on screens that do not use it (WhatsApp). */
+  showSegmentation?: boolean;
 }
 
 const COLUMNS: { label: string; w: string }[] = [
@@ -29,13 +31,15 @@ export function OutreachLeads(props: OutreachLeadsProps) {
         <View class="w-64">
           <Input testID={t("search")} value={p.search()} placeholder="Tìm tên, công ty, SĐT…" onValue={p.setSearch} />
         </View>
-        <Each of={SEGMENTATIONS} key={(s) => s.key}>
-          {(s) => (
-            <Button testID={t(`seg-${s().key}`)} label={s().label} size="sm"
-              variant={p.segmentation() === s().key ? "primary" : "secondary"}
-              onPress={() => p.setSegmentation(s().key)} />
-          )}
-        </Each>
+        <If when={props.showSegmentation ?? true}>
+          <Each of={SEGMENTATIONS} key={(s) => s.key}>
+            {(s) => (
+              <Button testID={t(`seg-${s().key}`)} label={s().label} size="sm"
+                variant={p.segmentation() === s().key ? "primary" : "secondary"}
+                onPress={() => p.setSegmentation(s().key)} />
+            )}
+          </Each>
+        </If>
         <If when={props.zalo}>
           <Button testID={t("filter-verified")} label="Có Zalo" size="sm"
             variant={p.verifiedZalo() ? "primary" : "secondary"} onPress={p.toggleVerified} />

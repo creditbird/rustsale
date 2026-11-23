@@ -35,6 +35,7 @@ const PAGE_SIZE = 50;
 export function useOutreachLeads(channel: "zalo" | "email") {
   const search = signal("");
   const segmentation = signal<Segmentation>("all");
+  const categoryId = signal<number | null>(null);
   const verifiedZalo = signal(false);
   const unreached = signal(false);
   const mobileOnly = signal(false);
@@ -44,7 +45,7 @@ export function useOutreachLeads(channel: "zalo" | "email") {
   const failed = signal(false);
 
   const filters = (): Record<string, unknown> => ({
-    categoryId: undefined,
+    categoryId: categoryId() ?? undefined,
     segmentation: segmentation(),
     filterTemplateId: undefined,
     channel,
@@ -95,6 +96,11 @@ export function useOutreachLeads(channel: "zalo" | "email") {
     segmentation.set(value);
     refilter();
   };
+  const setCategory = (value: number | null) => {
+    if (categoryId() === value) return;
+    categoryId.set(value);
+    refilter();
+  };
   const toggleVerified = () => { verifiedZalo.set(!verifiedZalo()); refilter(); };
   const toggleUnreached = () => { unreached.set(!unreached()); refilter(); };
   const toggleMobile = () => { mobileOnly.set(!mobileOnly()); refilter(); };
@@ -138,9 +144,9 @@ export function useOutreachLeads(channel: "zalo" | "email") {
   void list.reload();
 
   return {
-    search, segmentation, verifiedZalo, unreached, mobileOnly,
-    list, failed, chosenCount, isChosen,
-    setSearch, setSegmentation, toggleVerified, toggleUnreached, toggleMobile,
+    search, segmentation, categoryId, verifiedZalo, unreached, mobileOnly,
+    list, failed, allMatch, chosenCount, isChosen,
+    setSearch, setSegmentation, setCategory, toggleVerified, toggleUnreached, toggleMobile,
     toggle, selectAll, clearChoice, resolve, reload,
     more: () => { void list.more(); }, hasMore,
   };
