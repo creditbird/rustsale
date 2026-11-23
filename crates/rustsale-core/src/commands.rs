@@ -3105,15 +3105,11 @@ pub async fn start_zalo_outreach(
         return Ok(());
     }
 
-    let partitions = partition_outreach_leads(&imeis, &valid_lead_ids)?;
-    let active_partitions: Vec<(String, Vec<i32>)> = partitions
-        .into_iter()
-        .filter(|(_, ids)| !ids.is_empty())
-        .collect();
-
-    if active_partitions.is_empty() {
+    let Some(active_partitions) =
+        resolve_outreach_partitions(&app_handle, &imeis, &valid_lead_ids)?
+    else {
         return Ok(());
-    }
+    };
 
     let total_leads: usize = active_partitions.iter().map(|(_, ids)| ids.len()).sum();
     let app_handle_clone = app_handle.clone();
@@ -3176,6 +3172,54 @@ pub async fn start_zalo_outreach(
         }
     });
     Ok(())
+}
+
+fn emit_outreach_complete(app_handle: &AppHandle, total_sent: usize, message: &str) {
+    let _ = app_handle.emit(
+        "outreach-complete",
+        OutreachCompletePayload {
+            total_sent,
+            message: message.to_string(),
+        },
+    );
+}
+
+/// Splits `lead_ids` across `imeis` and keeps the accounts that got work. When nothing can run,
+/// `outreach-complete` is emitted here so the screen never waits for an event that will not come:
+/// no account is an `Err` (the caller is refused) and no work is `Ok(None)`.
+pub fn resolve_outreach_partitions(
+    app_handle: &AppHandle,
+    imeis: &[String],
+    lead_ids: &[i32],
+) -> Result<Option<Vec<(String, Vec<i32>)>>, String> {
+    let partitions = match partition_outreach_leads(imeis, lead_ids) {
+        Ok(partitions) => partitions,
+        Err(error) => {
+            let _ = app_handle.emit(
+                "outreach-log",
+                OutreachLogPayload {
+                    message: "No Zalo account selected for the outreach.".to_string(),
+                },
+            );
+            emit_outreach_complete(app_handle, 0, "No Zalo account selected; nothing was sent.");
+            return Err(error);
+        }
+    };
+    let active: Vec<(String, Vec<i32>)> = partitions
+        .into_iter()
+        .filter(|(_, ids)| !ids.is_empty())
+        .collect();
+    if active.is_empty() {
+        let _ = app_handle.emit(
+            "outreach-log",
+            OutreachLogPayload {
+                message: "No leads to outreach after splitting across accounts.".to_string(),
+            },
+        );
+        emit_outreach_complete(app_handle, 0, "No leads to send; nothing was sent.");
+        return Ok(None);
+    }
+    Ok(Some(active))
 }
 
 fn render_zalo_template(template: &str, lead_name: &str) -> String {
@@ -5605,6 +5649,13 @@ pub async fn send_email_outreach_internal(
                     progress: 100.0,
                     status: "completed".to_string(),
                     message: "No leads selected.".to_string(),
+                },
+            );
+            let _ = app.emit(
+                "email-outreach-complete",
+                EmailOutreachCompletePayload {
+                    total_sent: 0,
+                    message: "No leads selected; no emails were sent.".to_string(),
                 },
             );
         }

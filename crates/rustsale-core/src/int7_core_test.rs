@@ -75,6 +75,124 @@ mod n3 {
     }
 }
 
+/// Outreach runs always end with a complete event, so the screen leaves its "running" state.
+mod outreach_complete {
+    use crate::host::mock::MockApp;
+    use crate::{commands, db, models};
+
+    fn app_with_lead() -> (MockApp, i32, i32) {
+        let mut conn = db::init_db(":memory:").unwrap();
+        db::seed_data(&mut conn).unwrap();
+        let template =
+            db::create_outreach_template(&conn, "Int7 Tpl", "Hello {{name}}", None).unwrap();
+        let lead = commands::add_lead_internal(
+            &mut conn,
+            "Int7 Lead".into(),
+            "Company".into(),
+            "New".into(),
+            0.0,
+            "Owner".into(),
+            "".into(),
+            "0912345678".into(),
+            None,
+            None,
+        )
+        .unwrap();
+        let app = MockApp::new().manage(commands::DbState {
+            conn: std::sync::Mutex::new(conn),
+        });
+        (app, template, lead)
+    }
+
+    fn payload_message(app: &MockApp, event: &str) -> Option<String> {
+        app.events
+            .emitted()
+            .into_iter()
+            .find(|e| e.event == event)
+            .and_then(|e| e.payload["message"].as_str().map(str::to_owned))
+    }
+
+    #[tokio::test]
+    async fn zalo_run_without_any_account_still_completes() {
+        let (app, template, lead) = app_with_lead();
+        let result = commands::start_zalo_outreach(
+            app.handle().clone(),
+            Vec::new(),
+            template,
+            vec![lead],
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        assert!(result.is_err(), "no account is still refused to the caller");
+        assert_eq!(app.events.count("outreach-complete"), 1);
+        let message = payload_message(&app, "outreach-complete").unwrap_or_default();
+        assert!(message.contains("account"), "message: {message}");
+    }
+
+    #[test]
+    fn zalo_run_that_splits_into_no_work_completes() {
+        let app = MockApp::new();
+        let accounts = vec!["imei-a".to_string(), "imei-b".to_string()];
+        let none = commands::resolve_outreach_partitions(app.handle(), &accounts, &[]);
+        assert_eq!(none, Ok(None));
+        assert_eq!(app.events.count("outreach-complete"), 1);
+
+        let app = MockApp::new();
+        let work = commands::resolve_outreach_partitions(app.handle(), &accounts, &[1, 2, 3])
+            .unwrap()
+            .unwrap();
+        assert_eq!(work.len(), 2);
+        assert_eq!(
+            app.events.count("outreach-complete"),
+            0,
+            "a real run completes later"
+        );
+    }
+
+    #[tokio::test]
+    async fn email_run_without_leads_completes() {
+        let (app, template, _lead) = app_with_lead();
+        let state = app.state::<commands::DbState>();
+        let (smtp, email_template) = {
+            let conn = state.conn.lock().unwrap();
+            let smtp = db::save_smtp_server(
+                &conn,
+                &models::SmtpServer {
+                    id: None,
+                    name: "Int7 SMTP".into(),
+                    host: "smtp.example.com".into(),
+                    port: 587,
+                    username: "u@example.com".into(),
+                    password: "p".into(),
+                    from_email: "u@example.com".into(),
+                    from_name: "U".into(),
+                    security: "STARTTLS".into(),
+                    created_at: String::new(),
+                },
+            )
+            .unwrap();
+            let tpl = db::create_email_template(&conn, "T", "S", "C").unwrap();
+            (smtp, tpl)
+        };
+        let _ = template;
+        let result = commands::send_email_outreach_internal(
+            Some(app.handle()),
+            &state.conn,
+            smtp,
+            email_template,
+            Vec::new(),
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(app.events.count("email-outreach-complete"), 1);
+        let message = payload_message(&app, "email-outreach-complete").unwrap_or_default();
+        assert!(message.contains("No leads"), "message: {message}");
+    }
+}
+
 /// N2 timing harness (ignored): `INT7_BENCH_DB=/tmp/.../rustsale.db cargo test --release
 /// -p rustsale-core int7_core_test::n2_inbox_bench -- --ignored --nocapture`. Only ever point it
 /// at a copy of the data: it opens the file read-write like the app does.
