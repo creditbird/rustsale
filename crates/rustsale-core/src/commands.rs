@@ -593,6 +593,14 @@ pub fn create_deal_internal(
     currency: Option<String>,
 ) -> Result<Deal, String> {
     let valid_curr = validate_currency(currency.as_deref())?;
+    let lead_exists = conn
+        .query_row("SELECT 1 FROM leads WHERE id = ?1", [lead_id], |_| Ok(()))
+        .optional()
+        .map_err(|e| format!("Database query error: {}", e))?
+        .is_some();
+    if !lead_exists {
+        return Err(format!("lead {lead_id} not found"));
+    }
     let created_at = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "INSERT INTO deals (lead_id, title, value, stage, created_at, currency) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",

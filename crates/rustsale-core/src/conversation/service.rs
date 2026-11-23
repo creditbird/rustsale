@@ -366,6 +366,12 @@ impl ConversationService {
     }
 
     pub fn link_identity(&self, identity_id: i64, lead_id: i64) -> Result<()> {
+        if !self.repository.identity_exists(identity_id)? {
+            anyhow::bail!("identity {identity_id} not found");
+        }
+        if !self.repository.lead_exists(lead_id)? {
+            anyhow::bail!("lead {lead_id} not found");
+        }
         let conversation_id = self.repository.link_identity(identity_id, lead_id)?;
         self.events.publish(ConversationInvalidatedEvent {
             conversation_id,

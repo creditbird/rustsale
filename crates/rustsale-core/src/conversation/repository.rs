@@ -2076,6 +2076,28 @@ impl ConversationRepository {
             .optional()?)
     }
 
+    /// Whether channel identity `identity_id` exists.
+    pub fn identity_exists(&self, identity_id: i64) -> Result<bool> {
+        let conn = open_db_connection(&self.db_path)?;
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM channel_identities WHERE id = ?1",
+                [identity_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    }
+
+    /// Whether lead `lead_id` exists.
+    pub fn lead_exists(&self, lead_id: i64) -> Result<bool> {
+        let conn = open_db_connection(&self.db_path)?;
+        Ok(conn
+            .query_row("SELECT 1 FROM leads WHERE id = ?1", [lead_id], |_| Ok(()))
+            .optional()?
+            .is_some())
+    }
+
     pub fn mark_conversation_read(&self, key: &str) -> Result<u64> {
         Ok(self.mark_conversation_read_with_ids(key)?.0)
     }

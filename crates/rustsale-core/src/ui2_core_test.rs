@@ -130,3 +130,22 @@ mod item6 {
         assert!(!message.contains("not found"), "{message}");
     }
 }
+
+mod item7 {
+    use crate::{commands, db};
+
+    #[test]
+    fn a_deal_for_a_missing_lead_is_not_found() {
+        let conn = db::init_db(":memory:").unwrap();
+        let error = commands::create_deal_internal(
+            &conn,
+            424_242,
+            "Deal".to_string(),
+            1.0,
+            "New".to_string(),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error, "lead 424242 not found");
+    }
+}

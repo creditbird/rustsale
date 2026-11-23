@@ -30,6 +30,8 @@ pub mod commands_test;
 #[cfg(test)]
 mod forwarding_test;
 #[cfg(test)]
+mod link_target_test;
+#[cfg(test)]
 mod mark_read_event_test;
 #[cfg(test)]
 mod mentions_test;
