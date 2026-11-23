@@ -249,6 +249,86 @@ pub async fn generate_smart_reply_suggestions_internal(
     Ok(output)
 }
 
+/// Longest proposal text the edit accepts.
+pub const MAX_PROPOSAL_CONTENT_CHARS: usize = 8_000;
+
+const PROPOSAL_STATUSES: [&str; 4] = ["APPROVED", "REJECTED", "APPLIED", "PENDING"];
+
+/// Proposals of one status, or of every status when `status` is `None` or `ALL`; newest first.
+pub fn list_ai_proposals(
+    status: Option<String>,
+    state: State<'_, DbState>,
+) -> Result<Vec<AiActionProposal>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    list_ai_proposals_internal(&conn, status.as_deref())
+}
+
+pub fn list_ai_proposals_internal(
+    conn: &Connection,
+    status: Option<&str>,
+) -> Result<Vec<AiActionProposal>, String> {
+    let wanted = match status.map(|s| s.trim().to_uppercase()) {
+        None => None,
+        Some(s) if s.is_empty() || s == "ALL" => None,
+        Some(s) if PROPOSAL_STATUSES.contains(&s.as_str()) => Some(s),
+        Some(_) => {
+            return Err(format!(
+                "Invalid status '{}'. Must be ALL or one of: {:?}",
+                status.unwrap_or_default(),
+                PROPOSAL_STATUSES
+            ))
+        }
+    };
+    crate::db::get_ai_action_proposals(conn, wanted.as_deref())
+        .map_err(|e| format!("Failed to list AI proposals: {}", e))
+}
+
+/// Saves the reviewer's edit of a pending proposal.
+pub fn edit_ai_proposal_content(
+    proposal_id: i64,
+    content: String,
+    state: State<'_, DbState>,
+) -> Result<(), String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    edit_ai_proposal_content_internal(&conn, proposal_id, &content)
+}
+
+pub fn edit_ai_proposal_content_internal(
+    conn: &Connection,
+    proposal_id: i64,
+    content: &str,
+) -> Result<(), String> {
+    let content = content.trim();
+    if content.is_empty() {
+        return Err("Invalid proposal content: it must not be empty".to_string());
+    }
+    if content.chars().count() > MAX_PROPOSAL_CONTENT_CHARS {
+        return Err(format!(
+            "Invalid proposal content: longer than {MAX_PROPOSAL_CONTENT_CHARS} characters"
+        ));
+    }
+    let saved = crate::db::update_ai_action_proposal_content(conn, proposal_id, content)
+        .map_err(|e| format!("Failed to save proposal content: {}", e))?;
+    if saved {
+        return Ok(());
+    }
+    let current = crate::db::get_ai_action_proposal(conn, proposal_id)
+        .map_err(|e| format!("Failed to read proposal: {}", e))?;
+    match current {
+        None => Err(format!("AI proposal {proposal_id} not found")),
+        Some(found) => Err(format!(
+            "AI proposal {proposal_id} is already {}; only a pending proposal can be edited",
+            found.status
+        )),
+    }
+}
+
 pub fn get_pending_ai_proposals_internal(
     conn: &Connection,
 ) -> Result<Vec<AiActionProposal>, String> {
@@ -277,7 +357,7 @@ pub fn review_ai_proposal_internal(
         &status_upper,
         Some(reviewer.trim()),
     )
-    .map_err(|e| format!("Failed to update proposal status: {}", e))
+    .map_err(|e| crate::commands::db_write_error(e, "AI proposal", proposal_id))
 }
 
 pub fn get_lead_evidence_context_internal(

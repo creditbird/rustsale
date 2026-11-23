@@ -58,6 +58,27 @@ impl Ai {
         .await
     }
 
+    /// AI action proposals of one status (`PENDING`, `APPROVED`, `REJECTED`, `APPLIED`), or of
+    /// every status when `status` is empty or `ALL`; newest first.
+    pub async fn proposals(status: Option<String>) -> Result<JsonValue, JsError> {
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            Ok::<_, CoreApiError>(ai::list_ai_proposals(status, state)?)
+        })
+        .await
+    }
+
+    /// Saves the reviewer's edit of the text of a pending proposal `proposalId`. Review it
+    /// afterwards to approve the edited text.
+    pub async fn edit_proposal(proposal_id: f64, content: String) -> Result<JsonValue, JsError> {
+        let proposal = id64(proposal_id)?;
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            Ok::<_, CoreApiError>(ai::edit_ai_proposal_content(proposal, content, state)?)
+        })
+        .await
+    }
+
     /// Reviews proposal `proposalId` as `APPROVED`, `REJECTED`, `APPLIED` or `PENDING`, recording
     /// `reviewer`.
     pub async fn review_proposal(

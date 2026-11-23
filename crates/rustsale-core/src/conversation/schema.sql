@@ -117,6 +117,9 @@ ON messages(conversation_id, direction, status, ingested_at);
 CREATE INDEX IF NOT EXISTS idx_messages_inbox_recent
 ON messages(conversation_id, provider_timestamp DESC, ingested_at DESC, id DESC);
 
+CREATE INDEX IF NOT EXISTS idx_messages_conv_occurred
+ON messages(conversation_id, COALESCE(provider_timestamp, ingested_at) DESC, id DESC);
+
 CREATE INDEX IF NOT EXISTS idx_participants_active
 ON conversation_participants(conversation_id, left_at);
 

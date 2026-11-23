@@ -2910,7 +2910,13 @@ pub fn delete_outreach_template(id: i32, state: State<DbState>) -> Result<(), St
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_outreach_template(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_outreach_template_internal(&conn, id)
+}
+
+/// Deletes an outreach template; one that is already gone is "outreach template <id> not found".
+pub fn delete_outreach_template_internal(conn: &Connection, id: i32) -> Result<(), String> {
+    crate::db::delete_outreach_template(conn, id)
+        .map_err(|e| db_write_error(e, "outreach template", i64::from(id)))
 }
 
 pub async fn send_zalo_outreach(
@@ -3142,15 +3148,11 @@ pub async fn start_zalo_outreach(
         return Ok(());
     }
 
-    let partitions = partition_outreach_leads(&imeis, &valid_lead_ids)?;
-    let active_partitions: Vec<(String, Vec<i32>)> = partitions
-        .into_iter()
-        .filter(|(_, ids)| !ids.is_empty())
-        .collect();
-
-    if active_partitions.is_empty() {
+    let Some(active_partitions) =
+        resolve_outreach_partitions(&app_handle, &imeis, &valid_lead_ids)?
+    else {
         return Ok(());
-    }
+    };
 
     let total_leads: usize = active_partitions.iter().map(|(_, ids)| ids.len()).sum();
     let app_handle_clone = app_handle.clone();
@@ -3213,6 +3215,54 @@ pub async fn start_zalo_outreach(
         }
     });
     Ok(())
+}
+
+fn emit_outreach_complete(app_handle: &AppHandle, total_sent: usize, message: &str) {
+    let _ = app_handle.emit(
+        "outreach-complete",
+        OutreachCompletePayload {
+            total_sent,
+            message: message.to_string(),
+        },
+    );
+}
+
+/// Splits `lead_ids` across `imeis` and keeps the accounts that got work. When nothing can run,
+/// `outreach-complete` is emitted here so the screen never waits for an event that will not come:
+/// no account is an `Err` (the caller is refused) and no work is `Ok(None)`.
+pub fn resolve_outreach_partitions(
+    app_handle: &AppHandle,
+    imeis: &[String],
+    lead_ids: &[i32],
+) -> Result<Option<Vec<(String, Vec<i32>)>>, String> {
+    let partitions = match partition_outreach_leads(imeis, lead_ids) {
+        Ok(partitions) => partitions,
+        Err(error) => {
+            let _ = app_handle.emit(
+                "outreach-log",
+                OutreachLogPayload {
+                    message: "No Zalo account selected for the outreach.".to_string(),
+                },
+            );
+            emit_outreach_complete(app_handle, 0, "No Zalo account selected; nothing was sent.");
+            return Err(error);
+        }
+    };
+    let active: Vec<(String, Vec<i32>)> = partitions
+        .into_iter()
+        .filter(|(_, ids)| !ids.is_empty())
+        .collect();
+    if active.is_empty() {
+        let _ = app_handle.emit(
+            "outreach-log",
+            OutreachLogPayload {
+                message: "No leads to outreach after splitting across accounts.".to_string(),
+            },
+        );
+        emit_outreach_complete(app_handle, 0, "No leads to send; nothing was sent.");
+        return Ok(None);
+    }
+    Ok(Some(active))
 }
 
 fn render_zalo_template(template: &str, lead_name: &str) -> String {
@@ -4618,7 +4668,12 @@ pub fn delete_category(state: State<'_, DbState>, id: i32) -> Result<(), String>
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_category(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_category_internal(&conn, id)
+}
+
+/// Deletes a category; a category that is already gone is "category <id> not found".
+pub fn delete_category_internal(conn: &Connection, id: i32) -> Result<(), String> {
+    crate::db::delete_category(conn, id).map_err(|e| db_write_error(e, "category", i64::from(id)))
 }
 
 /// Associates multiple leads with a category.
@@ -5475,7 +5530,13 @@ pub fn delete_smtp_server(id: i32, state: State<DbState>) -> Result<(), String> 
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_smtp_server(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_smtp_server_internal(&conn, id)
+}
+
+/// Deletes an SMTP server; one that is already gone is "SMTP server <id> not found".
+pub fn delete_smtp_server_internal(conn: &Connection, id: i32) -> Result<(), String> {
+    crate::db::delete_smtp_server(conn, id)
+        .map_err(|e| db_write_error(e, "SMTP server", i64::from(id)))
 }
 
 pub async fn test_smtp_connection(host: String, port: i32) -> Result<String, String> {
@@ -5543,7 +5604,13 @@ pub fn delete_email_template(id: i32, state: State<DbState>) -> Result<(), Strin
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_email_template(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_email_template_internal(&conn, id)
+}
+
+/// Deletes an email template; one that is already gone is "email template <id> not found".
+pub fn delete_email_template_internal(conn: &Connection, id: i32) -> Result<(), String> {
+    crate::db::delete_email_template(conn, id)
+        .map_err(|e| db_write_error(e, "email template", i64::from(id)))
 }
 
 pub fn replace_email_template_variables(template: &str, lead: &Lead) -> String {
@@ -5625,6 +5692,13 @@ pub async fn send_email_outreach_internal(
                     progress: 100.0,
                     status: "completed".to_string(),
                     message: "No leads selected.".to_string(),
+                },
+            );
+            let _ = app.emit(
+                "email-outreach-complete",
+                EmailOutreachCompletePayload {
+                    total_sent: 0,
+                    message: "No leads selected; no emails were sent.".to_string(),
                 },
             );
         }
@@ -8666,7 +8740,12 @@ pub fn delete_template(id: i64, state: State<DbState>) -> Result<(), String> {
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_template(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_template_internal(&conn, id)
+}
+
+/// Deletes a template; one that is already gone is "template <id> not found".
+pub fn delete_template_internal(conn: &Connection, id: i64) -> Result<(), String> {
+    crate::db::delete_template(conn, id).map_err(|e| db_write_error(e, "template", id))
 }
 
 pub fn get_template_folders(
@@ -8697,7 +8776,13 @@ pub fn delete_template_folder(id: i64, state: State<DbState>) -> Result<(), Stri
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    crate::db::delete_template_folder(&conn, id).map_err(|e| format!("Database error: {}", e))
+    delete_template_folder_internal(&conn, id)
+}
+
+/// Deletes a template folder; one that is already gone is "template folder <id> not found".
+pub fn delete_template_folder_internal(conn: &Connection, id: i64) -> Result<(), String> {
+    crate::db::delete_template_folder(conn, id)
+        .map_err(|e| db_write_error(e, "template folder", id))
 }
 
 pub fn increment_template_usage(id: i64, state: State<DbState>) -> Result<(), String> {

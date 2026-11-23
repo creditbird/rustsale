@@ -194,10 +194,14 @@ pub(crate) fn body<T: serde::de::DeserializeOwned>(value: JsonValue) -> Result<T
     serde_path_to_error::deserialize(value).map_err(|error| body_error(&error))
 }
 
+/// What an id field of the wrong type (a string, a bool, null, a fraction) says.
+const ID_WRONG_TYPE: &str = "id has the wrong type: it must be a whole number";
+
 /// A clean message for a body that did not deserialize. serde's own wording ("invalid type:
-/// floating point `1.5`, expected i64") is jargon for the person using the app, so a number or
-/// type fault in an id field says "id is out of range", one in another field names that field,
-/// and a missing field keeps serde's plain "missing field `x`".
+/// floating point `1.5`, expected i64") is jargon for the person using the app, so a type fault
+/// in an id field says the id has the wrong type, a whole number that does not fit says "id is
+/// out of range", a fault in another field names that field, and a missing field keeps serde's
+/// plain "missing field `x`".
 fn body_error(error: &serde_path_to_error::Error<serde_json::Error>) -> CoreApiError {
     let detail = error.inner().to_string();
     if detail.starts_with("missing field") || detail.starts_with("unknown field") {
@@ -212,7 +216,13 @@ fn body_error(error: &serde_path_to_error::Error<serde_json::Error>) -> CoreApiE
         _ => None,
     });
     match (type_fault, field) {
-        (true, Some(field)) if is_id_field(field) => CoreApiError::invalid("id is out of range"),
+        (true, Some(field)) if is_id_field(field) => {
+            if detail.starts_with("invalid type") {
+                CoreApiError::invalid(ID_WRONG_TYPE)
+            } else {
+                CoreApiError::invalid("id is out of range")
+            }
+        }
         (true, Some(field)) => CoreApiError::invalid(format!(
             "invalid argument: `{field}` has the wrong type or is out of range"
         )),
@@ -345,7 +355,8 @@ mod tests {
     }
 
     #[test]
-    fn id_faults_in_a_body_say_id_is_out_of_range() {
+    fn id_of_the_wrong_type_in_a_body_says_so() {
+        // N5: a string, a bool, null or a fraction in an id field is a wrong type, not a range fault.
         for lead_id in [
             serde_json::json!(1.5),
             serde_json::json!(1e20),
@@ -355,18 +366,38 @@ mod tests {
         ] {
             let (code, text) = message(serde_json::json!({ "leadId": lead_id, "name": "x" }));
             assert_eq!(code, "invalid_request");
-            assert_eq!(text, "id is out of range", "{lead_id}");
+            assert_eq!(
+                text, "id has the wrong type: it must be a whole number",
+                "{lead_id}"
+            );
         }
-        // Nested ids and negative values for unsigned ids.
+        // Nested ids.
+        let (code, text) =
+            message(serde_json::json!({ "leadId": 1, "name": "x", "other": [{ "id": "a" }] }));
+        assert_eq!(
+            (code.as_str(), text.as_str()),
+            (
+                "invalid_request",
+                "id has the wrong type: it must be a whole number"
+            )
+        );
+        let (_, text) =
+            message(serde_json::json!({ "leadId": 1, "name": "x", "other": [{ "id": 2.5 }] }));
+        assert_eq!(text, "id has the wrong type: it must be a whole number");
+    }
+
+    #[test]
+    fn id_out_of_range_in_a_body_says_so() {
+        // A whole number the type cannot hold (a negative for an unsigned id) is a range fault.
         let (code, text) =
             message(serde_json::json!({ "leadId": 1, "name": "x", "other": [{ "id": -1 }] }));
         assert_eq!(
             (code.as_str(), text.as_str()),
             ("invalid_request", "id is out of range")
         );
-        let (_, text) =
-            message(serde_json::json!({ "leadId": 1, "name": "x", "other": [{ "id": 2.5 }] }));
-        assert_eq!(text, "id is out of range");
+        let (code, text) = message(serde_json::json!({ "leadId": 9.3e18, "name": "x" }));
+        assert_eq!(code, "invalid_request");
+        assert!(text.starts_with("id "), "{text}");
     }
 
     #[test]
