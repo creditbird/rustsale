@@ -29,17 +29,17 @@ export interface ButtonProps {
 
 /** The app's button: variants and sizes, never colors. */
 export function Button(props: ButtonProps) {
-  const variant = props.variant ?? "secondary";
-  const size = props.size ?? "md";
+  // Read inside the JSX expressions below, not here: the component runs once, so a value read in the
+  // body would freeze the first variant/size and a chosen-state button would never change colour.
   return (
     <BaseButton
       testID={props.testID}
       disabled={props.disabled}
       accessibilityLabel={props.label}
       onPress={() => props.onPress()}
-      class={`flex-row items-center justify-center rounded-(--radius) focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${SIZE[size]} ${VARIANT[variant]}`}
+      class={`flex-row items-center justify-center rounded-(--radius) focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-50 ${SIZE[props.size ?? "md"]} ${VARIANT[props.variant ?? "secondary"]}`}
     >
-      <Text class={`text-sm font-medium ${LABEL[variant]}`}>{props.label}</Text>
+      <Text class={`text-sm font-medium ${LABEL[props.variant ?? "secondary"]}`}>{props.label}</Text>
     </BaseButton>
   );
 }

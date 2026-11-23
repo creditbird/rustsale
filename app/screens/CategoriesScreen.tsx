@@ -178,10 +178,10 @@ export function CategoriesScreen() {
               <View testID={`cat-row-${row().id}`}
                 class={`flex-row items-center border-b border-border px-2 py-1 ${selectedId() === row().id ? "bg-accent" : ""}`}>
                 <Base testID={`cat-open-${row().id}`} onPress={() => select(row())}
-                  class="flex-1 flex-row items-center gap-2 rounded-(--radius) px-2 py-1.5 hover:bg-accent">
-                  <Text class="truncate text-sm text-foreground">{row().name}</Text>
+                  class="min-w-0 flex-1 flex-row items-center gap-2 rounded-(--radius) px-2 py-1.5 hover:bg-accent">
+                  <Text class="min-w-0 flex-1 truncate text-sm text-foreground">{row().name}</Text>
                 </Base>
-                <Button testID={`cat-del-${row().id}`} label="Xoá" size="sm" variant="ghost" onPress={() => removing.set(row())} />
+                <View class="shrink-0"><Button testID={`cat-del-${row().id}`} label="Xoá" size="sm" variant="ghost" onPress={() => removing.set(row())} /></View>
               </View>
             )}
           </List>
@@ -259,7 +259,7 @@ export function CategoriesScreen() {
 
       <Modal open={creating()} title="Tạo danh mục" onClose={() => creating.set(false)}>
         <View class="gap-3">
-          <Input testID="cat-name" value={newName()} placeholder="Tên danh mục" onValue={(v) => newName.set(v)} onSubmit={() => { void submitCreate(); }} />
+          <Input testID="cat-name" autoFocus value={newName()} placeholder="Tên danh mục" onValue={(v) => newName.set(v)} onSubmit={() => { void submitCreate(); }} />
           <If when={formError() !== null}>
             <Text testID="cat-error" class="text-sm text-destructive">{formError() ?? ""}</Text>
           </If>

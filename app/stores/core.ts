@@ -1,10 +1,10 @@
 import { Host } from "rustsale/native";
 
 /** A cursor page as the native module returns it. */
-export interface Page<T> {
+export interface Page<T, C = string> {
   items: T[];
   total: number;
-  nextCursor: string | null;
+  nextCursor: C | null;
 }
 
 /** What the person is asked to do about a failure. */

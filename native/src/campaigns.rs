@@ -94,21 +94,6 @@ impl Campaigns {
         .await
     }
 
-    /// Sends Zalo outreach from account `imei` with template `templateId` to `leadIds`; progress
-    /// arrives as `outreach-progress`, `outreach-log` and `outreach-complete` events.
-    pub async fn send_zalo_outreach(
-        imei: String,
-        lead_ids_: Vec<f64>,
-        template_id: f64,
-    ) -> Result<JsonValue, JsError> {
-        let leads = lead_ids(lead_ids_)?;
-        let template = id32(template_id)?;
-        on_core(move |h| async move {
-            Ok::<_, CoreApiError>(commands::send_zalo_outreach(h, imei, leads, template).await?)
-        })
-        .await
-    }
-
     /// Starts a batched Zalo outreach from `imeis` with template `templateId` to `leadIds`,
     /// optionally throttled by a burst limit and inter-message delay; progress arrives as events.
     pub async fn start_zalo_outreach(

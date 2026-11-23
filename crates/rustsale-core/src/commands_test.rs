@@ -5451,6 +5451,153 @@ mod tests {
         assert!(!ids.contains(&lead_no_at_email));
     }
 
+    fn outreach_query(channel: &str, segmentation: &str) -> commands::OutreachLeadQuery {
+        commands::OutreachLeadQuery {
+            category_id: None,
+            segmentation: segmentation.to_string(),
+            filter_template_id: None,
+            channel: channel.to_string(),
+            search: None,
+            filter_verified_zalo: false,
+            filter_unreached: false,
+            filter_mobile_only: false,
+        }
+    }
+
+    fn add_outreach_test_lead(
+        conn: &mut rusqlite::Connection,
+        name: &str,
+        email: &str,
+        phone: &str,
+    ) -> i32 {
+        commands::add_lead_internal(
+            conn,
+            name.to_string(),
+            "Company".to_string(),
+            "New".to_string(),
+            0.0,
+            "Owner".to_string(),
+            email.to_string(),
+            phone.to_string(),
+            None,
+            None,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn test_outreach_channels_keep_their_own_lead_filter() {
+        let mut conn = crate::db::init_db(":memory:").unwrap();
+        let vn = add_outreach_test_lead(&mut conn, "VN Mobile", "vn@example.com", "0901234567");
+        let intl = add_outreach_test_lead(&mut conn, "International", "", "+14155552671");
+        let landline =
+            add_outreach_test_lead(&mut conn, "Landline", "land@example.com", "02838221234");
+        let no_zalo =
+            add_outreach_test_lead(&mut conn, "Has Zalo Zero", "nz@example.com", "0901234568");
+        let empty = add_outreach_test_lead(&mut conn, "Empty Phone", "empty@example.com", "");
+        let spaces = add_outreach_test_lead(&mut conn, "Spaces Phone", "spaces@example.com", "   ");
+        let whitespace = add_outreach_test_lead(
+            &mut conn,
+            "Whitespace Phone",
+            "white@example.com",
+            "\t\n\r  \t",
+        );
+        let zalo_only = add_outreach_test_lead(&mut conn, "Zalo Only", "zalo@example.com", "");
+        conn.execute("UPDATE leads SET has_zalo = 0 WHERE id = ?1", [no_zalo])
+            .unwrap();
+        conn.execute("UPDATE leads SET zalo_reached = 1 WHERE id = ?1", [vn])
+            .unwrap();
+        conn.execute(
+            "UPDATE leads SET zalo_uid = '123456789' WHERE id = ?1",
+            [zalo_only],
+        )
+        .unwrap();
+
+        let whatsapp = commands::get_outreach_leads_page_internal(
+            &conn,
+            &outreach_query("whatsapp", "all"),
+            None,
+            50,
+        )
+        .unwrap();
+        let whatsapp_ids: Vec<i32> = whatsapp.items.iter().filter_map(|lead| lead.id).collect();
+        assert_eq!(whatsapp.total, 4);
+        for id in [vn, intl, landline, no_zalo] {
+            assert!(whatsapp_ids.contains(&id), "whatsapp must keep lead {id}");
+        }
+        for id in [empty, spaces, whitespace, zalo_only] {
+            assert!(!whatsapp_ids.contains(&id), "whatsapp must drop lead {id}");
+        }
+
+        let mut whatsapp_unreached_query = outreach_query("whatsapp", "all");
+        whatsapp_unreached_query.filter_unreached = true;
+        let whatsapp_unreached =
+            commands::get_outreach_leads_page_internal(&conn, &whatsapp_unreached_query, None, 50)
+                .unwrap();
+        let whatsapp_unreached_ids: Vec<i32> = whatsapp_unreached
+            .items
+            .iter()
+            .filter_map(|lead| lead.id)
+            .collect();
+        assert_eq!(
+            whatsapp_unreached.total, 4,
+            "zalo_reached must not filter the WhatsApp channel"
+        );
+        assert!(whatsapp_unreached_ids.contains(&vn));
+
+        let zalo = commands::get_outreach_leads_page_internal(
+            &conn,
+            &outreach_query("zalo", "all"),
+            None,
+            50,
+        )
+        .unwrap();
+        let zalo_ids: Vec<i32> = zalo.items.iter().filter_map(|lead| lead.id).collect();
+        assert_eq!(zalo.total, 2, "zalo keeps only VN mobile or a Zalo UID");
+        assert!(zalo_ids.contains(&vn));
+        assert!(zalo_ids.contains(&zalo_only));
+        assert!(!zalo_ids.contains(&intl));
+        assert!(!zalo_ids.contains(&landline));
+        assert!(!zalo_ids.contains(&no_zalo));
+
+        let email = commands::get_outreach_leads_page_internal(
+            &conn,
+            &outreach_query("email", "all"),
+            None,
+            50,
+        )
+        .unwrap();
+        let email_ids: Vec<i32> = email.items.iter().filter_map(|lead| lead.id).collect();
+        assert!(email_ids.contains(&vn));
+        assert!(!email_ids.contains(&intl), "email keeps its own @ filter");
+        assert!(email.items.iter().all(|lead| lead.email.contains('@')));
+
+        let unknown = commands::get_outreach_leads_page_internal(
+            &conn,
+            &outreach_query("sms", "all"),
+            None,
+            50,
+        );
+        assert!(
+            unknown.unwrap_err().to_lowercase().contains("invalid"),
+            "an unknown channel must map to invalid_request"
+        );
+
+        let unsupported_segmentation = commands::get_outreach_leads_page_internal(
+            &conn,
+            &outreach_query("whatsapp", "never_sent"),
+            None,
+            50,
+        );
+        assert!(
+            unsupported_segmentation
+                .unwrap_err()
+                .to_lowercase()
+                .contains("invalid"),
+            "WhatsApp has no outreach-history segmentation"
+        );
+    }
+
     #[test]
     fn test_zca_dob_all_models_both_negative_values() {
         let negative_dobs = [-25200, -72255600];

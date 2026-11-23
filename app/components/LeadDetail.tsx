@@ -50,9 +50,9 @@ export interface LeadDetailProps {
 export function LeadDetail(props: LeadDetailProps) {
   return (
     <View testID="lead-detail" class="w-[340px] gap-3 border-l border-border bg-card p-5">
-      <View class="flex-row items-center justify-between">
-        <Text testID="lead-detail-name" class="text-lg font-semibold text-foreground">{props.lead().name}</Text>
-        <Button testID="lead-close" label="Đóng" variant="ghost" size="sm" onPress={() => props.onClose()} />
+      <View class="flex-row items-center gap-2">
+        <Text testID="lead-detail-name" class="min-w-0 flex-1 truncate text-lg font-semibold text-foreground">{props.lead().name}</Text>
+        <View class="shrink-0"><Button testID="lead-close" label="Đóng" variant="ghost" size="sm" onPress={() => props.onClose()} /></View>
       </View>
       <Text class="text-sm text-muted-foreground">{props.lead().company ?? "—"}</Text>
       <Text class="text-sm text-foreground">{`${props.lead().email ?? "—"} · ${props.lead().phone ?? "—"}`}</Text>
