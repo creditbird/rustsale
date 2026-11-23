@@ -33,7 +33,7 @@ const PAGE_SIZE = 50;
  * "select every match, then exclude some" or an explicit pick. `resolve` turns the choice into the
  * ids a campaign sends to.
  */
-export function useOutreachLeads(channel: "zalo" | "email") {
+export function useOutreachLeads(channel: "zalo" | "email" | "whatsapp") {
   const search = signal("");
   const segmentation = signal<Segmentation>("all");
   const categoryId = signal<number | null>(null);

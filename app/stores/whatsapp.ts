@@ -203,7 +203,7 @@ export function useWhatsAppOutreach() {
   const recipientsDone = signal(false);
   let recipientOffset = 0;
 
-  const pick: OutreachPicker = useOutreachLeads("zalo");
+  const pick: OutreachPicker = useOutreachLeads("whatsapp");
 
   const filtered = computed(() => {
     const q = searchQuery().trim().toLowerCase();

@@ -1,8 +1,8 @@
 // Headless: the WhatsApp Outreach screen against the real native module.
 // The create test stubs only the connected-account list, so no real WhatsApp account is touched.
-import { open, test } from "nsh/test";
+import { expect, open, test } from "nsh/test";
 import { eventually } from "./testing";
-import { Campaigns, Host, Leads } from "rustsale/native";
+import { Campaigns, Host, Leads, LeadsMore } from "rustsale/native";
 
 const dir = `/tmp/rustsale-v3-ui-l3-wa-${Date.now()}`;
 
@@ -32,6 +32,12 @@ async function createCampaign(name: string, quiet = false): Promise<number> {
     timezone: "Asia/Ho_Chi_Minh",
   })) as number;
 }
+
+test("an unknown outreach channel is invalid_request", async () => {
+  await Host.start(dir);
+  await expect(LeadsMore.outreachPage({ channel: "sms", segmentation: "all" }, null, 1))
+    .rejects.toMatchObject({ code: "invalid_request" });
+});
 
 test("campaigns, search, status filter and the recipient ledger come from the core", async () => {
   const stamp = Date.now();
@@ -63,6 +69,20 @@ test("campaigns, search, status filter and the recipient ledger come from the co
   await app.press("id:wa-details-close");
   await app.type("id:wa-search", `WA L3B ${stamp}`);
   await app.waitUntil(() => has(app, `WA L3B ${stamp}`));
+});
+
+test("the WhatsApp picker keeps international and landline numbers Zalo drops", async () => {
+  const stamp = Date.now();
+  await Host.start(dir);
+  await Leads.add({ name: `WA intl ${stamp}`, phone: "+14155552671", status: "New" });
+  await Leads.add({ name: `WA land ${stamp}`, phone: "02838221234", status: "New" });
+  const app = await openWhatsApp();
+  await app.press("id:wa-new");
+  await app.waitFor("id:wa-name");
+  await app.type("id:wap-search", `${stamp}`);
+  await app.wait(400);
+  await app.waitUntil(() => has(app, "Đã chọn 2 / 2 lead"));
+  await app.waitUntil(() => has(app, `WA intl ${stamp}`) && has(app, `WA land ${stamp}`));
 });
 
 test("the create dialog validates, previews manual phones and creates through the core", async () => {
