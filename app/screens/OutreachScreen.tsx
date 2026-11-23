@@ -207,14 +207,13 @@ export function OutreachScreen() {
       runError.set(delays);
       return;
     }
-    campaign.begin();
     try {
       const ids = await pick.resolve();
       if (ids.length === 0) {
         runError.set("Không có lead nào phù hợp để gửi.");
-        campaign.abort();
         return;
       }
+      campaign.begin();
       await Campaigns.startZaloOutreach(
         chosenAccounts(), template, ids,
         burstEnabled(), delays.burstMax, delays.burstDelay, delays.inter,

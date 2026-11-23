@@ -155,14 +155,13 @@ export function EmailOutreachScreen() {
     const template = chosenTemplate();
     if (template === null) { runError.set("Chọn một mẫu email để gửi."); return; }
     if (pick.chosenCount() === 0) { runError.set("Chọn ít nhất một lead để gửi."); return; }
-    campaign.begin();
     try {
       const ids = await pick.resolve();
       if (ids.length === 0) {
         runError.set("Không có lead nào phù hợp để gửi.");
-        campaign.abort();
         return;
       }
+      campaign.begin();
       await Campaigns.sendEmailOutreach(smtpId, template, ids);
       status.set(`Đang gửi tới ${ids.length} lead…`);
       campaign.appendLog(`Bắt đầu gửi email tới ${ids.length} lead.`);
