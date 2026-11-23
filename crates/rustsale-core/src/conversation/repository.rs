@@ -1415,18 +1415,14 @@ impl ConversationRepository {
             > = std::collections::HashMap::new();
             {
                 let mut stmt = conn.prepare(
-                    "WITH LastInbound AS (
-                         SELECT conversation_id, MAX(COALESCE(provider_timestamp, ingested_at)) AS last_inbound_at
-                         FROM messages
-                         WHERE direction = 'inbound'
-                         GROUP BY conversation_id
-                     )
-                     SELECT DISTINCT ci.lead_id, cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.last_message_at, li.last_inbound_at
+                    "SELECT DISTINCT ci.lead_id, cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.last_message_at,
+                            (SELECT MAX(COALESCE(m.provider_timestamp, m.ingested_at))
+                             FROM messages m
+                             WHERE m.conversation_id = cc.id AND m.direction = 'inbound') AS last_inbound_at
                      FROM channel_conversations cc
                      JOIN channel_accounts ca ON ca.id = cc.channel_account_id
                      JOIN conversation_participants cp ON cp.conversation_id = cc.id
                      JOIN channel_identities ci ON ci.id = cp.identity_id
-                     LEFT JOIN LastInbound li ON li.conversation_id = cc.id
                      WHERE ci.lead_id IS NOT NULL AND cc.kind IN ('direct', 'email_thread')
                      ORDER BY cc.last_message_at DESC",
                 )?;
@@ -1642,18 +1638,14 @@ impl ConversationRepository {
             > = std::collections::HashMap::new();
             {
                 let mut stmt = conn.prepare(
-                    "WITH LastInbound AS (
-                         SELECT conversation_id, MAX(COALESCE(provider_timestamp, ingested_at)) AS last_inbound_at
-                         FROM messages
-                         WHERE direction = 'inbound'
-                         GROUP BY conversation_id
-                     )
-                     SELECT DISTINCT cp.identity_id, cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.last_message_at, li.last_inbound_at
+                    "SELECT DISTINCT cp.identity_id, cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.last_message_at,
+                            (SELECT MAX(COALESCE(m.provider_timestamp, m.ingested_at))
+                             FROM messages m
+                             WHERE m.conversation_id = cc.id AND m.direction = 'inbound') AS last_inbound_at
                      FROM channel_conversations cc
                      JOIN channel_accounts ca ON ca.id = cc.channel_account_id
                      JOIN conversation_participants cp ON cp.conversation_id = cc.id
                      JOIN channel_identities ci ON ci.id = cp.identity_id
-                     LEFT JOIN LastInbound li ON li.conversation_id = cc.id
                      WHERE ci.lead_id IS NULL AND cc.kind IN ('direct', 'email_thread')
                      ORDER BY cc.last_message_at DESC",
                 )?;
@@ -1918,54 +1910,40 @@ impl ConversationRepository {
 
         {
             let mut stmt = conn.prepare(
-                "WITH LastInbound AS (
-                     SELECT conversation_id, MAX(COALESCE(provider_timestamp, ingested_at)) AS last_inbound_at
-                     FROM messages
-                     WHERE direction = 'inbound'
-                     GROUP BY conversation_id
-                 ),
-                 LastMessage AS (
-                     SELECT conversation_id, text_content, COALESCE(provider_timestamp, ingested_at) AS occurred_at,
-                            ROW_NUMBER() OVER (
-                                PARTITION BY conversation_id
-                                ORDER BY COALESCE(provider_timestamp, ingested_at) DESC, id DESC
-                            ) AS rn
-                     FROM messages
-                 ),
-                 OutboundMax AS (
-                     SELECT conversation_id, MAX(ingested_at) AS max_outbound_at
-                     FROM messages
-                     WHERE direction = 'outbound'
-                     GROUP BY conversation_id
-                 ),
-                 MsgCounts AS (
-                     SELECT m.conversation_id, COUNT(*) AS total_count,
-                            SUM(CASE WHEN m.direction = 'inbound' AND m.status != 'read'
-                                          AND (m.ingested_at > COALESCE(om.max_outbound_at, ''))
-                                     THEN 1 ELSE 0 END) AS unread_count
-                     FROM messages m
-                     LEFT JOIN OutboundMax om ON om.conversation_id = m.conversation_id
-                     GROUP BY m.conversation_id
-                 ),
-                 PartCounts AS (
-                     SELECT conversation_id, COUNT(*) AS part_count
-                     FROM conversation_participants
-                     WHERE left_at IS NULL
-                     GROUP BY conversation_id
+                // Per-conversation lookups run only for the (at most 500) groups on the page and
+                // use idx_messages_conv_occurred / idx_messages_inbox_calc, instead of ranking and
+                // counting every message of the database.
+                "WITH PagedGroups AS (
+                     SELECT id, channel_account_id, kind, title, avatar_url, last_message_at, created_at
+                     FROM channel_conversations
+                     WHERE kind = 'group'
+                     ORDER BY COALESCE(last_message_at, created_at) DESC
+                     LIMIT 500
                  )
                  SELECT cc.id, cc.channel_account_id, ca.channel, ca.display_name, cc.kind, cc.title, cc.avatar_url, cc.last_message_at,
-                        li.last_inbound_at, lm.text_content, lm.occurred_at,
-                        COALESCE(mc.total_count, 0), COALESCE(mc.unread_count, 0),
-                        COALESCE(pc.part_count, 0)
-                 FROM channel_conversations cc
+                        (SELECT MAX(COALESCE(m.provider_timestamp, m.ingested_at))
+                         FROM messages m
+                         WHERE m.conversation_id = cc.id AND m.direction = 'inbound') AS last_inbound_at,
+                        (SELECT m.text_content FROM messages m
+                         WHERE m.conversation_id = cc.id
+                         ORDER BY COALESCE(m.provider_timestamp, m.ingested_at) DESC, m.id DESC
+                         LIMIT 1) AS lm_text,
+                        (SELECT COALESCE(m.provider_timestamp, m.ingested_at) FROM messages m
+                         WHERE m.conversation_id = cc.id
+                         ORDER BY COALESCE(m.provider_timestamp, m.ingested_at) DESC, m.id DESC
+                         LIMIT 1) AS lm_occurred_at,
+                        (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = cc.id) AS total_count,
+                        (SELECT COUNT(*) FROM messages m
+                         WHERE m.conversation_id = cc.id
+                           AND m.direction = 'inbound' AND m.status != 'read'
+                           AND m.ingested_at > COALESCE(
+                               (SELECT MAX(o.ingested_at) FROM messages o
+                                WHERE o.conversation_id = cc.id AND o.direction = 'outbound'), '')) AS unread_count,
+                        (SELECT COUNT(*) FROM conversation_participants p
+                         WHERE p.conversation_id = cc.id AND p.left_at IS NULL) AS part_count
+                 FROM PagedGroups cc
                  JOIN channel_accounts ca ON ca.id = cc.channel_account_id
-                 LEFT JOIN LastInbound li ON li.conversation_id = cc.id
-                 LEFT JOIN LastMessage lm ON lm.conversation_id = cc.id AND lm.rn = 1
-                 LEFT JOIN MsgCounts mc ON mc.conversation_id = cc.id
-                 LEFT JOIN PartCounts pc ON pc.conversation_id = cc.id
-                 WHERE cc.kind = 'group'
-                 ORDER BY COALESCE(cc.last_message_at, cc.created_at) DESC
-                 LIMIT 500",
+                 ORDER BY COALESCE(cc.last_message_at, cc.created_at) DESC",
             )?;
 
             let group_rows = stmt.query_map([], |row| {
