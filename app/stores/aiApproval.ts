@@ -60,14 +60,18 @@ export interface LeadEvidence {
 /** A lead's name and phone, read once so a card can show who the proposal is for. */
 interface LeadInfo { name: string; phone: string | null }
 
-export type AiStatusFilter = "PENDING" | "APPROVED" | "REJECTED" | "ALL";
+export type AiStatusFilter = "PENDING" | "APPROVED" | "REJECTED" | "APPLIED" | "ALL";
 
 export const AI_STATUSES: { id: AiStatusFilter; label: string }[] = [
   { id: "PENDING", label: "Chờ duyệt" },
   { id: "APPROVED", label: "Đã duyệt" },
   { id: "REJECTED", label: "Đã từ chối" },
+  { id: "APPLIED", label: "Đã áp dụng" },
   { id: "ALL", label: "Tất cả" },
 ];
+
+/** Longest proposal text the core's edit export accepts. */
+export const MAX_EDIT_CHARS = 8000;
 
 /** "HH:MM" in the machine's time zone (the core stores UTC). */
 export function hhmm(iso: string): string {
@@ -92,12 +96,15 @@ export function useAiApproval() {
   const editOpen = signal(false);
   const editing = signal<AiProposal | null>(null);
   const editedContent = signal("");
+  const editError = signal<string | null>(null);
 
   const evidenceFor = signal<number | null>(null);
   const evidence = signal<LeadEvidence | null>(null);
   const evidenceLoading = signal(false);
   const evidenceError = signal<string | null>(null);
   let successTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const pendingCount = computed(() => proposals().filter((p) => p.status === "PENDING").length);
 
   const filtered = computed(() => {
     const q = search().trim().toLowerCase();
@@ -127,7 +134,8 @@ export function useAiApproval() {
     error.set(null);
     try {
       await startCore();
-      const rows = ((await Ai.pendingProposals()) as AiProposal[])
+      // Every status in one read: the filter tabs show the history as well as the pending queue.
+      const rows = ((await Ai.proposals(null)) as AiProposal[])
         .filter((p) => typeof p.id === "number");
       proposals.set(rows);
       const known = leadInfo();
@@ -177,19 +185,48 @@ export function useAiApproval() {
   const openEdit = (p: AiProposal) => {
     editing.set(p);
     editedContent.set(p.proposed_content);
+    editError.set(null);
     editOpen.set(true);
   };
   const closeEdit = () => { if (!reviewing()) editOpen.set(false); };
-  /** True when the typed text differs from the stored one: the core cannot keep that edit yet. */
+  /** True when the typed text differs from the stored one (the core trims what it saves). */
   const editChanged = computed(() => {
     const p = editing();
-    return p !== null && editedContent() !== p.proposed_content;
+    return p !== null && editedContent().trim() !== p.proposed_content;
   });
+  const editProblem = computed(() => {
+    const text = editedContent().trim();
+    if (text === "") return "Nội dung tin nhắn không được để trống.";
+    if (Array.from(text).length > MAX_EDIT_CHARS) return `Nội dung dài quá ${MAX_EDIT_CHARS} ký tự.`;
+    return null;
+  });
+  /** Saves the reviewer's text first (`Ai.editProposal`), then approves the saved text. */
   const saveAndApprove = async () => {
     const p = editing();
-    if (p === null || editChanged()) return;
-    // The core has no export that rewrites a proposal's text: the review below approves the stored text.
-    if (await review(p, "APPROVED", "Human Reviewer (Edited)")) editOpen.set(false);
+    if (p === null || p.id === null || reviewing()) return;
+    const problem = editProblem();
+    if (problem !== null) { editError.set(problem); return; }
+    const content = editedContent().trim();
+    const changed = content !== p.proposed_content;
+    reviewing.set(true);
+    editError.set(null);
+    error.set(null);
+    try {
+      if (changed) await Ai.editProposal(p.id, content);
+      await Ai.reviewProposal(p.id, "APPROVED", changed ? "Human Reviewer (Edited)" : "Human Reviewer");
+      editOpen.set(false);
+      showSuccess(changed
+        ? "Đã lưu nội dung đã sửa và duyệt. Bản v3 chưa tự gửi tin: cần gửi thủ công qua hội thoại."
+        : "Đã ghi trạng thái ĐÃ DUYỆT. Bản v3 chưa tự gửi tin: cần gửi thủ công qua hội thoại.");
+      await load();
+    } catch (e) {
+      const f = report(e, { retry: () => { void saveAndApprove(); } });
+      await load();
+      error.set(f.message);
+      editError.set(f.message);
+    } finally {
+      reviewing.set(false);
+    }
   };
 
   const closeEvidence = () => { evidenceFor.set(null); evidence.set(null); evidenceError.set(null); };
@@ -214,7 +251,8 @@ export function useAiApproval() {
 
   return {
     proposals, leadInfo, ready, loading, failed, error, success, search, statusFilter, filtered, reviewing,
-    editOpen, editing, editedContent, editChanged, openEdit, closeEdit, saveAndApprove,
+    pendingCount, editOpen, editing, editedContent, editChanged, editProblem, editError,
+    openEdit, closeEdit, saveAndApprove,
     evidenceFor, evidence, evidenceLoading, evidenceError, toggleEvidence, closeEvidence,
     load, approve, reject,
   };

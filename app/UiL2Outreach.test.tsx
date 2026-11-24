@@ -99,5 +99,5 @@ test("a campaign's progress outlives the screen and a failed run frees the butto
   await app.waitUntil(() => has(app, "Đang gửi 2/5 L2P"));
   await app.waitUntil(() => has(app, "Dòng log L2Q khi rời màn"));
   await app.press("id:emit-out-failed");
-  await app.waitUntil(() => has(app, "Session not found L2R"));
+  await app.waitUntil(() => has(app, "Không tìm thấy phiên đăng nhập Zalo."));
 });

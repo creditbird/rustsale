@@ -1,5 +1,6 @@
 import { signal } from "nsh";
 import { Host } from "rustsale/native";
+import { vietnameseCampaignLog } from "./campaignLog";
 
 export interface LogLine {
   id: number;
@@ -25,9 +26,12 @@ function createCampaign(prefix: string, unit: string) {
   const doneListeners = new Set<() => void>();
   let listening = false;
 
+  /** Adds a line in the person's language: the core's English is mapped, UI text passes through. */
   const appendLog = (text: string) => {
+    const say = vietnameseCampaignLog(text);
+    if (say === "") return;
     seq += 1;
-    const next = logs().concat([{ id: seq, text }]);
+    const next = logs().concat([{ id: seq, text: say }]);
     logs.set(next.length > MAX_LOGS ? next.slice(next.length - MAX_LOGS) : next);
   };
 
@@ -40,7 +44,7 @@ function createCampaign(prefix: string, unit: string) {
         const event = payload as ProgressEvent;
         if (typeof event.progress === "number") progress.set(event.progress);
         if (typeof event.message === "string" && event.message !== "") {
-          status.set(event.message);
+          status.set(vietnameseCampaignLog(event.message));
           appendLog(event.message);
         }
         if (event.status === "failed") starting.set(false);
@@ -52,7 +56,9 @@ function createCampaign(prefix: string, unit: string) {
         const sent = typeof event.total_sent === "number" ? event.total_sent : 0;
         progress.set(100);
         starting.set(false);
-        status.set(typeof event.message === "string" && event.message !== "" ? event.message : `Đã gửi ${sent} ${unit}.`);
+        status.set(typeof event.message === "string" && event.message !== ""
+          ? vietnameseCampaignLog(event.message)
+          : `Đã gửi ${sent} ${unit}.`);
         appendLog(typeof event.message === "string" ? event.message : `Hoàn tất: ${sent} ${unit}.`);
         for (const fn of Array.from(doneListeners)) fn();
       }
