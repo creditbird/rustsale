@@ -1564,7 +1564,7 @@ pub fn get_campaign_steps(
 ) -> Result<Vec<crate::models::CampaignStep>> {
     let mut stmt = conn.prepare(
         "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at, template_id
-         FROM campaign_steps WHERE campaign_id = ?1 ORDER BY step_order ASC",
+         FROM campaign_steps WHERE campaign_id = ?1 ORDER BY step_order ASC, id ASC",
     )?;
     let rows = stmt.query_map([campaign_id], |row| {
         Ok(crate::models::CampaignStep {

@@ -79,6 +79,13 @@ test("campaigns: outreach templates and the unified campaign lifecycle", async (
   let campaigns = rows(await Campaigns.unifiedCampaigns());
   expect(campaigns.some((item) => item.id === campaignId)).toBe(true);
 
+  const savedSteps = rows(await Campaigns.unifiedCampaignSteps(campaignId));
+  expect(savedSteps).toHaveLength(1);
+  expect(savedSteps[0].campaign_id).toBe(campaignId);
+  expect(savedSteps[0].template_content).toBe("Chao {name}");
+  await expect(Campaigns.unifiedCampaignSteps(campaignId + 1_000_000)).rejects.toThrow();
+  await expect(Campaigns.unifiedCampaignSteps(0)).rejects.toThrow();
+
   await Campaigns.startUnifiedCampaign(campaignId);
   campaigns = rows(await Campaigns.unifiedCampaigns());
   expect(campaigns.find((item) => item.id === campaignId)?.status).toBe("ACTIVE");

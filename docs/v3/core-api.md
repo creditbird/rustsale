@@ -107,7 +107,7 @@ Conventions to keep when exporting to TSX:
 | `review_ai_proposal` | n | `proposal_id: i64`, `status: String`, `reviewer: String` | `Result<(), String>` |
 | `get_lead_evidence_context` | n | `lead_id: i32` | `Result<LeadEvidenceContext, String>` |
 
-#### `campaign_commands` (7)
+#### `campaign_commands` (7 + v3-only `get_unified_campaign_steps`)
 
 | Command | async | Args (JS names) | Returns |
 |---|---|---|---|
@@ -115,6 +115,7 @@ Conventions to keep when exporting to TSX:
 | `pause_unified_campaign` | n | `campaign_id: i64` | `Result<(), String>` |
 | `enroll_leads_into_campaign` | n | `campaign_id: i64`, `lead_ids: Vec<i32>` | `Result<usize, String>` |
 | `get_unified_campaign_analytics` | n | `campaign_id: i64` | `Result<CampaignAnalytics, String>` |
+| `get_unified_campaign_steps` | n | `campaign_id: i64` | `Result<Vec<CampaignStep>, String>` (v3-only; `Err` if the campaign does not exist) |
 | `get_all_unified_campaigns` | n | — | `Result<Vec<Campaign>, String>` |
 | `save_unified_campaign` | n | `campaign: Campaign`, `steps: Vec<CampaignStep>` | `Result<i64, String>` |
 | `delete_unified_campaign` | n | `campaign_id: i64` | `Result<(), String>` |

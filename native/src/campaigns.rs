@@ -303,6 +303,19 @@ impl Campaigns {
         .await
     }
 
+    /// Real steps of unified campaign `campaignId`, ordered by `step_order`, in the shape
+    /// `saveUnifiedCampaign` takes (`{ id, campaign_id, step_order, channel, delay_minutes,
+    /// condition_type, template_content, ai_prompt_override, created_at, template_id }`).
+    /// Rejects an unknown campaign instead of resolving an empty list. Read-only.
+    pub async fn unified_campaign_steps(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
+        let campaign = id64(campaign_id)?;
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            Ok::<_, CoreApiError>(unified::get_unified_campaign_steps(campaign, state)?)
+        })
+        .await
+    }
+
     /// All unified campaigns with their metadata.
     pub async fn unified_campaigns() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
