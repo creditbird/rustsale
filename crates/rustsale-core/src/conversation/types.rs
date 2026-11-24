@@ -874,6 +874,18 @@ impl DeleteConversationRequest {
     }
 }
 
+/// A channel account a direct chat can be opened from (Zalo and WhatsApp), for the new-chat dialog.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DirectChatAccount {
+    pub id: i64,
+    /// `zalo` or `whatsapp`.
+    pub channel: String,
+    pub display_name: Option<String>,
+    /// The core's connection state (`connected`, `disconnected`, ...), verbatim.
+    pub connection_status: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartDirectConversationRequest {

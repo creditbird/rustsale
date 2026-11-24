@@ -2,6 +2,8 @@ import { List, cleanup, signal, Text, View } from "nsh";
 import { Button as Base } from "nsh/base";
 import { ConversationActions, Conversations, Host } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Skeleton } from "../ui";
+import { CHANNELS, TABS, inboxQuery, isFiltered, type InboxChannel, type InboxTab } from "../stores/inboxFilter";
+import { NewChatDialog } from "./NewChatDialog";
 import { startCore, type Page } from "../stores/core";
 import { pager } from "../stores/paged";
 import { bodyOf, hhmm, mergeMessages, type TimelineMessage } from "../stores/format";
@@ -49,6 +51,10 @@ export function ConversationScreen() {
   const timelineReady = signal(false);
   const draft = signal("");
   const sending = signal(false);
+  const tab = signal<InboxTab>("all");
+  const channel = signal<InboxChannel>("all");
+  const search = signal("");
+  const newChat = signal(false);
   let before: unknown | null = null;
   let loadingOlder = false;
   let opened = 0;
@@ -56,7 +62,7 @@ export function ConversationScreen() {
   const inbox = pager<InboxItem>(
     async (cursor) => {
       await startCore();
-      return (await Conversations.inboxPage({ sort: "recent" }, cursor, 50)) as Page<InboxItem>;
+      return (await Conversations.inboxPage(inboxQuery(tab(), channel(), search()), cursor, 50)) as Page<InboxItem>;
     },
     (e, retry) => { report(e, { retry }); },
   );
@@ -123,6 +129,26 @@ export function ConversationScreen() {
   };
   const choose = (c: InboxItem) => { current.set(c); void loadTimeline(c); };
 
+  // A filter is asked of the core (it filters and pages), never applied to the rows already loaded.
+  let searchTimer: ReturnType<typeof setTimeout> | null = null;
+  const setTab = (t: InboxTab) => { if (tab() === t) return; tab.set(t); void inbox.reload(); };
+  const setChannel = (c: InboxChannel) => { if (channel() === c) return; channel.set(c); void inbox.reload(); };
+  const setSearch = (text: string) => {
+    search.set(text);
+    if (searchTimer !== null) clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => { searchTimer = null; void inbox.reload(); }, 250);
+  };
+  /** After "Tin nhắn mới": show the whole inbox again and open the chat that was just made. */
+  const openStarted = async (conversationId: number) => {
+    newChat.set(false);
+    tab.set("all");
+    channel.set("all");
+    search.set("");
+    await inbox.reload();
+    const row = inbox.items().find((c) => c.replyTargets.some((t) => t.conversationId === conversationId));
+    if (row) choose(row);
+  };
+
   const send = async () => {
     const c = current();
     const t = c ? target(c) : null;
@@ -169,6 +195,7 @@ export function ConversationScreen() {
   cleanup(() => {
     stop();
     if (inboxTimer !== null) clearTimeout(inboxTimer);
+    if (searchTimer !== null) clearTimeout(searchTimer);
   });
 
   void inbox.reload();
@@ -177,11 +204,40 @@ export function ConversationScreen() {
     <View class="flex-1 flex-row">
       <View class="w-[320px] border-r border-border bg-card">
         <View class="border-b border-border px-4 py-3">
-          <Text class="text-base font-semibold text-foreground">Hộp thư</Text>
+          <View class="flex-row items-center justify-between">
+            <Text class="text-base font-semibold text-foreground">Hộp thư</Text>
+            <Button testID="new-chat" size="sm" label="Tin nhắn mới" onPress={() => newChat.set(true)} />
+          </View>
           <Text testID="inbox-caption" class="text-xs text-muted-foreground">{inbox.ready() ? `${inbox.total()} hội thoại` : "Đang mở hộp thư…"}</Text>
+          <View class="mt-2 gap-2">
+            <Input testID="inbox-search" value={search()} onValue={setSearch} placeholder="Tìm theo tên hoặc tin nhắn" />
+            <View class="flex-row flex-wrap gap-1">
+              <Each of={TABS} key={(t) => t.id}>
+                {(t) => (
+                  <Base testID={`inbox-tab-${t().id}`} accessibilityLabel={t().label} onPress={() => setTab(t().id)}
+                    class={`rounded-full border px-2.5 py-1 ${tab() === t().id ? "border-primary bg-primary" : "border-border bg-card"}`}>
+                    <Text class={`text-xs ${tab() === t().id ? "text-primary-foreground" : "text-foreground"}`}>{t().label}</Text>
+                  </Base>
+                )}
+              </Each>
+            </View>
+            <View class="flex-row flex-wrap gap-1">
+              <Each of={CHANNELS} key={(c) => c.id}>
+                {(c) => (
+                  <Base testID={`inbox-channel-${c().id}`} accessibilityLabel={c().label} onPress={() => setChannel(c().id)}
+                    class={`rounded-full border px-2.5 py-1 ${channel() === c().id ? "border-primary bg-accent" : "border-border bg-card"}`}>
+                    <Text class="text-xs text-foreground">{c().label}</Text>
+                  </Base>
+                )}
+              </Each>
+            </View>
+          </View>
         </View>
         <If when={!inbox.ready()}><View class="gap-3 p-4"><Skeleton /><Skeleton /></View></If>
-        <If when={inbox.ready() && inbox.total() === 0}><EmptyState title="Hộp thư trống" /></If>
+        <If when={inbox.ready() && inbox.total() === 0 && !isFiltered(tab(), channel(), search())}><EmptyState title="Hộp thư trống" /></If>
+        <If when={inbox.ready() && inbox.total() === 0 && isFiltered(tab(), channel(), search())}>
+          <EmptyState title="Không có hội thoại khớp" hint="Đổi bộ lọc hoặc xoá từ khoá." />
+        </If>
         <List testID="inbox-list" each={inbox.items()} keyExtractor={(c) => c.key} estimatedItemSize={64}
           onLoadMore={() => { void inbox.more(); }} class="flex-1">
           {(c) => (
@@ -223,6 +279,7 @@ export function ConversationScreen() {
           )}
         </If>
       </View>
+      <NewChatDialog open={newChat()} onClose={() => newChat.set(false)} onStarted={(id) => { void openStarted(id); }} />
     </View>
   );
 }

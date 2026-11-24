@@ -478,6 +478,7 @@ is rejected, never silently wrong.
 | `list_conversation_inbox_page` | `list_conversation_inbox` | `Conversations.inboxPage` |
 | `list_google_maps_results_page` | (none, new) | `GoogleMaps.resultsPage` |
 | `get_activities_page` | `get_activities` | `Leads.activitiesPage` |
+| `list_direct_chat_accounts` | (none, new: the accounts the new-chat dialog can pick) | `Conversations.directChatAccounts` |
 | `list_comment_logs_page` | `list_comment_logs` | not needed for parity; `Facebook.commentLogs` wraps the v2 command |
 
 **Native crate `native/`** (`nsh-app-rustsale`, NSH 0.6.1 mixed mode, own `[workspace]`;

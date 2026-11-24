@@ -30,6 +30,17 @@ impl Conversations {
         .await
     }
 
+    /// The accounts a direct chat can be opened from: every Zalo and WhatsApp account as `{ id,
+    /// channel, displayName, connectionStatus }`, oldest first. `id` is the `channelAccountId` that
+    /// `ConversationNetwork.startDirect` takes.
+    pub async fn direct_chat_accounts() -> Result<JsonValue, JsError> {
+        on_blocking(move |h| {
+            let state = state_of::<ConversationState>(&h)?;
+            Ok::<_, CoreApiError>(commands::list_direct_chat_accounts(state)?)
+        })
+        .await
+    }
+
     /// Marks the conversation with inbox `key` read and resolves how many messages changed. Emits
     /// one `conversation-invalidated` event (reason `metadata`) per conversation whose unread count
     /// changed, so inbox and badges refresh; nothing is emitted when no message changed.
