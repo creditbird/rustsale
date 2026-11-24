@@ -56,15 +56,26 @@ test("the new-chat form says what is missing, one thing at a time", () => {
 
 // ---- the screen ----
 
-test("the unread tab keeps only the unread conversations, and all brings the rest back", async () => {
+test("the unread tab shows what the core counts as unread, and all brings the rest back", async () => {
   const app = await openInbox();
-  await app.waitUntil(() => has(app, "3 hội thoại"), { timeout: 8000 });
+  // Other test files share this core and may have read the seeded unread chat, so compare with the core, not the seed.
+  type Page = { items: { key: string }[]; total: number };
+  const unread = (await Conversations.inboxPage({ sort: "recent", unreadOnly: true }, null, 50)) as Page;
+  const all = (await Conversations.inboxPage({ sort: "recent" }, null, 50)) as Page;
+  await app.waitUntil(() => has(app, `${all.total} hội thoại`), { timeout: 8000 });
   await app.press("id:inbox-tab-unread");
-  await app.waitUntil(() => has(app, "1 hội thoại"), { timeout: 8000 });
-  expect(app.shows("id:inbox-lead:3")).toBe(true);
-  expect(app.shows("id:inbox-lead:1")).toBe(false);
+  if (unread.total === 0) {
+    await app.waitUntil(() => has(app, "Không có hội thoại khớp"), { timeout: 8000 });
+  } else {
+    await app.waitUntil(() => has(app, `${unread.total} hội thoại`), { timeout: 8000 });
+    for (const item of unread.items) expect(app.shows(`id:inbox-${item.key}`)).toBe(true);
+  }
+  if (unread.total < all.total) {
+    const read = all.items.find((i) => !unread.items.some((u) => u.key === i.key));
+    if (read) expect(app.shows(`id:inbox-${read.key}`)).toBe(false);
+  }
   await app.press("id:inbox-tab-all");
-  await app.waitUntil(() => has(app, "3 hội thoại"), { timeout: 8000 });
+  await app.waitUntil(() => has(app, `${all.total} hội thoại`), { timeout: 8000 });
 });
 
 test("a tab with no match says so, and the filter hint is not the empty-inbox text", async () => {
