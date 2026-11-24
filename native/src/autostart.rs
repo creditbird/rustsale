@@ -93,11 +93,13 @@ pub(crate) fn entry(exe: &Path) -> String {
     )
 }
 
-/// Quotes one `Exec` argument when it holds a reserved character, as the specification says.
+/// Quotes one `Exec` argument when it holds a reserved character, as the specification says. A
+/// literal `%` is written `%%` so it is not read as a field code.
 fn quote_arg(text: &str) -> String {
+    let text = text.replace('%', "%%");
     let reserved = |c: char| c.is_whitespace() || "\"'\\><~|&;$*?#()`".contains(c);
     if !text.chars().any(reserved) {
-        return text.to_owned();
+        return text;
     }
     let mut quoted = String::with_capacity(text.len() + 2);
     quoted.push('"');
@@ -178,6 +180,12 @@ mod tests {
             entry.contains("Exec=\"/opt/\\\\$HOME/rustsale\"\n"),
             "{entry}"
         );
+    }
+
+    #[test]
+    fn a_percent_sign_is_not_read_as_a_field_code() {
+        let entry = entry(Path::new("/opt/100%/rustsale"));
+        assert!(entry.contains("Exec=/opt/100%%/rustsale\n"), "{entry}");
     }
 
     #[test]

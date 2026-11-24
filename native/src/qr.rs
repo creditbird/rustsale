@@ -10,10 +10,20 @@ use qrcode::{EcLevel, QrCode};
 /// How wide one QR module is drawn, in pixels; the quiet zone is the renderer's default 4 modules.
 const MODULE_PIXELS: u32 = 6;
 
+/// The most bytes a QR code can hold (version 40, error level M, byte mode). Longer content is
+/// refused before the encoder reads it, so a huge string cannot make it allocate in proportion.
+const MAX_QR_BYTES: usize = 2_331;
+
 /// `text` as a QR code, encoded to PNG and returned as `data:image/png;base64,...`.
 pub(crate) fn png_data_url(text: &str) -> Result<String, CoreApiError> {
     if text.trim().is_empty() {
         return Err(CoreApiError::invalid("the QR content is empty"));
+    }
+    if text.len() > MAX_QR_BYTES {
+        return Err(CoreApiError::invalid(format!(
+            "the QR content is too long: {} bytes, at most {MAX_QR_BYTES}",
+            text.len()
+        )));
     }
     let code = QrCode::with_error_correction_level(text.as_bytes(), EcLevel::M)
         .map_err(|error| CoreApiError::invalid(format!("cannot encode the QR content: {error}")))?;
@@ -70,6 +80,27 @@ mod tests {
                 "empty content must be refused: {text:?}"
             );
         }
+    }
+
+    #[test]
+    fn the_longest_content_a_qr_code_holds_is_encoded() -> Result<(), CoreApiError> {
+        let url = png_data_url(&"x".repeat(MAX_QR_BYTES))?;
+        assert!(url.starts_with("data:image/png;base64,"));
+        Ok(())
+    }
+
+    #[test]
+    fn a_huge_input_is_refused_by_length_before_encoding() {
+        let huge = "x".repeat(MAX_QR_BYTES + 1);
+        let error = png_data_url(&huge).err();
+        assert_eq!(
+            error.as_ref().map(|e| e.code.as_str()),
+            Some("invalid_request")
+        );
+        assert!(
+            error.is_some_and(|e| e.message.contains("too long")),
+            "refused by the length cap, not by the encoder"
+        );
     }
 
     #[test]
