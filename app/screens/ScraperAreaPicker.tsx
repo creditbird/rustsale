@@ -184,7 +184,7 @@ export function ScraperAreaPicker(props: AreaPickerProps) {
           <View class="gap-2">
             <If when={country() === null}>
               <View class="gap-2">
-                <Input testID="country-search" value={countryQuery()} onValue={(v) => countryQuery.set(v)} placeholder="Tìm quốc gia (vd: Việt Nam, VN)" />
+                <Input testID="country-search" value={countryQuery()} onValue={(v) => countryQuery.set(v)} placeholder="Tìm quốc gia (vd: Vietnam, VN)" />
                 <Each of={visibleCountries()} key={(c) => c.code}>
                   {(c) => (
                     <Base testID={`country-${c().code}`} accessibilityLabel={c().name} onPress={() => { void chooseCountry(c()); }} class="rounded-(--radius) border border-border px-3 py-2 hover:bg-accent">

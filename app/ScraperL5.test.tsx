@@ -120,6 +120,7 @@ test("grid mode estimates the cells of the typed box and refuses a step the back
   expect(has(app, `~${thousands(plan.estimated_cells)} ô`)).toBe(true);
 
   // A step below the floor never reaches the core: the sentence says the range.
+  await app.clear("id:grid-step");
   await app.type("id:grid-step", "0");
   await app.waitUntil(() => has(app, "Bước lưới phải từ"));
 });
@@ -133,7 +134,8 @@ test("a box over the cell limit does not start a job", async () => {
   await app.type("id:grid-lat-max", "23");
   await app.type("id:grid-lng-min", "102");
   await app.type("id:grid-lng-max", "110");
-  await app.type("id:grid-step", ".2");
+  await app.clear("id:grid-step");
+  await app.type("id:grid-step", "0.2");
   await app.waitUntil(() => has(app, "Vượt giới hạn"));
   await app.press("id:scraper-start");
   await app.waitFor("id:scraper-error");
@@ -169,7 +171,7 @@ test("the administrative tab lists countries and either offers the download or b
   await app.press("id:grid-pick-area");
   await app.press("id:area-tab-area");
   await app.waitFor("id:country-search");
-  await app.type("id:country-search", "viet nam");
+  await app.type("id:country-search", "vietnam");
   await app.waitFor("id:country-VN");
   const status = (await GoogleMapsMore.countryStatus("VN")) as { state: string };
   await app.press("id:country-VN");
