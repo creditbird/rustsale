@@ -7,7 +7,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
     RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       build-essential pkg-config curl ca-certificates git xz-utils binutils dpkg-dev \
-      libssl-dev libgtk-4-dev libwebkitgtk-6.0-dev libsqlite3-dev libxkbcommon-dev libwayland-dev libx11-dev \
+      libssl-dev libgtk-4-dev libwebkitgtk-6.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libclang-dev cmake libsqlite3-dev libxkbcommon-dev libwayland-dev libx11-dev \
     && rm -rf /var/lib/apt/lists/*
 # rustc from the distro is too old (Ubuntu 24.04 has 1.75), so the toolchain comes from rustup.
 RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain ${RUST_VERSION}
