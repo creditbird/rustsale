@@ -1,7 +1,10 @@
 // Headless: the Chiến dịch screen against the real native module (no message is sent: the scheduler is not run).
 import { expect, open, test } from "nsh/test";
-import { Campaigns, Host, LeadsMore } from "rustsale/native";
-import { buildPayload, moveStep, newStep, validateCampaign } from "./stores/campaigns";
+import { Campaigns, Host, LeadsMore, Templates } from "rustsale/native";
+import {
+  buildPayload, filterTemplates, moveStep, newStep, parseTags, previewSpintax, stringifyTags, validateCampaign,
+  type TemplateRecord,
+} from "./stores/campaigns";
 
 const dir = `/tmp/rustsale-v3-ui-campaign-${Date.now()}`;
 const has = (app: Awaited<ReturnType<typeof openCampaigns>>, s: string) => app.texts().some((t) => t.includes(s));
@@ -88,4 +91,50 @@ test("an empty name is refused with a sentence, nothing is saved", async () => {
   await app.press("id:cc-save");
   await app.waitUntil(() => has(app, "Cần nhập tên chiến dịch."));
   expect((await list()).length).toBe(before);
+});
+
+test("template helpers: filter, tags and a spintax preview", () => {
+  const t = (id: number, channel: string, name: string, folder: number | null = null): TemplateRecord => ({
+    id, folder_id: folder, name, channel, stage: null, subject: null, content: `Nội dung ${name}`, media_url: null,
+    ai_prompt: null, tags_json: stringifyTags("vip, mới"),
+  });
+  const all = [t(1, "zalo", "Một"), t(2, "email", "Hai"), t(3, "omnichannel", "Ba", 9)];
+  expect(filterTemplates(all, "zalo", null, "").map((x) => x.id)).toEqual([1, 3]);
+  expect(filterTemplates(all, "all", 9, "").map((x) => x.id)).toEqual([3]);
+  expect(filterTemplates(all, "all", null, "VIP").length).toBe(3);
+  expect(filterTemplates(all, "all", null, "không có").length).toBe(0);
+  expect(parseTags(stringifyTags("a, ,b"))).toEqual(["a", "b"]);
+  expect(stringifyTags(" , ")).toBeNull();
+  expect(previewSpintax("{Chào|Xin chào} {{name}}", () => 1)).toBe("Xin chào Nguyễn Văn A");
+});
+
+test("a step takes a saved template and a step is saved as a template", async () => {
+  const stamp = Date.now();
+  await Host.start(dir);
+  const tplName = `Mẫu CC ${stamp}`;
+  const tplId = Number(await Templates.createTemplate({
+    name: tplName, channel: "zalo", folder_id: null, stage: "cold", subject: null,
+    content: `Mẫu chào ${stamp}`, media_url: null, ai_prompt: null, tags_json: null,
+  }));
+  const app = await openCampaigns();
+  await app.press("id:cc-new");
+  await app.waitFor("id:cc-step-1-pick");
+  await app.press("id:cc-step-1-pick");
+  await app.waitFor(`id:cc-tpl-item-${tplId}`);
+  await app.press(`id:cc-tpl-item-${tplId}`);
+  await app.waitUntil(() => has(app, `Mẫu chào ${stamp}`));
+  await app.press("id:cc-tpl-choose");
+  await app.waitFor("id:cc-step-1-tplmark");
+
+  await app.press("id:cc-step-1-savetpl");
+  await app.waitFor("id:cc-st-name");
+  await app.press("id:cc-st-save");
+  await app.waitUntil(() => has(app, "Cần nhập tên mẫu."));
+  const saved = `Lưu từ bước ${stamp}`;
+  await app.type("id:cc-st-name", saved);
+  await app.press("id:cc-st-save");
+  await app.waitFor("id:cc-step-1-tplmark");
+  const made = ((await Templates.list(null)) as { name: string; content: string }[]).find((x) => x.name === saved);
+  expect(made?.content).toBe(`Mẫu chào ${stamp}`);
+  await Templates.deleteTemplate(tplId);
 });

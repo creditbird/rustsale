@@ -1,13 +1,14 @@
 import { Scroll, signal, Text, View } from "nsh";
-import { Campaigns, Leads } from "rustsale/native";
+import { Campaigns, Leads, Templates } from "rustsale/native";
 import { Badge, Button, Checkbox, EmptyState, ErrorState, Input, Modal, Skeleton } from "../ui";
 import type { BadgeTone } from "../ui/Badge";
 import { startCore, type Page } from "../stores/core";
 import { notify, report } from "../stores/toast";
 import {
-  CHANNELS, CONDITIONS, DELAYS, PLACEHOLDERS,
-  buildPayload, delayLabel, moveStep, newStep, percent, renumber, statusLabel, validateCampaign,
-  type CampaignAnalytics, type StepDraft, type UnifiedCampaign,
+  CHANNELS, CONDITIONS, DELAYS, PLACEHOLDERS, TEMPLATE_CHANNELS, TEMPLATE_STAGES,
+  buildPayload, delayLabel, filterTemplates, moveStep, newStep, parseTags, percent, previewSpintax, renumber,
+  statusLabel, stringifyTags, validateCampaign, validateTemplateDraft,
+  type CampaignAnalytics, type StepDraft, type TemplateFolder, type TemplateRecord, type UnifiedCampaign,
 } from "../stores/campaigns";
 
 interface PickLead { id: number; name: string; phone: string; company: string }
@@ -84,6 +85,141 @@ export function CampaignCenterScreen() {
       if (f.action === "fix") buildError.set(f.message);
     } finally {
       saving.set(false);
+    }
+  };
+
+  // ---- templates (UI-35): the builder dialog is hidden while one of these is open, its draft stays in the signals
+  const pickFor = signal<number | null>(null);
+  const tplList = signal<TemplateRecord[]>([]);
+  const tplFolders = signal<TemplateFolder[]>([]);
+  const tplLoading = signal(false);
+  const tplQuery = signal("");
+  const tplChannel = signal("all");
+  const tplFolder = signal<number | null>(null);
+  const tplSelected = signal<number | null>(null);
+  const tplPreview = signal("");
+  const filtered = () => filterTemplates(tplList(), tplChannel(), tplFolder(), tplQuery());
+  const selected = () => tplList().find((t) => t.id === tplSelected()) ?? null;
+
+  const selectTpl = (t: TemplateRecord) => {
+    tplSelected.set(t.id);
+    tplPreview.set(previewSpintax(t.content));
+  };
+  const loadTemplates = async () => {
+    tplLoading.set(true);
+    try {
+      const [list, folders] = await Promise.all([Templates.list(null), Templates.folders()]);
+      tplList.set(list as TemplateRecord[]);
+      tplFolders.set(folders as TemplateFolder[]);
+    } catch (e) {
+      report(e, { retry: () => { void loadTemplates(); } });
+    } finally {
+      tplLoading.set(false);
+    }
+  };
+  const openPicker = (i: number) => {
+    pickFor.set(i);
+    tplQuery.set("");
+    tplFolder.set(null);
+    tplChannel.set(steps()[i]?.channel ?? "all");
+    tplSelected.set(null);
+    tplPreview.set("");
+    void loadTemplates();
+  };
+  const chooseTpl = () => {
+    const i = pickFor();
+    const t = selected();
+    if (i === null || t === null) return;
+    patchStep(i, {
+      template_content: t.content,
+      template_id: t.id,
+      ...(t.ai_prompt ? { ai_prompt_override: t.ai_prompt } : {}),
+      ...(t.channel !== "omnichannel" ? { channel: t.channel } : {}),
+    });
+    pickFor.set(null);
+    void Templates.incrementUsage(t.id).catch(() => undefined);
+  };
+
+  const saveTplFor = signal<number | null>(null);
+  const tName = signal("");
+  const tChannel = signal("zalo");
+  const tFolder = signal<number | null>(null);
+  const tStage = signal("cold");
+  const tSubject = signal("");
+  const tContent = signal("");
+  const tMedia = signal("");
+  const tAi = signal("");
+  const tTags = signal("");
+  const tNewFolder = signal("");
+  const tError = signal<string | null>(null);
+  const tSaving = signal(false);
+  const tPreview = signal<string | null>(null);
+
+  const openSaveTpl = (i: number) => {
+    const s = steps()[i];
+    if (s === undefined) return;
+    tName.set("");
+    tChannel.set(s.channel);
+    tFolder.set(null);
+    tStage.set("cold");
+    tSubject.set("");
+    tContent.set(s.template_content);
+    tMedia.set("");
+    tAi.set(s.ai_prompt_override ?? "");
+    tTags.set("");
+    tNewFolder.set("");
+    tError.set(null);
+    tPreview.set(null);
+    saveTplFor.set(i);
+    void (async () => {
+      try {
+        tplFolders.set((await Templates.folders()) as TemplateFolder[]);
+      } catch (e) {
+        report(e, {});
+      }
+    })();
+  };
+  const addFolder = async () => {
+    const n = tNewFolder().trim();
+    if (n === "") return;
+    try {
+      const id = Number(await Templates.createFolder(n, null));
+      tplFolders.set((await Templates.folders()) as TemplateFolder[]);
+      tFolder.set(id);
+      tNewFolder.set("");
+    } catch (e) {
+      const f = report(e, {});
+      if (f.action === "fix") tError.set(f.message);
+    }
+  };
+  const submitTpl = async () => {
+    if (tSaving()) return;
+    const i = saveTplFor();
+    const problem = validateTemplateDraft(tName(), tContent());
+    if (problem !== null) { tError.set(problem); return; }
+    if (i === null) return;
+    tSaving.set(true);
+    tError.set(null);
+    try {
+      const id = Number(await Templates.createTemplate({
+        name: tName().trim(),
+        channel: tChannel(),
+        folder_id: tFolder(),
+        stage: tStage(),
+        subject: tSubject().trim() === "" ? null : tSubject().trim(),
+        content: tContent().trim(),
+        media_url: tMedia().trim() === "" ? null : tMedia().trim(),
+        ai_prompt: tAi().trim() === "" ? null : tAi().trim(),
+        tags_json: stringifyTags(tTags()),
+      }));
+      patchStep(i, { template_id: id, template_content: tContent().trim() });
+      saveTplFor.set(null);
+      notify("Đã lưu thành mẫu", "success");
+    } catch (e) {
+      const f = report(e, { retry: () => { void submitTpl(); } });
+      if (f.action === "fix") tError.set(f.message);
+    } finally {
+      tSaving.set(false);
     }
   };
 
@@ -249,7 +385,7 @@ export function CampaignCenterScreen() {
         </View>
       </Scroll>
 
-      <Modal open={building()} title="Kịch bản chiến dịch mới" onClose={() => building.set(false)}
+      <Modal open={building() && pickFor() === null && saveTplFor() === null} title="Kịch bản chiến dịch mới" onClose={() => building.set(false)}
         class="m-auto h-[640px] w-[720px] max-w-full rounded-(--radius) border border-border bg-popover p-5">
         <View class="flex-1 gap-3">
           <Input testID="cc-name" value={name()} placeholder="Tên chiến dịch" onValue={(v) => name.set(v)} />
@@ -299,6 +435,15 @@ export function CampaignCenterScreen() {
                     </View>
                     <Input testID={`cc-step-${s().step_order}-content`} value={s().template_content} multiline
                       placeholder="Nội dung tin nhắn" onValue={(v) => patchStep(i(), { template_content: v })} />
+                    <View class="flex-row flex-wrap gap-1">
+                      <Button testID={`cc-step-${s().step_order}-pick`} label="Chọn mẫu" size="sm" variant="secondary"
+                        onPress={() => openPicker(i())} />
+                      <Button testID={`cc-step-${s().step_order}-savetpl`} label="Lưu thành mẫu" size="sm" variant="ghost"
+                        disabled={s().template_content.trim() === ""} onPress={() => openSaveTpl(i())} />
+                      <If when={s().template_id !== null}>
+                        <Text testID={`cc-step-${s().step_order}-tplmark`} class="self-center text-xs text-muted-foreground">Đang dùng mẫu</Text>
+                      </If>
+                    </View>
                     <Input testID={`cc-step-${s().step_order}-ai`} value={s().ai_prompt_override ?? ""}
                       placeholder="Gợi ý cho AI (không bắt buộc)"
                       onValue={(v) => patchStep(i(), { ai_prompt_override: v.trim() === "" ? null : v })} />
@@ -315,6 +460,132 @@ export function CampaignCenterScreen() {
             <Button testID="cc-build-cancel" label="Huỷ" disabled={saving()} onPress={() => building.set(false)} />
             <Button testID="cc-save" variant="primary" label={saving() ? "Đang lưu…" : "Lưu chiến dịch"}
               disabled={saving()} onPress={() => { void save(); }} />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal open={pickFor() !== null} title="Chọn mẫu tin nhắn" onClose={() => pickFor.set(null)}
+        class="m-auto h-[640px] w-[760px] max-w-full rounded-(--radius) border border-border bg-popover p-5">
+        <View class="flex-1 gap-3">
+          <Input testID="cc-tpl-search" value={tplQuery()} placeholder="Tìm theo tên, nội dung, thẻ" onValue={(v) => tplQuery.set(v)} />
+          <View class="flex-row flex-wrap gap-1">
+            <Each of={TEMPLATE_CHANNELS} key={(c) => c.id}>
+              {(c) => (
+                <Button testID={`cc-tpl-ch-${c().id}`} label={c().label} size="sm"
+                  variant={tplChannel() === c().id ? "primary" : "secondary"} onPress={() => tplChannel.set(c().id)} />
+              )}
+            </Each>
+          </View>
+          <View class="flex-row flex-wrap gap-1">
+            <Button testID="cc-tpl-folder-all" label="Mọi thư mục" size="sm" variant={tplFolder() === null ? "primary" : "ghost"}
+              onPress={() => tplFolder.set(null)} />
+            <Each of={tplFolders()} key={(f) => String(f.id)}>
+              {(f) => (
+                <Button testID={`cc-tpl-folder-${f().id}`} label={f().name} size="sm"
+                  variant={tplFolder() === f().id ? "primary" : "ghost"} onPress={() => tplFolder.set(f().id)} />
+              )}
+            </Each>
+          </View>
+          <Scroll class="h-[240px]">
+            <View class="gap-1">
+              <If when={tplLoading()}><Skeleton class="h-10" /></If>
+              <If when={!tplLoading() && filtered().length === 0}>
+                <Text testID="cc-tpl-empty" class="text-sm text-muted-foreground">Chưa có mẫu phù hợp.</Text>
+              </If>
+              <Each of={filtered()} key={(t) => String(t.id)}>
+                {(t) => (
+                  <Button testID={`cc-tpl-item-${t().id}`} size="sm" variant={tplSelected() === t().id ? "primary" : "secondary"}
+                    label={`${t().name} · ${t().channel}${parseTags(t().tags_json).length > 0 ? ` · #${parseTags(t().tags_json).join(" #")}` : ""}`}
+                    onPress={() => selectTpl(t())} />
+                )}
+              </Each>
+            </View>
+          </Scroll>
+          <If when={selected()}>
+            {(t) => (
+              <View class="gap-1 rounded-(--radius) border border-border p-3">
+                <View class="flex-row items-center justify-between">
+                  <Text class="text-xs font-semibold text-foreground">Xem trước</Text>
+                  <Button testID="cc-tpl-shuffle" label="Thử biến thể khác" size="sm" variant="ghost"
+                    onPress={() => tplPreview.set(previewSpintax(t().content))} />
+                </View>
+                <If when={t().subject}>{(sub) => <Text class="text-xs text-muted-foreground">{`Tiêu đề: ${sub()}`}</Text>}</If>
+                <Text testID="cc-tpl-preview" class="text-sm text-foreground">{tplPreview()}</Text>
+              </View>
+            )}
+          </If>
+          <View class="flex-row justify-end gap-2">
+            <Button testID="cc-tpl-cancel" label="Huỷ" onPress={() => pickFor.set(null)} />
+            <Button testID="cc-tpl-choose" variant="primary" label="Dùng mẫu này" disabled={selected() === null} onPress={chooseTpl} />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal open={saveTplFor() !== null} title="Lưu thành mẫu" onClose={() => saveTplFor.set(null)}
+        class="m-auto h-[680px] w-[680px] max-w-full rounded-(--radius) border border-border bg-popover p-5">
+        <View class="flex-1 gap-2">
+          <Scroll class="h-[540px]">
+            <View class="gap-2">
+              <Input testID="cc-st-name" value={tName()} placeholder="Tên mẫu" onValue={(v) => tName.set(v)} />
+              <View class="flex-row flex-wrap gap-1">
+                <Each of={TEMPLATE_CHANNELS.filter((c) => c.id !== "all")} key={(c) => c.id}>
+                  {(c) => (
+                    <Button testID={`cc-st-ch-${c().id}`} label={c().label} size="sm"
+                      variant={tChannel() === c().id ? "primary" : "secondary"} onPress={() => tChannel.set(c().id)} />
+                  )}
+                </Each>
+              </View>
+              <View class="flex-row flex-wrap gap-1">
+                <Each of={TEMPLATE_STAGES} key={(c) => c.id}>
+                  {(c) => (
+                    <Button testID={`cc-st-stage-${c().id}`} label={c().label} size="sm"
+                      variant={tStage() === c().id ? "primary" : "ghost"} onPress={() => tStage.set(c().id)} />
+                  )}
+                </Each>
+              </View>
+              <View class="flex-row flex-wrap gap-1">
+                <Button testID="cc-st-folder-none" label="Không thư mục" size="sm" variant={tFolder() === null ? "primary" : "ghost"}
+                  onPress={() => tFolder.set(null)} />
+                <Each of={tplFolders()} key={(f) => String(f.id)}>
+                  {(f) => (
+                    <Button testID={`cc-st-folder-${f().id}`} label={f().name} size="sm"
+                      variant={tFolder() === f().id ? "primary" : "ghost"} onPress={() => tFolder.set(f().id)} />
+                  )}
+                </Each>
+              </View>
+              <View class="flex-row items-center gap-2">
+                <View class="flex-1"><Input testID="cc-st-newfolder" value={tNewFolder()} placeholder="Thư mục mới" onValue={(v) => tNewFolder.set(v)} /></View>
+                <Button testID="cc-st-addfolder" label="Tạo thư mục" size="sm" disabled={tNewFolder().trim() === ""} onPress={() => { void addFolder(); }} />
+              </View>
+              <If when={tChannel() === "email"}>
+                <Input testID="cc-st-subject" value={tSubject()} placeholder="Tiêu đề email" onValue={(v) => tSubject.set(v)} />
+              </If>
+              <Input testID="cc-st-content" value={tContent()} multiline placeholder="Nội dung" onValue={(v) => { tContent.set(v); tPreview.set(null); }} />
+              <View class="flex-row flex-wrap gap-1">
+                <Each of={PLACEHOLDERS} key={(p) => p}>
+                  {(p) => (
+                    <Button testID={`cc-st-ph-${p()}`} label={p()} size="sm" variant="ghost"
+                      onPress={() => tContent.set(`${tContent()}${tContent() === "" ? "" : " "}${p()}`)} />
+                  )}
+                </Each>
+                <Button testID="cc-st-spin" label="+ Spintax" size="sm" variant="ghost"
+                  onPress={() => tContent.set(`{Xin chào|Chào bạn|Kính chào} ${tContent()}`)} />
+                <Button testID="cc-st-preview" label="Xem trước" size="sm" variant="secondary"
+                  onPress={() => tPreview.set(previewSpintax(tContent()))} />
+              </View>
+              <If when={tPreview() !== null}>
+                <Text testID="cc-st-preview-text" class="rounded-(--radius) border border-border p-2 text-sm text-foreground">{tPreview() ?? ""}</Text>
+              </If>
+              <Input testID="cc-st-media" value={tMedia()} placeholder="Đường dẫn ảnh/tệp (không bắt buộc)" onValue={(v) => tMedia.set(v)} />
+              <Input testID="cc-st-ai" value={tAi()} placeholder="Gợi ý cho AI (không bắt buộc)" onValue={(v) => tAi.set(v)} />
+              <Input testID="cc-st-tags" value={tTags()} placeholder="Thẻ, cách nhau bằng dấu phẩy" onValue={(v) => tTags.set(v)} />
+            </View>
+          </Scroll>
+          <If when={tError()}>{(m) => <Text testID="cc-st-error" class="text-sm text-destructive">{m()}</Text>}</If>
+          <View class="flex-row justify-end gap-2">
+            <Button testID="cc-st-cancel" label="Huỷ" disabled={tSaving()} onPress={() => saveTplFor.set(null)} />
+            <Button testID="cc-st-save" variant="primary" label={tSaving() ? "Đang lưu…" : "Lưu mẫu"} disabled={tSaving()}
+              onPress={() => { void submitTpl(); }} />
           </View>
         </View>
       </Modal>

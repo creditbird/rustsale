@@ -161,3 +161,93 @@ export function buildPayload(name: string, description: string, steps: StepDraft
 export function percent(rate: number): string {
   return `${(Number.isFinite(rate) ? rate : 0).toFixed(1)}%`;
 }
+
+// ---- templates (UI-35): the picker and the "save as template" form
+
+export interface TemplateRecord {
+  id: number;
+  folder_id: number | null;
+  name: string;
+  channel: string;
+  stage: string | null;
+  subject: string | null;
+  content: string;
+  media_url: string | null;
+  ai_prompt: string | null;
+  tags_json: string | null;
+}
+
+export interface TemplateFolder { id: number; name: string; color?: string | null }
+
+export const TEMPLATE_CHANNELS = [
+  { id: "all", label: "Tất cả" },
+  ...CHANNELS,
+  { id: "omnichannel", label: "Đa kênh" },
+];
+
+export const TEMPLATE_STAGES = [
+  { id: "cold", label: "Tiếp cận đầu" },
+  { id: "followup", label: "Chăm sóc lại" },
+  { id: "nurture", label: "Nuôi dưỡng" },
+  { id: "closing", label: "Chốt đơn" },
+];
+
+export function parseTags(json: string | null | undefined): string[] {
+  if (!json) return [];
+  try {
+    const v: unknown = JSON.parse(json);
+    if (Array.isArray(v)) return v.map((t) => String(t).trim()).filter((t) => t !== "");
+  } catch {
+    return json.split(",").map((t) => t.trim()).filter((t) => t !== "");
+  }
+  return [];
+}
+
+/** `"a, b"` → `'["a","b"]'`, or null when there is no tag. */
+export function stringifyTags(input: string): string | null {
+  const list = input.split(",").map((t) => t.trim()).filter((t) => t !== "");
+  return list.length === 0 ? null : JSON.stringify(list);
+}
+
+/** Picker list: a channel keeps its own templates and the omnichannel ones; the search looks at name, content, subject and tags. */
+export function filterTemplates(
+  list: TemplateRecord[],
+  channel: string,
+  folderId: number | null,
+  query: string,
+): TemplateRecord[] {
+  const q = query.trim().toLowerCase();
+  return list.filter((t) => {
+    if (channel !== "all" && t.channel !== channel && t.channel !== "omnichannel") return false;
+    if (folderId !== null && t.folder_id !== folderId) return false;
+    if (q === "") return true;
+    return [t.name, t.content, t.subject ?? "", t.tags_json ?? ""].some((x) => x.toLowerCase().includes(q));
+  });
+}
+
+const SAMPLE: Record<string, string> = {
+  name: "Nguyễn Văn A",
+  company: "Công ty Á Châu",
+  phone: "0987654321",
+  email: "nguyenvana@gmail.com",
+  value: "15,000,000 VND",
+};
+
+/** Fills the `{{name}}`-style variables with sample data and picks one `{A|B}` option; `pick` is injectable for tests. */
+export function previewSpintax(text: string, pick: (n: number) => number = (n) => Math.floor(Math.random() * n)): string {
+  let out = text;
+  for (const [key, val] of Object.entries(SAMPLE)) out = out.split(`{{${key}}}`).join(val);
+  for (let i = 0; i < 10 && /\{[^{}]+\}/.test(out); i += 1) {
+    out = out.replace(/\{([^{}]+)\}/g, (_m, choices: string) => {
+      const options = choices.split("|");
+      return options[pick(options.length)] ?? options[0];
+    });
+  }
+  return out;
+}
+
+export function validateTemplateDraft(name: string, content: string): string | null {
+  if (name.trim() === "") return "Cần nhập tên mẫu.";
+  if (content.trim() === "") return "Cần nhập nội dung mẫu.";
+  return null;
+}
