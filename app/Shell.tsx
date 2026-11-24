@@ -13,6 +13,7 @@ import { EmailOutreachScreen } from "./screens/EmailOutreachScreen";
 import { WhatsAppOutreachScreen } from "./screens/WhatsAppOutreachScreen";
 import { AiApprovalScreen } from "./screens/AiApprovalScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
+import { DashboardScreen } from "./screens/DashboardScreen";
 import { Placeholder } from "./screens/Placeholder";
 
 function SidebarItem(props: { id: (typeof NAV)[number]["id"]; label: string; glyph: string }) {
@@ -31,6 +32,7 @@ function SidebarItem(props: { id: (typeof NAV)[number]["id"]; label: string; gly
 }
 
 function pick(r: RouteId) {
+  if (r === "dashboard") return <DashboardScreen />;
   if (r === "leads") return <LeadsScreen />;
   if (r === "conversation") return <ConversationScreen />;
   if (r === "template_center") return <TemplatesScreen />;
