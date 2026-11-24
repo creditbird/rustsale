@@ -243,6 +243,11 @@ impl GoogleMapsJobService {
         self.runner.recover_startup().await
     }
 
+    /// Start-up recovery for a host that holds the exclusive instance lock.
+    pub async fn recover_startup_exclusive(&self) -> Result<usize> {
+        self.runner.recover_startup_exclusive().await
+    }
+
     pub async fn cleanup_retention(&self) -> Result<RetentionReport> {
         self.cleanup_retention_at(chrono::Utc::now()).await
     }

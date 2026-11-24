@@ -414,9 +414,11 @@ impl GoogleMapsScraper {
         })?;
         let name = clean_place_name(&raw.name);
         if name.is_empty() {
+            // The page loaded and the selectors still work, but there is no
+            // place on it: the listing was withdrawn or never existed.
             return Err(scrape_error(
-                ScrapeErrorKind::SelectorChanged,
-                "Google Maps place detail omitted the name",
+                ScrapeErrorKind::PlaceUnavailable,
+                "Google Maps place no longer exists (the page has no place name)",
                 false,
             ));
         }
@@ -1307,6 +1309,37 @@ mod typed_tests {
         let place = scraper.scrape_place(place_url).await.unwrap();
 
         assert_eq!(place.name, "rêu.coffee");
+        automation.assert_exhausted();
+    }
+
+    /// C10: a place page that loads but carries no place name was withdrawn or
+    /// never existed. It must say so, instead of blaming the selectors.
+    #[tokio::test]
+    async fn place_page_without_a_name_reports_place_unavailable() {
+        let place_url = "https://www.google.com/maps/place/?q=place_id:ChIJgone";
+        let (scraper, automation) = scripted_scraper(vec![
+            Step::Navigate(Ok(())),
+            Step::Health(Ok(GoogleMapsPageState::Ready)),
+            Step::Evaluate(Ok(json!({
+                "placeId": null,
+                "canonicalUrl": place_url,
+                "name": "  ",
+                "phone": null,
+                "address": null,
+                "website": null,
+                "facebook": null,
+                "zalo": null,
+                "latitude": null,
+                "longitude": null
+            }))),
+        ])
+        .await;
+
+        let error = scraper.scrape_place(place_url).await.unwrap_err();
+
+        assert_eq!(error.kind, ScrapeErrorKind::PlaceUnavailable);
+        assert!(!error.retryable);
+        assert!(error.message.contains("no longer exists"), "{error:?}");
         automation.assert_exhausted();
     }
 

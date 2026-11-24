@@ -219,8 +219,9 @@ impl ScrapeJobRepository {
         .await
     }
 
-    pub async fn reopen_for_email_retry(&self, job_id: &str) -> Result<ScrapeJob> {
+    pub async fn reopen_for_email_retry(&self, job_id: &str, owner_id: &str) -> Result<ScrapeJob> {
         let job_id = job_id.to_string();
+        let owner_id = owner_id.to_string();
         self.with_connection(move |mut conn| {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let current = load_job(&tx, &job_id)?
@@ -245,9 +246,10 @@ impl ScrapeJobRepository {
                 "UPDATE google_maps_scrape_jobs
                  SET status='running', stage='email_enrichment', completed_at=NULL,
                      updated_at=?1, last_error_kind=NULL, last_error_message=NULL,
+                     owner_id=?4, heartbeat_at=?1,
                      event_sequence=event_sequence + 1, version=version + 1
                  WHERE id=?2 AND status='partial' AND version=?3",
-                params![now, job_id, current.version as i64],
+                params![now, job_id, current.version as i64, owner_id],
             )?;
             if changed != 1 {
                 return Err(anyhow!(
@@ -391,7 +393,23 @@ impl ScrapeJobRepository {
         to: ScrapeJobStatus,
         cause: TransitionCause,
     ) -> Result<ScrapeJob> {
+        self.transition_job_as(job_id, expected_version, to, cause, None)
+            .await
+    }
+
+    /// Like [`Self::transition_job`], and a transition to `running` records
+    /// `owner_id` as the instance that holds the job's lease (A-U2). A job that
+    /// stops running releases the lease.
+    pub async fn transition_job_as(
+        &self,
+        job_id: &str,
+        expected_version: u64,
+        to: ScrapeJobStatus,
+        cause: TransitionCause,
+        owner_id: Option<&str>,
+    ) -> Result<ScrapeJob> {
         let job_id = job_id.to_string();
+        let owner_id = owner_id.map(str::to_string);
         self.with_connection(move |mut conn| {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let current = load_job(&tx, &job_id)?
@@ -464,6 +482,8 @@ impl ScrapeJobRepository {
                      END,
                      processed_units=max(processed_units - ?4, 0),
                      failed_units=max(failed_units - ?4, 0),
+                     owner_id=CASE WHEN ?1='running' THEN ?8 ELSE NULL END,
+                     heartbeat_at=CASE WHEN ?1='running' THEN ?2 ELSE NULL END,
                      event_sequence=event_sequence + 1,
                      version=version + 1,
                      run_generation=run_generation + ?5
@@ -476,6 +496,7 @@ impl ScrapeJobRepository {
                     generation_increment,
                     job_id,
                     expected_version as i64,
+                    owner_id,
                 ],
             )?;
             if changed != 1 {
@@ -489,38 +510,112 @@ impl ScrapeJobRepository {
         .await
     }
 
+    /// Interrupts every `running` job, whoever owns it.
+    ///
+    /// Only correct when the caller knows no other instance is alive, which is
+    /// what the exclusive instance lock proves at host start-up. Anything else
+    /// must use [`Self::recover_dead_owner_jobs`].
     pub async fn recover_interrupted_jobs(&self) -> Result<usize> {
+        self.recover_running_jobs(None).await
+    }
+
+    /// Interrupts the `running` jobs whose lease is dead: no owner at all (rows
+    /// written before leases existed), or an owner other than `own_owner_id`
+    /// whose heartbeat is older than `lease_ttl`. A job this instance owns, or
+    /// one a live instance keeps heartbeating, is left alone (A-U2, A-U4).
+    pub async fn recover_dead_owner_jobs(
+        &self,
+        own_owner_id: &str,
+        lease_ttl: std::time::Duration,
+    ) -> Result<usize> {
+        let ttl = chrono::Duration::from_std(lease_ttl).context("lease ttl is out of range")?;
+        let stale_before = (chrono::Utc::now() - ttl).to_rfc3339();
+        self.recover_running_jobs(Some((own_owner_id.to_string(), stale_before)))
+            .await
+    }
+
+    async fn recover_running_jobs(&self, lease: Option<(String, String)>) -> Result<usize> {
         self.with_connection(move |mut conn| {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
             let now = chrono::Utc::now().to_rfc3339();
-            tx.execute(
-                "UPDATE google_maps_scrape_units
-                 SET status='pending', next_retry_at=NULL, updated_at=?1,
-                     attempt_count=MAX(attempt_count - 1, 0)
+            let (own_owner_id, stale_before) = match lease {
+                Some((owner, stale)) => (Some(owner), Some(stale)),
+                None => (None, None),
+            };
+            // `?1`/`?2` are NULL for the unconditional form, where the second
+            // arm of the OR matches every running job.
+            const DEAD_JOBS: &str = "SELECT id FROM google_maps_scrape_jobs
                  WHERE status='running'
-                   AND job_id IN (
-                       SELECT id FROM google_maps_scrape_jobs WHERE status='running'
-                   )",
-                params![now],
+                   AND (?1 IS NULL
+                        OR owner_id IS NULL
+                        OR (owner_id != ?1
+                            AND (heartbeat_at IS NULL OR heartbeat_at < ?2)))";
+            tx.execute(
+                &format!(
+                    "UPDATE google_maps_scrape_units
+                     SET status='pending', next_retry_at=NULL, updated_at=?3,
+                         attempt_count=MAX(attempt_count - 1, 0)
+                     WHERE status='running' AND job_id IN ({DEAD_JOBS})"
+                ),
+                params![own_owner_id, stale_before, now],
             )?;
             tx.execute(
-                "UPDATE google_maps_scrape_results
-                 SET enrichment_status='pending'
-                 WHERE enrichment_status='running'
-                   AND job_id IN (
-                       SELECT id FROM google_maps_scrape_jobs WHERE status='running'
-                   )",
-                [],
+                &format!(
+                    "UPDATE google_maps_scrape_results
+                     SET enrichment_status='pending'
+                     WHERE enrichment_status='running' AND job_id IN ({DEAD_JOBS})"
+                ),
+                params![own_owner_id, stale_before],
             )?;
             let changed = tx.execute(
                 "UPDATE google_maps_scrape_jobs
-                 SET status='interrupted', updated_at=?1, completed_at=NULL,
+                 SET status='interrupted', updated_at=?3, completed_at=NULL,
+                     owner_id=NULL, heartbeat_at=NULL,
                      event_sequence=event_sequence + 1, version=version + 1
-                 WHERE status='running'",
-                params![now],
+                 WHERE status='running'
+                   AND (?1 IS NULL
+                        OR owner_id IS NULL
+                        OR (owner_id != ?1
+                            AND (heartbeat_at IS NULL OR heartbeat_at < ?2)))",
+                params![own_owner_id, stale_before, now],
             )?;
             tx.commit()?;
             Ok(changed)
+        })
+        .await
+    }
+
+    /// Renews the lease of a job this instance runs. Returns `false` when the
+    /// job is no longer running under `owner_id` (another instance took it, or
+    /// it was paused), which tells the heartbeat to stop.
+    pub async fn heartbeat_job(&self, job_id: &str, owner_id: &str) -> Result<bool> {
+        let job_id = job_id.to_string();
+        let owner_id = owner_id.to_string();
+        self.with_connection(move |conn| {
+            let changed = conn.execute(
+                "UPDATE google_maps_scrape_jobs SET heartbeat_at=?1
+                 WHERE id=?2 AND status='running' AND owner_id=?3",
+                params![chrono::Utc::now().to_rfc3339(), job_id, owner_id],
+            )?;
+            Ok(changed == 1)
+        })
+        .await
+    }
+
+    /// The lease columns of one job, `(owner_id, heartbeat_at)`.
+    pub async fn job_lease(
+        &self,
+        job_id: &str,
+    ) -> Result<Option<(Option<String>, Option<String>)>> {
+        let job_id = job_id.to_string();
+        self.with_connection(move |conn| {
+            conn.query_row(
+                "SELECT owner_id, heartbeat_at FROM google_maps_scrape_jobs WHERE id=?1",
+                params![job_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(Into::into)
         })
         .await
     }
@@ -3367,5 +3462,168 @@ mod tests {
         assert_eq!(completed.last_error_message, None);
         assert_eq!(completed.failed_units, 1);
         assert_eq!(completed.processed_units, 2);
+    }
+
+    /// A-U2/A-U4: sets the lease columns directly, as another instance would.
+    fn set_lease(context: &TestRepository, owner: Option<&str>, heartbeat_age_secs: i64) {
+        let heartbeat =
+            (chrono::Utc::now() - chrono::Duration::seconds(heartbeat_age_secs)).to_rfc3339();
+        context
+            .connection()
+            .execute(
+                "UPDATE google_maps_scrape_jobs SET owner_id=?1, heartbeat_at=?2 WHERE id='job-1'",
+                params![owner, owner.map(|_| heartbeat)],
+            )
+            .unwrap();
+    }
+
+    const TTL: std::time::Duration = std::time::Duration::from_secs(45);
+
+    async fn status_of_job_1(context: &TestRepository) -> ScrapeJobStatus {
+        context
+            .repository
+            .get_job("job-1")
+            .await
+            .unwrap()
+            .unwrap()
+            .status
+    }
+
+    #[tokio::test]
+    async fn dead_owner_recovery_leaves_a_live_instances_job_alone() {
+        let context = TestRepository::new();
+        claimed_running_job(&context).await;
+        set_lease(&context, Some("other-instance"), 5);
+
+        let recovered = context
+            .repository
+            .recover_dead_owner_jobs("this-instance", TTL)
+            .await
+            .unwrap();
+
+        assert_eq!(recovered, 0);
+        assert_eq!(status_of_job_1(&context).await, ScrapeJobStatus::Running);
+        // Before the fix recovery interrupted every running job unconditionally.
+        let unit_status: String = context
+            .connection()
+            .query_row("SELECT status FROM google_maps_scrape_units", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(unit_status, "running", "the live job's unit stays claimed");
+    }
+
+    #[tokio::test]
+    async fn dead_owner_recovery_interrupts_a_stale_lease_and_legacy_rows() {
+        for (owner, age) in [(Some("other-instance"), 600), (None, 0)] {
+            let context = TestRepository::new();
+            claimed_running_job(&context).await;
+            set_lease(&context, owner, age);
+
+            let recovered = context
+                .repository
+                .recover_dead_owner_jobs("this-instance", TTL)
+                .await
+                .unwrap();
+
+            assert_eq!(recovered, 1, "owner {owner:?}, heartbeat {age}s old");
+            assert_eq!(
+                status_of_job_1(&context).await,
+                ScrapeJobStatus::Interrupted
+            );
+            assert_eq!(
+                context.repository.job_lease("job-1").await.unwrap(),
+                Some((None, None)),
+                "the dead lease is cleared"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn dead_owner_recovery_never_touches_the_callers_own_job() {
+        let context = TestRepository::new();
+        claimed_running_job(&context).await;
+        // Even a stale heartbeat does not make the caller's own job "dead".
+        set_lease(&context, Some("this-instance"), 600);
+
+        let recovered = context
+            .repository
+            .recover_dead_owner_jobs("this-instance", TTL)
+            .await
+            .unwrap();
+
+        assert_eq!(recovered, 0);
+        assert_eq!(status_of_job_1(&context).await, ScrapeJobStatus::Running);
+    }
+
+    #[tokio::test]
+    async fn heartbeat_renews_only_the_owners_running_job() {
+        let context = TestRepository::new();
+        claimed_running_job(&context).await;
+        set_lease(&context, Some("owner-a"), 600);
+
+        assert!(!context
+            .repository
+            .heartbeat_job("job-1", "owner-b")
+            .await
+            .unwrap());
+        assert!(context
+            .repository
+            .heartbeat_job("job-1", "owner-a")
+            .await
+            .unwrap());
+        let (_, heartbeat) = context
+            .repository
+            .job_lease("job-1")
+            .await
+            .unwrap()
+            .unwrap();
+        let age = chrono::Utc::now()
+            - chrono::DateTime::parse_from_rfc3339(&heartbeat.unwrap())
+                .unwrap()
+                .with_timezone(&chrono::Utc);
+        assert!(age.num_seconds() < 30, "heartbeat is fresh again");
+    }
+
+    /// A-U2: a database written before leases existed gains the columns, keeps
+    /// its data, and its orphaned running job is recovered.
+    #[tokio::test]
+    async fn legacy_database_without_lease_columns_migrates_and_recovers() {
+        let context = TestRepository::new();
+        claimed_running_job(&context).await;
+        {
+            let conn = context.connection();
+            conn.execute(
+                "ALTER TABLE google_maps_scrape_jobs DROP COLUMN owner_id",
+                [],
+            )
+            .unwrap();
+            conn.execute(
+                "ALTER TABLE google_maps_scrape_jobs DROP COLUMN heartbeat_at",
+                [],
+            )
+            .unwrap();
+        }
+
+        // Opening the database again is what a new build does at start-up.
+        let path = context.path.to_string_lossy().to_string();
+        drop(crate::db::init_db(&path).unwrap());
+        let migrated = ScrapeJobRepository::for_initialized_db(path);
+
+        assert_eq!(
+            migrated.job_lease("job-1").await.unwrap(),
+            Some((None, None)),
+            "legacy rows get NULL owner and heartbeat"
+        );
+        assert_eq!(
+            migrated
+                .recover_dead_owner_jobs("this-instance", TTL)
+                .await
+                .unwrap(),
+            1
+        );
+        let job = migrated.get_job("job-1").await.unwrap().unwrap();
+        assert_eq!(job.status, ScrapeJobStatus::Interrupted);
+        assert_eq!(job.total_units, 1, "existing data is preserved");
     }
 }

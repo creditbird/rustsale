@@ -17,6 +17,10 @@ const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_REDIRECTS: usize = 3;
 const DEFAULT_MAX_BODY_BYTES: usize = 2 * 1024 * 1024;
 const MAX_HTML_PAGES: usize = 5;
+/// Everything one website may cost: robots.txt, the homepage and its sub-pages
+/// together. Per-request timeouts alone allowed over five minutes for a site
+/// that answered slowly (A-U5).
+const SITE_DEADLINE: Duration = Duration::from_secs(30);
 const ENRICHMENT_USER_AGENT: &str = "RustSaleBot/1.0";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -461,14 +465,36 @@ impl RobotsRules {
 
 pub struct EmailEnricher {
     client: SafeHttpClient,
+    site_deadline: Duration,
 }
 
 impl EmailEnricher {
     pub fn new(client: SafeHttpClient) -> Self {
-        Self { client }
+        Self {
+            client,
+            site_deadline: SITE_DEADLINE,
+        }
     }
 
+    /// Looks for a contact email on one website, spending at most
+    /// [`SITE_DEADLINE`] on it. A site that does not finish in time is a
+    /// retryable network failure, not "no email found".
     pub async fn find_email(&self, homepage: Url) -> Result<Option<String>, ScrapeJobError> {
+        let host = homepage.host_str().unwrap_or("website").to_string();
+        match tokio::time::timeout(self.site_deadline, self.find_email_on_site(homepage)).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(enrichment_error(
+                ScrapeErrorKind::TransientNetwork,
+                format!(
+                    "enrichment of {host} did not finish within {} s",
+                    self.site_deadline.as_secs()
+                ),
+                true,
+            )),
+        }
+    }
+
+    async fn find_email_on_site(&self, homepage: Url) -> Result<Option<String>, ScrapeJobError> {
         let robots = self.client.fetch_robots(&homepage).await?;
         if !robots.allows(&homepage) {
             return Ok(None);
@@ -1615,5 +1641,179 @@ mod tests {
             .status,
             EnrichmentStatus::Failed
         );
+    }
+}
+
+/// A-U5: the time one website may take is bounded, measured in virtual time.
+#[cfg(test)]
+mod site_deadline {
+    use super::*;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    struct PublicDns;
+    #[async_trait]
+    impl DnsResolver for PublicDns {
+        async fn resolve(&self, _host: &str, port: u16) -> Result<Vec<SocketAddr>, ScrapeJobError> {
+            Ok(vec![SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                port,
+            )])
+        }
+    }
+
+    /// Every request takes `delay`; `redirects` extra hops precede every HTML page except robots.
+    struct SlowSite {
+        delay: Duration,
+        redirects: usize,
+        seen: Mutex<HashMap<String, usize>>,
+        count: Mutex<usize>,
+    }
+    #[async_trait]
+    impl HttpTransport for SlowSite {
+        async fn execute(
+            &self,
+            request: PinnedHttpRequest,
+        ) -> Result<RawHttpResponse, ScrapeJobError> {
+            *self.count.lock().unwrap() += 1;
+            tokio::time::sleep(self.delay.min(request.request_timeout)).await;
+            let path = request.url.path().to_string();
+            if path == "/robots.txt" {
+                return Ok(RawHttpResponse {
+                    status: 404,
+                    content_type: Some("text/plain".into()),
+                    location: None,
+                    body: vec![],
+                });
+            }
+            let hop = {
+                let mut seen = self.seen.lock().unwrap();
+                let n = seen.entry(path.clone()).or_insert(0);
+                *n += 1;
+                *n
+            };
+            if hop <= self.redirects {
+                return Ok(RawHttpResponse::redirect(&format!("{path}?h={hop}")));
+            }
+            // After the redirects the same path (with query) serves the page.
+            let _ = &request.url;
+            let page = if path == "/" {
+                "<html><body><a href='/contact'>Contact</a><a href='/lien-he'>Liên hệ</a><a href='/about'>About us</a><a href='/gioi-thieu'>Giới thiệu</a></body></html>"
+            } else {
+                "<html><body>nothing here</body></html>"
+            };
+            Ok(RawHttpResponse::html(page))
+        }
+    }
+
+    async fn run(
+        delay_s: u64,
+        redirects: usize,
+    ) -> (u64, usize, Result<Option<String>, ScrapeJobError>) {
+        let site = Arc::new(SlowSite {
+            delay: Duration::from_secs(delay_s),
+            redirects,
+            seen: Mutex::new(HashMap::new()),
+            count: Mutex::new(0),
+        });
+        let client = SafeHttpClient::with_backend(Arc::new(PublicDns), site.clone());
+        let enricher = EmailEnricher::new(client);
+        let started = tokio::time::Instant::now();
+        let outcome = enricher
+            .find_email(Url::parse("https://slow.example.test/").unwrap())
+            .await;
+        let elapsed = started.elapsed().as_secs();
+        let requests = *site.count.lock().unwrap();
+        (elapsed, requests, outcome)
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_healthy_site_is_not_affected_by_the_deadline() {
+        let (elapsed, requests, outcome) = run(1, 0).await;
+        assert_eq!(outcome.unwrap(), None);
+        assert_eq!(requests, 6, "robots.txt, the homepage and four sub-pages");
+        assert!(elapsed < 10, "took {elapsed}s");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_site_is_cut_off_at_the_per_website_deadline() {
+        // Without a deadline the three slow scenarios took 154 s and 315 s.
+        for (delay_s, redirects) in [(14, 0), (14, 1), (15, 3)] {
+            let (elapsed, _, outcome) = run(delay_s, redirects).await;
+            assert!(
+                elapsed <= 30,
+                "{delay_s}s per request with {redirects} redirects took {elapsed}s"
+            );
+            let error = outcome.expect_err("a site that cannot finish in time is not 'no email'");
+            assert_eq!(error.kind, ScrapeErrorKind::TransientNetwork);
+            assert!(error.retryable, "a later run may find the site faster");
+            assert!(error.message.contains("30 s"), "{}", error.message);
+        }
+    }
+}
+
+/// Helpers that let other modules' tests drive an enricher against slow,
+/// fake websites without touching the network.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    /// Counts how many requests are in flight at the same moment.
+    #[derive(Default)]
+    pub(crate) struct ConcurrencyProbe {
+        in_flight: AtomicUsize,
+        peak: AtomicUsize,
+    }
+
+    impl ConcurrencyProbe {
+        pub(crate) fn peak(&self) -> usize {
+            self.peak.load(Ordering::SeqCst)
+        }
+    }
+
+    struct PublicDns;
+    #[async_trait]
+    impl DnsResolver for PublicDns {
+        async fn resolve(&self, _host: &str, port: u16) -> Result<Vec<SocketAddr>, ScrapeJobError> {
+            Ok(vec![SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(93, 184, 216, 34)),
+                port,
+            )])
+        }
+    }
+
+    /// Every request takes `delay`; robots.txt is missing and the homepage has no links,
+    /// so one website costs exactly two requests.
+    struct SlowSites {
+        delay: Duration,
+        probe: Arc<ConcurrencyProbe>,
+    }
+    #[async_trait]
+    impl HttpTransport for SlowSites {
+        async fn execute(
+            &self,
+            request: PinnedHttpRequest,
+        ) -> Result<RawHttpResponse, ScrapeJobError> {
+            let now = self.probe.in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.probe.peak.fetch_max(now, Ordering::SeqCst);
+            tokio::time::sleep(self.delay).await;
+            self.probe.in_flight.fetch_sub(1, Ordering::SeqCst);
+            if request.url.path() == "/robots.txt" {
+                return Ok(RawHttpResponse::status(404, "text/plain"));
+            }
+            Ok(RawHttpResponse::html(
+                "<html><body>no contact</body></html>",
+            ))
+        }
+    }
+
+    pub(crate) fn enricher_with_slow_sites(
+        delay: Duration,
+        probe: Arc<ConcurrencyProbe>,
+    ) -> EmailEnricher {
+        let client =
+            SafeHttpClient::with_backend(Arc::new(PublicDns), Arc::new(SlowSites { delay, probe }));
+        EmailEnricher::new(client)
     }
 }

@@ -1091,3 +1091,114 @@ Tính năng người dùng thao tác được (UI `GoogleMapsScraper.svelte` + s
 11. Lệnh kế thừa còn đăng ký: `start_google_maps_scrape` / `stop_google_maps_scrape` (src-tauri/src/lib.rs:530-531) — chưa xác minh UI còn dùng không (chưa chắc); v3 nên quyết định bỏ hay giữ.
 
 Không có trong scraper UI (cần hỏi chủ dự án có muốn v3 bổ sung): xuất CSV/Excel ngay trong scraper, nhập danh sách keyword/URL hàng loạt, lên lịch chạy, cấu hình proxy, chỉnh delay/timeout từ UI.
+
+---
+
+# Phần E. Kết quả xác nhận 13 mục chưa chắc (RS #53, ngày 24/11/2026)
+
+Chạy trên nhánh `feat/nsh-v3-int7` @6a3d544, nhánh kiểm chứng `feat/nsh-v3-scraper-verify`. Không sửa mã sản phẩm; chỉ thêm khung kiểm chứng `crates/rustsale-core/tests/scraper_verify.rs`, một module test `verify53` ở cuối `google_maps_jobs/email.rs` và dòng dev-dependency `tokio` (`test-util`) trong `crates/rustsale-core/Cargo.toml`. Bản tài liệu này không chứa dữ liệu khách hàng (chỉ mã, số đếm, 6 ký tự cuối id job).
+
+**Cách chạy.** Sidecar `cloak-runtime` thật (CloakBrowser) chạy qua `BrowserManager` + `GoogleMapsUnitProcessor` thật, DB và profile ở thư mục tạm (không đụng v2, không đăng nhập Zalo/WhatsApp/Facebook). Hai job thật, mỗi job bọc bộ xử lý để giới hạn 20 place, nghỉ 4 giây trước mỗi unit:
+
+| Job | Từ khoá, khu vực | Unit | Kết quả | Thời gian |
+|---|---|---|---|---|
+| …46ddd8 | quán cà phê, Quận 1 | 21 (1 keyword + 20 place), 0 lỗi, Completed | 20 địa điểm, 13 lead | 346 s (place: 9,1–15,1 s, trung vị 12,5 s) |
+| …fcda9b | nha khoa, Quận 3 | 19 (1 keyword + 18 place), 0 lỗi, Completed | 18 địa điểm, 13 lead | 310 s |
+
+Thêm: `live_dom_probe` (trang listing + 4 trang place), `live_state_probe` (trạng thái trang theo từng tình huống), và các test không cần mạng cho A-U1/A-U2/A-U4, một test mô phỏng sidecar thoát cho A-U3, một test thời gian ảo cho A-U5.
+
+## E.1. Bảng kết luận
+
+| Mục | Kết luận | Mức | Bằng chứng ngắn |
+|---|---|---|---|
+| A-U1 | **Xác nhận** | vừa | Panic trong processor: job kẹt `Running` trong DB, `pause` báo "không phải active job" |
+| A-U2 | **Xác nhận** | vừa | Instance thứ hai chạy `recover` đổi job `Running` thành `Interrupted`, unit về `Pending` |
+| A-U3 | Không tái hiện (Linux) | thấp | Sidecar và Chrome biến mất sau `process::exit` và SIGKILL, 0 tiến trình mồ côi |
+| A-U4 | **Xác nhận** | thấp | `recover_interrupted_jobs` ngay sau `start` đổi job vừa chạy thành `Interrupted` |
+| A-U5 | **Xác nhận** (bằng mô phỏng) | thấp | Không có hạn tổng mỗi website: 84 s, 154 s, 315 s theo kịch bản chậm; mẫu thật chưa gặp site chậm |
+| B-U1 | Không tái hiện | n/a | 0/38 kết quả có ký tự U+E000–U+F8FF, dù DOM gốc có glyph ở 4/4 nút địa chỉ |
+| B-U2 | Không tái hiện (headless) | thấp | Viewport 1920×947, phủ gấp 0,84–0,93 bán kính ô (cần ≥ 0,71); headed chưa đo |
+| B-U3 | Không tái hiện | n/a | 2 job qua nhiều lần checkpoint + import, version 46 và 42, 0 lỗi xung đột |
+| B-U4 | **Xác nhận** | thấp | `GridScraper` và `generate_grid` chỉ được test trong `grid.rs` dùng |
+| C6 | Không tái hiện trong dữ liệu lưu | thấp | DOM gốc có glyph 4/4, nhưng 0/38 kết quả lưu có glyph (v3 đọc `aria-label` trước) |
+| C10 | **Xác nhận một phần** | thấp | Trang place không tồn tại vẫn được tính `Ready`; extractor chặn bằng lỗi `SelectorChanged` |
+| C18 | Không tái hiện (máy thử) | thấp | URL place mất `hl` nhưng trang vẫn ra cùng ngôn ngữ với listing; chưa thử máy locale vi |
+| C19 | Không tái hiện | n/a | 0 lần dừng nhầm vì consent/captcha trong 40 unit thật; selector consent đã thu hẹp |
+
+## E.2. Chi tiết từng mục
+
+**A-U1 (xác nhận, vừa).** Test `au1_panic_in_processor` cho processor panic ở unit đầu của job. Sau panic: DB `status=Running stage=Scraping`, `runner.active_job_id=None`, gọi `pause` trả lỗi "scrape job … is not the active job", trạng thái cuối vẫn `Running`. Nghĩa là UI báo `running` mãi và người dùng không dừng/huỷ được; chỉ khởi động lại app (recover) mới gỡ. Ghi chú: chưa tìm thấy đường panic thật trong mã sản phẩm, nên mức vừa chứ không cao. Sửa: bọc `run_job` bằng `AssertUnwindSafe(..).catch_unwind()` rồi gọi `record_runner_failure`, hoặc task giám sát `JoinHandle` (`runner.rs:275`). Test hồi quy: giữ `au1_panic_in_processor`, đổi assert thành `status=Failed`.
+
+**A-U2 (xác nhận, vừa).** Test `au2_two_instances` dựng instance thứ hai (repository + service thứ hai) trên cùng file DB, trong lúc job ở `Running`, `version=1`. Instance hai chạy `recover_startup`: `recovered_jobs=1`, job thành `Interrupted`, unit về `Pending`. `src-tauri/src/lib.rs` không có `tauri-plugin-single-instance`. Chưa chạy hai app Tauri thật và chưa thử tranh chấp thư mục profile trình duyệt. Sửa: thêm `tauri-plugin-single-instance`; và/hoặc cột `owner_id` + `heartbeat_at` để `recover_interrupted_jobs` chỉ nhận job quá hạn.
+
+**A-U3 (không tái hiện trên Linux, thấp).** Test `au3_orphans_on_exit` mở sidecar + Chrome thật, vào Google Maps, rồi chết theo 3 cách: `process::exit(0)`, SIGKILL chính nó, và đóng đúng quy trình (đối chứng). Sau 4 giây cả ba lần: 0 tiến trình còn lại gắn với thư mục profile, các pid sidecar đều đã thoát. Sidecar thoát khi ống stdin bị đóng nên Chrome đi theo. Chưa kiểm: Windows/macOS, và đường thoát thật của app Tauri (menu tray). Vẫn nên thêm xử lý `RunEvent::Exit` cho gọn, nhưng không phải lỗi đã tái hiện.
+
+**A-U4 (xác nhận, thấp).** Test `au4_recover_race` gọi `recover_interrupted_jobs` ngay sau khi job bắt đầu chạy: `recovered_jobs=1`, job thành `Interrupted`, unit `Pending`, `processed=0/1`. Cơ chế giống A-U2 (hàm recover không phân biệt job của chính instance này). Cửa sổ race thật chỉ vài ms đầu khi app khởi động (`lib.rs:233`), nên tần suất thấp. Sửa: chờ `recover_startup` xong trước khi nhận lệnh `start`, hoặc sửa chung với A-U2 bằng lease/owner.
+
+**A-U5 (xác nhận bằng mô phỏng, thấp).** Test `verify53::au5_worst_case_enrichment_time` (thời gian ảo của tokio, 1 website giả 4 link con):
+
+| Kịch bản | Thời gian | Số request |
+|---|---|---|
+| 1 s mỗi request, không redirect | 6 s | 6 |
+| 14 s mỗi request, không redirect | 84 s | 6 |
+| 14 s mỗi request, 1 redirect mỗi trang | 154 s | 11 |
+| 15 s mỗi request, 3 redirect mỗi trang | 315 s | 21 |
+
+Không có hạn tổng thời gian cho một website, và các site được xử lý tuần tự trong `finalize_job`. Số liệu thật: chỉ kết quả có website mà không có số điện thoại mới vào enrichment (`list_results_for_enrichment`): 7/38 kết quả (2/20 và 5/18). `finalize` mất 0 s (job …46ddd8) và 9 s (job …fcda9b); chưa gặp site chậm nào, 1 email tìm được. Sửa: thêm `tokio::time::timeout` tổng ~30 s mỗi website, và xử lý vài website song song (ví dụ 4).
+
+**B-U1 (không tái hiện, n/a).** DOM gốc: glyph U+E0C8 nằm đầu `textContent` của nút địa chỉ ở 4/4 trang place thử. Nhưng v3 đọc `aria-label` của nút trước (và lọc ký tự PUA ở `clean_place_name`), nên trong 38 kết quả lưu (2 job): 0 trường chuỗi nào chứa ký tự U+E000–U+F8FF; địa chỉ có ở 38/38. Giữ test hồi quy cho phần lọc glyph vì DOM gốc vẫn có glyph.
+
+**B-U2 (không tái hiện ở headless, thấp).** Viewport headless đo được là 1920×947; RustSale không đặt viewport, đây là mặc định của CloakBrowser. `radius_m` của ô là bán kính ngoại tiếp (nửa đường chéo), nên ô vuông cần nửa chiều cao viewport ≥ 0,71 × `radius_m`. Tính theo mét/pixel ở zoom z (`156543 × cos(lat) / 2^z`), tại mép trên của mỗi nhóm zoom (xấu nhất): nửa chiều cao / bán kính ≈ 0,89 (z13–15), 0,93 (z16–18), 1,19 (z12) ở vĩ độ 10,8°; 0,84, 0,88, 1,13 ở 21°. Đạt. Nếu cửa sổ (chế độ headed) chỉ cao 720 px: 0,64–0,70 ở nhóm z13–z18, dưới ngưỡng 0,71 nên ô có thể bị thiếu phủ nhẹ ở mép. Đây là phép tính lý thuyết; chưa chạy job lưới thật và chưa đo chế độ headed. Đề xuất: ép viewport cố định (hoặc ép `radius_to_zoom` tăng một mức) khi chạy headed.
+
+**B-U3 (không tái hiện, n/a).** Hai job thật chạy qua nhiều checkpoint và bước import, kết thúc `Completed`, `version` cuối 46 và 42, `last_error_kind` rỗng, 0 lỗi "xung đột phiên bản" trong log. Runner nạp lại job sau checkpoint đúng như phỏng đoán.
+
+**B-U4 (xác nhận, thấp).** `GridScraper` (`scrapers/grid.rs:365`) chỉ được dùng ở dòng 805, nằm trong `mod tests`; `generate_grid` (dòng 67) chỉ có test dùng (dòng 597). Không nơi nào trong `crates/` và `src-tauri/` gọi chúng. Sửa: xoá `GridScraper`; `generate_grid` chuyển vào `#[cfg(test)]` hoặc xoá.
+
+**C6 (không tái hiện trong dữ liệu lưu, thấp).** Xem B-U1. Thêm: class bị làm rối `.rogA2c` vẫn có trên trang thật (4/4), nhưng chỉ là fallback sau `aria-label`/`data-item-id`. Nên theo dõi tỉ lệ địa chỉ rỗng khi Google đổi class.
+
+**C10 (xác nhận một phần, thấp).** Sidecar v3 đã siết điều kiện (`[role="main"] h1` cộng `[data-item-id]` hoặc nút trong `main`, `googleMaps.ts:137`), nên phần "h1 ẩn" của mô tả cũ đã được xử lý: trang bản đồ trống có h1 "This area" thì ra `SelectorChanged`, trang không có kết quả ra `EmptyResults`. Còn lại: trang place không tồn tại (id giả) có h1 rỗng ẩn nhưng vẫn có nút trong `main` nên được tính `Ready`. Hậu quả: extractor thấy tên rỗng và trả lỗi `SelectorChanged` không retry (`google_maps.rs:416`), không sinh dữ liệu rác, nhưng nhãn lỗi sai (đáng ra là "place không còn tồn tại") và lỗi này tính vào chuỗi lỗi liên tiếp của job. Sửa: coi place `Ready` chỉ khi `h1` có chữ; thêm loại lỗi riêng cho place không còn.
+
+**C18 (không tái hiện ở máy thử, thấp).** Mã canonical hoá đúng là cắt `?hl` (`url_hl=false` khi mở lại URL place). Trên máy thử trang vẫn ra tiếng Anh nhất quán với listing (nhãn "Address:", danh mục tiếng Anh); khi thêm `hl=vi` thì ra tiếng Việt, tức tham số có tác dụng. Lỗi lẫn ngôn ngữ chỉ xảy ra khi locale/IP của máy chạy khác ngôn ngữ listing; chưa thử trên máy locale vi. Lần thử bước thứ ba (có `hl=en` tường minh) bị `NavigationTimeout` 30 s nên không có số liệu cho bước này. Sửa rẻ: giữ lại `hl` khi mở URL place.
+
+**C19 (không tái hiện, n/a).** Trên listing thật không có khớp consent/recaptcha; hai job, 40 unit, 0 lần `PausedRequiresAction`, 0 lỗi captcha/consent. Selector consent trong sidecar v3 đã thu hẹp vào `form[action*="consent"]` và `[role="dialog"]`, khác mô tả cũ.
+
+## E.3. Danh sách lỗi xác nhận và đề xuất sửa (theo thứ tự ưu tiên)
+
+1. A-U1 (vừa): `catch_unwind` quanh `run_job` hoặc giám sát `JoinHandle`, ghi `Failed`.
+2. A-U2 + A-U4 (vừa/thấp): một sửa chung: `tauri-plugin-single-instance` cộng lease `owner_id`/`heartbeat_at` cho `recover_interrupted_jobs`; chờ recover xong trước khi nhận `start`.
+3. A-U5 (thấp): timeout tổng ~30 s mỗi website, chạy vài website song song.
+4. C10 (thấp): `h1` phải có chữ; lỗi riêng cho place không còn.
+5. B-U4 (thấp): xoá `GridScraper`, đưa `generate_grid` vào `#[cfg(test)]`.
+
+## E.4. Chưa kiểm được
+
+- Windows/macOS cho A-U3; thoát qua menu tray của app Tauri thật.
+- Hai app Tauri chạy song song thật (A-U2 chỉ mô phỏng hai instance trên cùng DB).
+- Chế độ headed và job lưới thật (B-U2 mới là phép tính).
+- Máy có locale tiếng Việt (C18), và một website chậm thật (A-U5).
+
+---
+
+# Phần F. Sửa 6 lỗi đã xác nhận ở Phần E (RS #56, ngày 24/11/2026)
+
+Nhánh `feat/nsh-v3-scraper-fix2`, nền `feat/nsh-v3-int8` @fdbe8fa. Mỗi lỗi có bằng chứng "trước" (kết quả đo ở Phần E trên mã chưa sửa) và "sau" (cùng test hoặc test mới, chạy trên mã đã sửa).
+
+| Mục | Cách sửa | Trước (Phần E) | Sau |
+|---|---|---|---|
+| A-U1 | `run_job` bọc `catch_unwind`; panic ghi `Failed` qua `record_runner_failure`, giải phóng job đang chạy | job kẹt `Running`, `pause` báo "không phải active job" | `au1_panic_in_processor`: DB `status=Failed`, `active_job_id` rỗng, người dùng huỷ/chạy lại được |
+| A-U2 | Khoá instance duy nhất theo thư mục dữ liệu (`instance_lock.rs`, khoá file OS, tự nhả khi process chết); thêm lease `owner_id` + `heartbeat_at` (10 s/lần, hạn 45 s); recover chỉ nhận job không chủ hoặc lease hết hạn | instance hai đổi job `Running` thành `Interrupted`, unit về `Pending` | `au2_two_instances`: `recovered_jobs=0`, job vẫn `Running`, hoàn tất `Completed` 1/1; 4 test repository `dead_owner_recovery_*` và `heartbeat_*` |
+| A-U4 | Cùng lease với A-U2: recover bỏ qua job của chính instance | `recovered_jobs=1`, job vừa chạy thành `Interrupted` | `au4_recover_race`: `recovered_jobs=0`, hoàn tất `Completed` 1/1 |
+| A-U5 | Hạn tổng `SITE_DEADLINE` = 30 s cho mỗi website; quá hạn trả lỗi `TransientNetwork`, `retryable` (không bị tính là "không có email"); website được xử lý song song (có test đếm đồng thời) | 84 s, 154 s, 315 s theo 3 kịch bản chậm | `site_deadline::a_slow_site_is_cut_off_at_the_per_website_deadline`: cả 3 kịch bản ≤ 30 s; `a_healthy_site_is_not_affected_by_the_deadline`: site khoẻ < 10 s, đủ 6 request |
+| C10 | `hasPlaceHeading` chỉ đúng khi có `h1` mang chữ (`googleMaps.ts`) | place không tồn tại (h1 rỗng ẩn) vẫn `Ready`, extractor trả `SelectorChanged` sai nhãn | test sidecar `classify_place_with_empty_h1_is_not_ready`: **đỏ** trên `googleMaps.ts` cũ (`Expected: not "ready"`), **xanh** trên bản sửa; 22/22 test nhóm "Google Maps block detection" đạt |
+| B-U4 | Xoá `GridScraper` (−281 dòng ở `scrapers/grid.rs`); không còn nơi nào gọi | chỉ test dùng | build và test không còn tham chiếu |
+
+Kết quả gate trên nhánh này (máy dev, qua hàng đợi `heavy-job`):
+
+- `cargo fmt -p rustsale-core -- --check`: đạt. (`cargo fmt --all` còn báo lệch ở `crates/zca-rs`, có sẵn từ nền int8, không thuộc #56 nên không sửa ở đây.)
+- `cargo clippy -p rustsale-core --all-targets -- -D warnings`: đạt.
+- `cargo test -p rustsale-core`: 1197 đạt, 0 lỗi, 6 bỏ qua (`#[ignore]`).
+- `scraper_verify` (au1, au2, au4, không cần mạng): 3/3 đạt.
+
+Chưa kiểm được: hai app chạy song song thật (A-U2 mới kiểm bằng hai instance trong một process và khoá file); A-U3 không nằm trong đợt sửa này (không tái hiện trên Linux).
+- Job thật nhỏ (sidecar CloakBrowser chạy từ mã nguồn đã sửa, từ khoá "quán cà phê" Quận 1, giới hạn 5 địa điểm): `Completed`, 6/6 unit, 0 unit lỗi, 5 địa điểm, 4 đủ điều kiện, 4 lead, `last_error` rỗng, 103 s. Không có panic, không có job kẹt, không có lỗi lease/heartbeat. Đây là kiểm hồi quy đường chạy thật sau khi thêm `catch_unwind`, lease và enrichment song song, không phải bằng chứng riêng cho từng lỗi.
+- `nsh check` (app `native`): đạt. `nsh test`: 88/88 đạt.

@@ -22,6 +22,7 @@ pub mod events;
 pub mod facebook;
 pub mod google_maps_jobs;
 pub mod host;
+pub mod instance_lock;
 #[cfg(test)]
 mod int7_core_test;
 #[cfg(test)]
@@ -49,6 +50,10 @@ pub enum CoreError {
     },
     #[error("data path is not valid UTF-8: {0}")]
     NonUtf8Path(PathBuf),
+    #[error("another RustSale instance is already using {0}")]
+    AlreadyRunning(PathBuf),
+    #[error("cannot take the instance lock: {0}")]
+    InstanceLock(String),
     #[error("cannot initialize logging: {0}")]
     Logging(String),
     #[error("cannot initialize database: {0}")]
@@ -111,6 +116,17 @@ impl Core {
             path: app_data_dir.clone(),
             source,
         })?;
+        // A second process on this data directory would interrupt this one's
+        // scrape jobs and share its browser profile (A-U2). Refuse it before
+        // anything else touches the directory.
+        let instance_lock =
+            instance_lock::InstanceLock::acquire(&app_data_dir).map_err(|error| match error {
+                instance_lock::InstanceLockError::AlreadyRunning { path } => {
+                    CoreError::AlreadyRunning(path)
+                }
+                other => CoreError::InstanceLock(other.to_string()),
+            })?;
+        handle.manage(instance_lock);
         let diagnostics = google_maps_jobs::diagnostics::init_structured_logging_or_inherit(
             &app_data_dir.join("logs"),
         )
@@ -175,6 +191,8 @@ impl Core {
             events.clone(),
             google_maps_jobs::runner::RetryPolicy::default(),
         ));
+        // Job starts wait for start-up recovery (A-U4); see `recover_startup_exclusive`.
+        runner.expect_startup_recovery();
         let service = std::sync::Arc::new(google_maps_jobs::commands::GoogleMapsJobService::new(
             repository,
             runner,
@@ -232,7 +250,9 @@ impl Core {
             }
         });
         tokio::spawn(async move {
-            if let Err(error) = service.recover_startup().await {
+            // The instance lock is held, so every `running` job in the
+            // database belongs to a process that has died.
+            if let Err(error) = service.recover_startup_exclusive().await {
                 tracing::error!(
                     target: "google_maps_scraper",
                     event = "startup_recovery_failed",

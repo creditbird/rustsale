@@ -412,7 +412,9 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
                 updated_at TEXT NOT NULL,
                 completed_at TEXT,
                 coverage_truncated INTEGER NOT NULL DEFAULT 0
-                    CHECK (coverage_truncated IN (0, 1))
+                    CHECK (coverage_truncated IN (0, 1)),
+                owner_id TEXT,
+                heartbeat_at TEXT
             )",
             [],
         )?;
@@ -434,6 +436,15 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             "google_maps_scrape_jobs",
             "coverage_truncated",
             "coverage_truncated INTEGER NOT NULL DEFAULT 0 CHECK (coverage_truncated IN (0, 1))",
+        )?;
+        // Lease of the instance running the job (A-U2). Both stay NULL for rows
+        // written before leases existed, which recovery treats as dead.
+        add_column_if_missing(&tx, "google_maps_scrape_jobs", "owner_id", "owner_id TEXT")?;
+        add_column_if_missing(
+            &tx,
+            "google_maps_scrape_jobs",
+            "heartbeat_at",
+            "heartbeat_at TEXT",
         )?;
 
         tx.execute(

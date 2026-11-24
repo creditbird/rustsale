@@ -134,9 +134,12 @@ export async function inspectGoogleMapsPage(page: Page): Promise<{
     title: document.title,
     bodyText: document.body?.innerText.slice(0, 20_000) ?? '',
     hasFeed: Boolean(document.querySelector('div[role="feed"]')),
+    // A place that no longer exists renders an empty (hidden) h1 next to the
+    // ordinary map buttons, so the heading only counts when it carries text.
     hasPlaceHeading:
-      Boolean(document.querySelector('[role="main"] h1')) &&
-      Boolean(document.querySelector('[data-item-id], [role="main"] button')),
+      Array.from(document.querySelectorAll('[role="main"] h1')).some(
+        (heading) => (heading.textContent ?? '').trim().length > 0,
+      ) && Boolean(document.querySelector('[data-item-id], [role="main"] button')),
     hasConsentDialog: Boolean(
       document.querySelector(
         'form[action*="consent"], [role="dialog"] [aria-label*="consent" i], [role="dialog"] [aria-label*="Đồng ý" i], [role="dialog"] [aria-label*="Chấp nhận" i]',
