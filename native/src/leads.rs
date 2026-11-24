@@ -45,8 +45,10 @@ pub struct Leads;
 #[module]
 impl Leads {
     /// One page of leads, filtered and sorted in the core. `query` is `{ search?, status?,
-    /// categoryId?, sort?: "id"|"name"|"company"|"status"|"value"|"owner"|"lastActivity",
-    /// descending? }`. Resolves `{ items, total, nextCursor }`.
+    /// categoryId?, owner?, minValue?, maxValue?, zalo?: "verified"|"noZalo"|"unchecked",
+    /// zaloReached?, sort?: "id"|"name"|"company"|"status"|"value"|"owner"|"lastActivity",
+    /// descending? }`. Value bounds are VND; USD leads are converted with the stored rate.
+    /// Resolves `{ items, total, nextCursor }`.
     pub async fn page(
         query: Option<JsonValue>,
         cursor: Option<String>,
@@ -146,6 +148,15 @@ impl Leads {
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::get_categories(state)?)
+        })
+        .await
+    }
+
+    /// The distinct owners of the leads, sorted, for the table's owner filter.
+    pub async fn owners() -> Result<JsonValue, JsError> {
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            Ok::<_, CoreApiError>(commands::get_lead_owners(state)?)
         })
         .await
     }

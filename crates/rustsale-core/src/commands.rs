@@ -377,6 +377,14 @@ pub fn get_leads(state: State<DbState>) -> Result<Vec<Lead>, String> {
     get_leads_internal(&conn)
 }
 
+pub fn get_lead_owners(state: State<DbState>) -> Result<Vec<String>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    crate::paging::leads::get_lead_owners(&conn).map_err(|e| e.to_string())
+}
+
 pub fn get_leads_internal(conn: &Connection) -> Result<Vec<Lead>, String> {
     let mut stmt = conn
         .prepare("SELECT id, name, company, status, value, last_activity, owner, email, phone, about, address, has_zalo, zalo_reached, zalo_uid, zalo_status, relationship_status, last_lookup_attempt, currency FROM leads")

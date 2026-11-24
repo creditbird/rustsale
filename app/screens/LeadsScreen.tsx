@@ -1,5 +1,5 @@
 import { List, signal, Text, View } from "nsh";
-import { Button as Base } from "nsh/base";
+import { Button as Base, Select } from "nsh/base";
 import { Leads, LeadsMore } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Modal, Skeleton } from "../ui";
 import { LeadDetail, STATUSES, money, tone, type Activity, type Lead } from "../components/LeadDetail";
@@ -15,10 +15,67 @@ const SORTS: { key: string; label: string; w: string }[] = [
   { key: "value", label: "Giá trị", w: "flex-1" },
 ];
 
+/** The value ranges the second filter row offers, in VND like the core's query. */
+const VALUE_RANGES: { key: string; label: string; min?: number; max?: number }[] = [
+  { key: "", label: "Mọi giá trị" },
+  { key: "under10m", label: "Dưới 10 tr", max: 9_999_999 },
+  { key: "10to50m", label: "10 – 50 tr", min: 10_000_000, max: 50_000_000 },
+  { key: "above50m", label: "Trên 50 tr", min: 50_000_001 },
+];
+
+const ZALO_FILTERS: { key: string; label: string }[] = [
+  { key: "", label: "Zalo: tất cả" },
+  { key: "verified", label: "Có Zalo" },
+  { key: "noZalo", label: "Không có Zalo" },
+  { key: "unchecked", label: "Chưa kiểm tra" },
+];
+
+const OUTREACH_FILTERS: { key: string; label: string }[] = [
+  { key: "", label: "Đã nhắn: tất cả" },
+  { key: "reached", label: "Đã nhắn" },
+  { key: "notReached", label: "Chưa nhắn" },
+];
+
+interface FilterSelectProps {
+  testID: string;
+  value: string;
+  title: string;
+  items: { value: string; title: string }[];
+  onChange: (value: string) => void;
+}
+
+/** One dropdown of the filter row: the trigger names the current choice, each item has its id. */
+function FilterSelect(props: FilterSelectProps) {
+  return (
+    <Select testID={props.testID}
+      items={props.items}
+      value={props.value}
+      placeholder={props.title}
+      onChange={({ value }) => props.onChange(value ?? "")}
+      trigger={
+        <View testID={`${props.testID}-trigger`} class="h-9 w-52 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
+          <Text class="truncate text-sm text-foreground">{props.title}</Text>
+          <Text class="text-xs text-muted-foreground">▾</Text>
+        </View>
+      }
+      itemClass="px-3 py-2 selected:bg-accent"
+      renderItem={(entry) => (
+        <View testID={`${props.testID}-item-${entry.value === "" ? "all" : entry.value}`}>
+          <Text class="text-sm text-foreground">{entry.title}</Text>
+        </View>
+      )} />
+  );
+}
+
 /** Leads: a cursor-paged table filtered and sorted in the core, a detail panel and an add dialog. */
 export function LeadsScreen() {
   const search = signal("");
   const status = signal("");
+  const owner = signal("");
+  const valueKey = signal("");
+  const zalo = signal("");
+  const outreach = signal("");
+  const owners = signal<string[]>([]);
   const sort = signal("name");
   const desc = signal(false);
   const selected = signal<Lead | null>(null);
@@ -32,9 +89,15 @@ export function LeadsScreen() {
   const list = pager<Lead>(
     async (cursor) => {
       await startCore();
+      const range = VALUE_RANGES.find((r) => r.key === valueKey());
       const query = {
         search: search().trim() || undefined,
         status: status() || undefined,
+        owner: owner() || undefined,
+        minValue: range?.min,
+        maxValue: range?.max,
+        zalo: zalo() || undefined,
+        zaloReached: outreach() === "" ? undefined : outreach() === "reached",
         sort: sort(),
         descending: desc(),
       };
@@ -54,6 +117,23 @@ export function LeadsScreen() {
     if (sort() === key) desc.set(!desc());
     else { sort.set(key); desc.set(false); }
     reload();
+  };
+  const pickOwner = (name: string) => { owner.set(name); reload(); };
+  const pickValue = (key: string) => { valueKey.set(key); reload(); };
+  const pickZalo = (key: string) => { zalo.set(key); reload(); };
+  const pickOutreach = (key: string) => { outreach.set(key); reload(); };
+  const clearFilters = () => {
+    search.set(""); status.set(""); owner.set(""); valueKey.set("");
+    zalo.set(""); outreach.set("");
+    reload();
+  };
+  const loadOwners = async () => {
+    try {
+      await startCore();
+      owners.set((await Leads.owners()) as string[]);
+    } catch (e) {
+      report(e, { retry: () => { void loadOwners(); } });
+    }
   };
 
   const open = async (lead: Lead) => {
@@ -94,6 +174,7 @@ export function LeadsScreen() {
   };
 
   reload();
+  loadOwners();
 
   return (
     <View class="flex-1 flex-row">
@@ -117,6 +198,31 @@ export function LeadsScreen() {
                 onPress={() => { status.set(s()); reload(); }} />
             )}
           </Each>
+        </View>
+        <View class="flex-row flex-wrap items-center gap-2">
+          <FilterSelect testID="lead-filter-owner"
+            title={owner() || "Tất cả phụ trách"}
+            value={owner()}
+            items={[{ value: "", title: "Tất cả phụ trách" },
+              ...owners().map((name) => ({ value: name, title: name }))]}
+            onChange={pickOwner} />
+          <FilterSelect testID="lead-filter-value"
+            title={VALUE_RANGES.find((r) => r.key === valueKey())?.label ?? "Mọi giá trị"}
+            value={valueKey()}
+            items={VALUE_RANGES.map((r) => ({ value: r.key, title: r.label }))}
+            onChange={pickValue} />
+          <FilterSelect testID="lead-filter-zalo"
+            title={ZALO_FILTERS.find((r) => r.key === zalo())?.label ?? "Zalo: tất cả"}
+            value={zalo()}
+            items={ZALO_FILTERS.map((r) => ({ value: r.key, title: r.label }))}
+            onChange={pickZalo} />
+          <FilterSelect testID="lead-filter-outreach"
+            title={OUTREACH_FILTERS.find((r) => r.key === outreach())?.label ?? "Đã nhắn: tất cả"}
+            value={outreach()}
+            items={OUTREACH_FILTERS.map((r) => ({ value: r.key, title: r.label }))}
+            onChange={pickOutreach} />
+          <Button testID="lead-filter-clear" label="Bỏ lọc" size="sm" variant="ghost"
+            onPress={clearFilters} />
         </View>
         <View class="flex-1 overflow-hidden rounded-(--radius) border border-border bg-card">
           <View class="flex-row border-b border-border bg-muted px-4 py-2">

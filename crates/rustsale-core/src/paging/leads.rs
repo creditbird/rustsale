@@ -61,6 +61,18 @@ enum KeyKind {
     Text,
 }
 
+/// The Zalo states the leads table filters by.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ZaloFilter {
+    /// The lead's phone was found on Zalo (`has_zalo = 1`).
+    Verified,
+    /// The phone was checked and has no Zalo account (`has_zalo = 0`).
+    NoZalo,
+    /// The phone was never checked (`has_zalo IS NULL`).
+    Unchecked,
+}
+
 /// Filter and sort of the leads table.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -71,6 +83,16 @@ pub struct LeadQuery {
     pub status: Option<String>,
     /// Only leads of this category.
     pub category_id: Option<i32>,
+    /// Exact owner, case-insensitive.
+    pub owner: Option<String>,
+    /// Smallest deal value in VND; USD leads are converted with the stored rate.
+    pub min_value: Option<f64>,
+    /// Largest deal value in VND; USD leads are converted with the stored rate.
+    pub max_value: Option<f64>,
+    /// The lead's Zalo state.
+    pub zalo: Option<ZaloFilter>,
+    /// `true` for leads already messaged on Zalo, `false` for the rest.
+    pub zalo_reached: Option<bool>,
     pub sort: LeadSort,
     pub descending: bool,
 }
@@ -87,7 +109,22 @@ impl LeadQuery {
 
 const LEAD_COLUMNS: &str = "l.id, l.name, l.company, l.status, l.value, l.last_activity, l.owner, l.email, l.phone, l.about, l.address, l.has_zalo, l.zalo_reached, l.zalo_uid, l.zalo_status, l.relationship_status, l.last_lookup_attempt, l.currency";
 
-fn filter_sql(query: &LeadQuery) -> (String, Vec<Value>) {
+/// The rate the database holds for USD to VND; the same default as the currency settings.
+const DEFAULT_USD_VND: f64 = 25_400.0;
+
+fn usd_vnd_rate(conn: &Connection) -> f64 {
+    conn.query_row(
+        "SELECT value FROM app_metadata WHERE key = 'usd_vnd_exchange_rate'",
+        [],
+        |row| row.get::<_, String>(0),
+    )
+    .ok()
+    .and_then(|text| text.parse::<f64>().ok())
+    .filter(|rate| rate.is_finite() && *rate > 0.0)
+    .unwrap_or(DEFAULT_USD_VND)
+}
+
+fn filter_sql(query: &LeadQuery, usd_vnd: f64) -> (String, Vec<Value>) {
     let mut sql = String::from(" FROM leads l WHERE 1 = 1");
     let mut params: Vec<Value> = Vec::new();
     if let Some(search) = query
@@ -114,6 +151,47 @@ fn filter_sql(query: &LeadQuery) -> (String, Vec<Value>) {
             " AND EXISTS (SELECT 1 FROM lead_categories lc WHERE lc.lead_id = l.id AND lc.category_id = ?{})",
             params.len()
         ));
+    }
+    if let Some(owner) = query
+        .owner
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        params.push(Value::Text(owner.to_lowercase()));
+        sql.push_str(&format!(
+            " AND lower(COALESCE(l.owner, '')) = ?{}",
+            params.len()
+        ));
+    }
+    if query.min_value.is_some() || query.max_value.is_some() {
+        params.push(Value::Real(usd_vnd));
+        let rate = params.len();
+        let value_vnd = format!(
+            "(CASE WHEN lower(COALESCE(l.currency, 'VND')) = 'usd' \
+             THEN COALESCE(l.value, 0.0) * ?{rate} ELSE COALESCE(l.value, 0.0) END)"
+        );
+        if let Some(min) = query.min_value {
+            params.push(Value::Real(min));
+            sql.push_str(&format!(" AND {value_vnd} >= ?{}", params.len()));
+        }
+        if let Some(max) = query.max_value {
+            params.push(Value::Real(max));
+            sql.push_str(&format!(" AND {value_vnd} <= ?{}", params.len()));
+        }
+    }
+    match query.zalo {
+        Some(ZaloFilter::Verified) => sql.push_str(" AND l.has_zalo = 1"),
+        Some(ZaloFilter::NoZalo) => sql.push_str(" AND l.has_zalo = 0"),
+        Some(ZaloFilter::Unchecked) => sql.push_str(" AND l.has_zalo IS NULL"),
+        None => {}
+    }
+    if let Some(reached) = query.zalo_reached {
+        if reached {
+            sql.push_str(" AND l.zalo_reached = 1");
+        } else {
+            sql.push_str(" AND COALESCE(l.zalo_reached, 0) = 0");
+        }
     }
     (sql, params)
 }
@@ -155,7 +233,7 @@ pub fn get_leads_page_internal(
     let limit = page_size(limit);
     let tag = query.tag();
     let (key_expr, kind) = query.sort.key_sql();
-    let (filter, filter_params) = filter_sql(query);
+    let (filter, filter_params) = filter_sql(query, usd_vnd_rate(conn));
 
     let total: i64 = conn.query_row(
         &format!("SELECT COUNT(*){filter}"),
@@ -241,6 +319,20 @@ pub fn get_leads_by_category_page(
 ) -> Result<Page<Lead>, PageError> {
     query.category_id = Some(category_id);
     get_leads_page(state, query, cursor, limit)
+}
+
+/// The distinct owners of the leads, case-insensitively sorted, for the owner filter.
+pub fn get_lead_owners(conn: &Connection) -> Result<Vec<String>, PageError> {
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT trim(owner) FROM leads \
+         WHERE trim(COALESCE(owner, '')) <> '' ORDER BY lower(trim(owner))",
+    )?;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+    let mut owners = Vec::new();
+    for row in rows {
+        owners.push(row?);
+    }
+    Ok(owners)
 }
 
 #[cfg(test)]
