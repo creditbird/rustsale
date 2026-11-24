@@ -146,6 +146,34 @@ impl Demo {
         })
         .await
     }
+
+    /// Adds one expired Zalo account (a session row with no cookies) so a screen test can show an
+    /// account row without logging in. Resolves `{ accountKey }`; a second call adds nothing.
+    pub async fn seed_zalo_account() -> Result<JsonValue, JsError> {
+        check_throwaway()?;
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            let conn = state.conn.lock().unwrap_or_else(PoisonError::into_inner);
+            let seeded: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM zalo_sessions WHERE imei = 'demo-zalo-session'",
+                    [],
+                    |row| row.get(0),
+                )
+                .map_err(|e| CoreApiError::internal(format!("cannot read demo state: {e}")))?;
+            if seeded == 0 {
+                conn.execute(
+                    "INSERT INTO zalo_sessions
+                     (imei, user_agent, cookies_json, language, display_name, auth_status, zalo_uid)
+                     VALUES ('demo-zalo-session', '', '[]', 'vi', 'Zalo demo', 'expired', 'demo-zalo-uid')",
+                    [],
+                )
+                .map_err(|e| CoreApiError::internal(format!("cannot seed the Zalo account: {e}")))?;
+            }
+            Ok::<_, CoreApiError>(serde_json::json!({ "accountKey": "demo-zalo-uid" }))
+        })
+        .await
+    }
 }
 
 #[cfg(test)]

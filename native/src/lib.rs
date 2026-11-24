@@ -2,6 +2,7 @@
 //! The only place TSX reaches `rustsale-core`.
 
 mod ai;
+mod autostart;
 #[cfg(test)]
 #[path = "../build_env.rs"]
 mod build_env;
@@ -24,6 +25,7 @@ mod leads_more;
 mod maps;
 mod maps_more;
 mod ports;
+mod qr;
 mod runtime;
 mod settings;
 mod templates;

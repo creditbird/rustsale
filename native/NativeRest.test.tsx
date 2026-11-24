@@ -11,6 +11,7 @@ import {
   Host,
   ImportLeads,
   LeadsMore,
+  Settings,
   Util,
   Zalo
 } from "rustsale/native";
@@ -179,6 +180,22 @@ test("zalo: account list is empty and a missing session rejects", async () => {
   await Host.start(dir);
   expect(await Zalo.accounts()).toEqual([]);
   await expect(Zalo.verifySession("missing-imei")).rejects.toThrow();
+  await expect(Zalo.reconnect("missing-imei")).rejects.toThrow();
+});
+
+test("settings: the language saves and reads back, autostart reports its platform", async () => {
+  await Host.start(dir);
+  expect(row(await Settings.language()).language).toBe("vi");
+  expect(row(await Settings.setLanguage("en")).language).toBe("en");
+  expect(row(await Settings.language()).language).toBe("en");
+  await expect(Settings.setLanguage("fr")).rejects.toMatchObject({
+    code: "invalid_request"
+  });
+  expect(row(await Settings.language()).language).toBe("en");
+
+  const autostart = row(await Settings.autostart());
+  expect(typeof autostart.enabled).toBe("boolean");
+  expect(autostart.supported).toBe(true);
 });
 
 test("facebook: empty lists, rejected tokens and missing page errors", async () => {
@@ -292,6 +309,16 @@ test("google maps more: grid plan, provinces, catalog and missing jobs", async (
   await expect(GoogleMapsMore.resolveBounds(999_999_999)).rejects.toThrow();
   await expect(GoogleMapsMore.retryFailedUnits("missing-job")).rejects.toThrow();
   await expect(GoogleMapsMore.retryEmailEnrichment("missing-job")).rejects.toThrow();
+});
+
+test("conversation network: a WhatsApp QR code becomes a PNG image", async () => {
+  await Host.start(dir);
+  const url = ConversationNetwork.whatsappQrImage(
+    "2@AbCdEfGhIjKlMnOpQrStUvWxYz+/=,1234567890"
+  ) as string;
+  expect(url.startsWith("data:image/png;base64,")).toBe(true);
+  expect(url.length).toBeGreaterThan(100);
+  expect(() => ConversationNetwork.whatsappQrImage("   ")).toThrow();
 });
 
 test("conversation network: empty channel state and validation errors", async () => {
