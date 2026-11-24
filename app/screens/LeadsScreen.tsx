@@ -1,8 +1,8 @@
 import { List, signal, Text, View } from "nsh";
 import { Button as Base, Select } from "nsh/base";
-import { Leads, LeadsMore } from "rustsale/native";
+import { Deals, Leads, LeadsMore } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Modal, Skeleton } from "../ui";
-import { LeadDetail, STATUSES, money, tone, type Activity, type Lead } from "../components/LeadDetail";
+import { LeadDetail, STATUSES, money, tone, type Activity, type Deal, type Lead } from "../components/LeadDetail";
 import { LeadImportDialog } from "../components/LeadImportDialog";
 import { startCore, type Page } from "../stores/core";
 import { fetchAllLeads, saveLeadsCsv } from "../stores/leadCsv";
@@ -82,6 +82,7 @@ export function LeadsScreen() {
   const desc = signal(false);
   const selected = signal<Lead | null>(null);
   const activities = signal<Activity[]>([]);
+  const deals = signal<Deal[]>([]);
   const adding = signal(false);
   const newName = signal("");
   const newCompany = signal("");
@@ -146,11 +147,17 @@ export function LeadsScreen() {
   const open = async (lead: Lead) => {
     selected.set(lead);
     activities.set([]);
+    deals.set([]);
     try {
-      const [fresh, acts] = await Promise.all([Leads.details(lead.id), LeadsMore.activities(lead.id)]);
+      const [fresh, acts, allDeals] = await Promise.all([
+        Leads.details(lead.id),
+        LeadsMore.activities(lead.id),
+        Deals.list(),
+      ]);
       if (selected()?.id === lead.id) {
         selected.set(fresh as Lead);
         activities.set(acts as Activity[]);
+        deals.set((allDeals as Deal[]).filter((deal) => deal.lead_id === lead.id));
       }
     } catch (e) {
       report(e, { refresh: () => { selected.set(null); reload(); }, retry: () => { void open(lead); } });
@@ -289,6 +296,7 @@ export function LeadsScreen() {
           <LeadDetail
             lead={lead}
             activities={activities}
+            deals={deals}
             onClose={() => selected.set(null)}
             onStatus={(next) => { void setStatus(lead(), next); }}
           />

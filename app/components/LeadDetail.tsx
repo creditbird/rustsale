@@ -1,5 +1,5 @@
 import { Text, View } from "nsh";
-import { Button } from "../ui";
+import { Badge, Button } from "../ui";
 import type { BadgeTone } from "../ui/Badge";
 
 export interface Lead {
@@ -27,6 +27,16 @@ export interface Activity {
   created_at: string;
 }
 
+export interface Deal {
+  id: number;
+  lead_id: number;
+  title: string;
+  value: number;
+  stage: string;
+  currency: string | null;
+  created_at: string;
+}
+
 export const STATUSES = ["New", "Contacted", "Qualified", "Proposal", "Won", "Lost", "Converted"];
 
 /** A deal value as people say it: millions as "15 tr", smaller as the plain number. */
@@ -45,6 +55,8 @@ export function tone(status: string): BadgeTone {
 export interface LeadDetailProps {
   lead: () => Lead;
   activities: () => Activity[];
+  /** The lead's deals; screens that do not load them leave the section empty. */
+  deals?: () => Deal[];
   onClose: () => void;
   onStatus: (status: string) => void;
 }
@@ -73,6 +85,19 @@ export function LeadDetail(props: LeadDetailProps) {
       <If when={props.activities().length === 0}><Text class="text-sm text-muted-foreground">Chưa có hoạt động.</Text></If>
       <Each of={props.activities().slice(0, 6)} key={(a) => String(a.id)}>
         {(a) => <Text class="text-sm text-foreground">{`${a().activity_type}: ${a().content}`}</Text>}
+      </Each>
+      <Text class="mt-2 text-xs font-medium text-muted-foreground">Deal</Text>
+      <If when={(props.deals?.() ?? []).length === 0}>
+        <Text testID="lead-deals-empty" class="text-sm text-muted-foreground">Chưa có deal.</Text>
+      </If>
+      <Each of={props.deals?.() ?? []} key={(d) => String(d.id)}>
+        {(d) => (
+          <View testID={`lead-deal-${d().id}`} class="flex-row items-center gap-2">
+            <Text class="min-w-0 flex-1 truncate text-sm text-foreground">{d().title}</Text>
+            <Badge label={d().stage} tone="neutral" />
+            <Text class="shrink-0 text-sm text-muted-foreground">{money(d().value, d().currency)}</Text>
+          </View>
+        )}
       </Each>
     </View>
   );
