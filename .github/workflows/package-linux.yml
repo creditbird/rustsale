@@ -12,6 +12,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: package-linux-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   deb:
     name: .deb (${{ matrix.base }})
@@ -31,10 +35,10 @@ jobs:
       - name: Build the .deb in ${{ matrix.base }}
         run: scripts/package-linux.sh "${{ matrix.base }}" "$PWD/dist/out"
       - name: Checksums
-        run: cd dist/out && sha256sum rustsale_*.deb | tee SHA256SUMS
+        run: cd dist/out && { echo "# source commit ${{ github.sha }} base ${{ matrix.base }}"; sha256sum rustsale_*.deb; } | tee SHA256SUMS
       - uses: actions/upload-artifact@v4
         with:
-          name: rustsale-deb-${{ matrix.base == 'debian:13' && 'debian13' || 'ubuntu2404' }}
+          name: rustsale-deb-${{ matrix.base == 'debian:13' && 'debian13' || 'ubuntu2404' }}-${{ github.sha }}
           path: |
             dist/out/rustsale_*.deb
             dist/out/SHA256SUMS
