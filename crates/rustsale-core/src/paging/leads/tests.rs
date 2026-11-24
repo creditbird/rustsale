@@ -274,21 +274,27 @@ fn insert_filtered(
 }
 
 #[test]
-fn owner_filter_is_case_insensitive_and_counts_only_its_rows() {
+fn owner_filter_matches_the_listed_owner_and_counts_only_its_rows() {
     let conn = conn();
     insert_filtered(&conn, "A", "An", 1.0, "VND", None, 0);
     insert_filtered(&conn, "B", "an", 2.0, "VND", None, 0);
     insert_filtered(&conn, "C", "Binh", 3.0, "VND", None, 0);
-    let query = LeadQuery {
-        owner: Some("AN".to_string()),
-        ..LeadQuery::default()
+
+    let by = |owner: &str| {
+        let query = LeadQuery {
+            owner: Some(owner.to_string()),
+            ..LeadQuery::default()
+        };
+        get_leads_page_internal(&conn, &query, None, 50).expect("page")
     };
-    let page = get_leads_page_internal(&conn, &query, None, 50).expect("page");
-    assert_eq!(page.total, 2);
-    assert!(page
-        .items
-        .iter()
-        .all(|lead| lead.owner == "An" || lead.owner == "an"));
+
+    let upper = by("An");
+    assert_eq!(upper.total, 1);
+    assert_eq!(upper.items[0].owner, "An");
+    let lower = by("an");
+    assert_eq!(lower.total, 1);
+    assert_eq!(lower.items[0].owner, "an");
+    assert_eq!(by("  an  ").total, 1, "surrounding spaces are ignored");
 
     let blank = LeadQuery {
         owner: Some("   ".to_string()),
@@ -299,6 +305,30 @@ fn owner_filter_is_case_insensitive_and_counts_only_its_rows() {
         3,
         "blank owner means no filter"
     );
+}
+
+#[test]
+fn owner_filter_finds_accented_names_as_the_owner_list_shows_them() {
+    let conn = conn();
+    insert_filtered(&conn, "A", "Đặng Văn B", 1.0, "VND", None, 0);
+    insert_filtered(&conn, "B", "Ưng Văn C", 2.0, "VND", None, 0);
+    insert_filtered(&conn, "C", "Nguyễn Thị Ánh", 3.0, "VND", None, 0);
+    insert_filtered(&conn, "D", "An", 4.0, "VND", None, 0);
+
+    let owners = get_lead_owners(&conn).expect("owners");
+    for owner in ["Đặng Văn B", "Ưng Văn C", "Nguyễn Thị Ánh"] {
+        assert!(
+            owners.iter().any(|listed| listed == owner),
+            "{owner} is in the owner list"
+        );
+        let query = LeadQuery {
+            owner: Some(owner.to_string()),
+            ..LeadQuery::default()
+        };
+        let page = get_leads_page_internal(&conn, &query, None, 50).expect("page");
+        assert_eq!(page.total, 1, "the listed {owner} selects its lead");
+        assert_eq!(page.items[0].owner, owner);
+    }
 }
 
 #[test]

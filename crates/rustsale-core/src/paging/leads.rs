@@ -83,7 +83,7 @@ pub struct LeadQuery {
     pub status: Option<String>,
     /// Only leads of this category.
     pub category_id: Option<i32>,
-    /// Exact owner, case-insensitive.
+    /// Exact owner as `get_lead_owners` lists it; surrounding spaces are ignored.
     pub owner: Option<String>,
     /// Smallest deal value in VND; USD leads are converted with the stored rate.
     pub min_value: Option<f64>,
@@ -158,9 +158,9 @@ fn filter_sql(query: &LeadQuery, usd_vnd: f64) -> (String, Vec<Value>) {
         .map(str::trim)
         .filter(|s| !s.is_empty())
     {
-        params.push(Value::Text(owner.to_lowercase()));
+        params.push(Value::Text(owner.to_string()));
         sql.push_str(&format!(
-            " AND lower(COALESCE(l.owner, '')) = ?{}",
+            " AND trim(COALESCE(l.owner, '')) = ?{}",
             params.len()
         ));
     }
@@ -321,7 +321,7 @@ pub fn get_leads_by_category_page(
     get_leads_page(state, query, cursor, limit)
 }
 
-/// The distinct owners of the leads, case-insensitively sorted, for the owner filter.
+/// The distinct owners of the leads, sorted, for the owner filter.
 pub fn get_lead_owners(conn: &Connection) -> Result<Vec<String>, PageError> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT trim(owner) FROM leads \

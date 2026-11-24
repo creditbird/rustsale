@@ -79,8 +79,18 @@ test("the core itself applies the owner, value and Zalo filters", async () => {
   const rich = await Leads.add({ name: `Core dat ${stamp}`, owner: `Chi ${stamp}`, value: 80_000_000 });
   expect(await Leads.owners()).toContain(`Chi ${stamp}`);
 
-  const byOwner = (await Leads.page({ owner: `chi ${stamp}` }, null, 50)) as { total: number };
+  const byOwner = (await Leads.page({ owner: `Chi ${stamp}` }, null, 50)) as { total: number };
   expect(byOwner.total).toBe(2);
+
+  const accentedOwner = `Đặng Văn ${stamp}`;
+  const accented = await Leads.add({ name: `Core viet ${stamp}`, owner: accentedOwner, value: 7_000_000 });
+  expect(await Leads.owners()).toContain(accentedOwner);
+  const byAccented = (await Leads.page({ owner: accentedOwner }, null, 50)) as {
+    items: { id: number }[];
+    total: number;
+  };
+  expect(byAccented.total).toBe(1);
+  expect(byAccented.items[0].id).toBe(accented);
 
   const byValue = (await Leads.page(
     { owner: `Chi ${stamp}`, minValue: 10_000_000 },
