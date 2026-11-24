@@ -5,6 +5,7 @@ import { Badge, Button, EmptyState, Input, Skeleton } from "../ui";
 import type { BadgeTone } from "../ui/Badge";
 import { startCore, type Page } from "../stores/core";
 import { pager } from "../stores/paged";
+import { runtimeVerdict } from "../stores/scraperRuntime";
 import { notify, report } from "../stores/toast";
 
 interface Job {
@@ -68,9 +69,12 @@ export function ScraperScreen() {
     try {
       await GoogleMaps.runtimeStatus();
       runtime.set("sẵn sàng");
-    } catch {
+    } catch (e) {
       // A missing browser is not fatal: jobs can be listed and read, only running one needs it.
-      runtime.set("chưa sẵn sàng");
+      // Only `unavailable` means that; any other code is a broken check and is reported.
+      const verdict = runtimeVerdict(e);
+      runtime.set(verdict.label);
+      if (verdict.toast) report(e, { retry: () => { void checkRuntime(); } });
     }
   };
 

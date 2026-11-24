@@ -57,3 +57,6 @@ anvien-launcher/logs/
 /app/.nsh/
 /native/target/
 /bench/.nsh/
+
+# Linux packages built by packaging/linux/build.sh
+/dist/
