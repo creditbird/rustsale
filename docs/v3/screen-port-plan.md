@@ -87,3 +87,18 @@ Mỗi lô: 1 nhánh `feat/nsh-v3-ui-L<n>` từ `feat/nsh-v3-ui2`; mỗi màn kè
 - Kiểu trả về là `unknown`; khai báo interface cục bộ (xem `Lead`, `InboxItem`, `Job`) và đọc theo tên trường thật của core (`snake_case` cho Templates/Leads/Scrape, `camelCase` cho Conversations).
 - `GoogleMaps.runtimeStatus()` ném `unavailable` khi thiếu CloakBrowser (sửa ở 6094f4e); màn Scraper chỉ coi `unavailable` là "chưa sẵn sàng", mã khác hiện "không kiểm tra được" kèm thông báo (`app/stores/scraperRuntime.ts`).
 - Ảnh chụp màn: `nsh run --target gpui` với `XDG_DATA_HOME` trỏ thư mục tạm đã seed (`Demo.seed` chỉ chạy trong thư mục tạm).
+
+## 6. Pipeline: cách chuyển stage (Ishar, 2026-11-24, nhánh `feat/nsh-v3-ui-pipeline`)
+
+**Chọn: nút ‹ › trên thẻ + phím (← → hoặc [ ] khi thẻ đang có focus, Delete để xoá). Không làm kéo thả.**
+
+Lý do:
+- NSH 0.6.1 có `onPanStart`/`onPanEnd` và `app.drag` trong test, nhưng không có drop target, không có overlay "thẻ đang bay" và chưa có cách tự cuộn cột khi kéo sát mép. Phải tự dựng hit-test theo toạ độ cột, và bảng nằm trong `Scroll` ngang chứa các `List` dọc, nên cử chỉ kéo tranh với cuộn. Không có cách kiểm chứng độ mượt trên cả gpui và GTK4 trong máy này (GTK4 vẽ bằng CPU, số đo cuộn ở perf.md §4b đã chậm hơn).
+- Nút ‹ › giữ đúng ghi nhận "đã ghi vào core": mỗi lần bấm là một `Deals.updateStage` rồi nạp lại, nên test headless kiểm được từng bước (kéo thả chỉ kiểm được bằng toạ độ giả).
+- Stage kề nhau là 5 bước tuyến tính, nên hai nút đủ cho mọi thao tác thường dùng; nhảy xa thì bấm nhiều lần. Cột "Khác" (stage lạ mà core nhận, v2 ẩn đi) chỉ có nút ›, đưa deal về "Tiềm năng".
+- Bàn phím là phụ: test headless không bắn được `onKeyDown` vào view có focus, nên phím chưa có test tự động, cần thử tay trên host.
+- Nếu sau này cần kéo thả: thêm vào thẻ, vẫn gọi cùng hàm `move()` trong `PipelineScreen.tsx`; nút giữ lại cho bàn phím và trợ năng.
+
+Đã làm: `app/screens/PipelineScreen.tsx`, `app/stores/pipeline.ts`, `app/UiPipeline.test.tsx` (4 test: chuyển stage ghi vào core, tạo/xoá deal, `not_found` làm mới cột, đo cuộn).
+
+Đo cuộn cột dài (như perf.md §4c): headless, đồng hồ thủ công (`open(..., { clock: {} })`), cột "Đàm phán" 1.500 deal, 150 lần cuộn 240 pt (mỗi lần ~24 khung): median 5,1 đến 13,6 ms mỗi lần (hai lần chạy, máy tải khác nhau; ~0,2 đến 0,57 ms/khung), p95 7,0 đến 24,3 ms (~0,3 đến 1,0 ms/khung), max 19,5 đến 41,7 ms. Đây là chi phí JS + layout của engine headless (bản debug), không phải commit của host gpui/GTK4 và không có fps thật. Danh sách dùng `List` ảo hoá theo cột; không nối mảng khi cuộn vì `Deals.list` trả toàn bộ một lần.
