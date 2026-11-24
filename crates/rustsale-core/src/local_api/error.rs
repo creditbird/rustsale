@@ -123,6 +123,7 @@ impl From<ConversationError> for ApiError {
             | C::ForwardTargetAccountMismatch
             | C::ForwardTargetLimitExceeded
             | C::TemplateLimitExceeded => StatusCode::BAD_REQUEST,
+            C::NotFound => StatusCode::NOT_FOUND,
             C::FileTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             C::CapabilityDenied
             | C::AccountDisconnected

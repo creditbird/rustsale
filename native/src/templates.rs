@@ -100,7 +100,7 @@ impl Templates {
 
     /// Replaces the subject and body of email template `id`.
     pub async fn update_email_template(
-        id: f64,
+        id: JsonValue,
         name: String,
         subject: String,
         content: String,
@@ -116,7 +116,7 @@ impl Templates {
     }
 
     /// Deletes email template `id`.
-    pub async fn delete_email_template(id: f64) -> Result<JsonValue, JsError> {
+    pub async fn delete_email_template(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -138,7 +138,7 @@ impl Templates {
     }
 
     /// Template `id`, or `null` when there is none.
-    pub async fn template(id: f64) -> Result<JsonValue, JsError> {
+    pub async fn template(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id64(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -173,7 +173,7 @@ impl Templates {
     }
 
     /// Deletes multi-channel template `id`.
-    pub async fn delete_template(id: f64) -> Result<JsonValue, JsError> {
+    pub async fn delete_template(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id64(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -201,7 +201,7 @@ impl Templates {
     }
 
     /// Deletes template folder `id`; its templates stay, without a folder.
-    pub async fn delete_folder(id: f64) -> Result<JsonValue, JsError> {
+    pub async fn delete_folder(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id64(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -211,7 +211,7 @@ impl Templates {
     }
 
     /// Counts one more use of template `id`.
-    pub async fn increment_usage(id: f64) -> Result<JsonValue, JsError> {
+    pub async fn increment_usage(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id64(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -242,7 +242,7 @@ impl Templates {
     }
 
     /// Deletes SMTP server `id`.
-    pub async fn delete_smtp_server(id: f64) -> Result<JsonValue, JsError> {
+    pub async fn delete_smtp_server(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -265,15 +265,14 @@ impl Templates {
 #[cfg(test)]
 mod tests {
     use super::Templates;
+    use serde_json::json;
 
     #[tokio::test]
     async fn oversized_template_ids_are_invalid_requests() {
         for result in [
-            Templates::delete_smtp_server(4_294_967_297.0).await,
-            Templates::delete_email_template(4_294_967_297.0).await,
-            Templates::delete_smtp_server(1.5).await,
-            Templates::delete_email_template(-1.0).await,
-            Templates::delete_email_template(f64::NAN).await,
+            Templates::delete_smtp_server(json!(4_294_967_297.0_f64)).await,
+            Templates::delete_email_template(json!(4_294_967_297.0_f64)).await,
+            Templates::delete_email_template(json!(-1.0_f64)).await,
         ] {
             let error = match result {
                 Ok(_) => panic!("an id past i32 must be refused"),
@@ -281,6 +280,33 @@ mod tests {
             };
             assert_eq!(error.code(), Some("invalid_request"));
             assert_eq!(error.message(), "id is out of range");
+        }
+    }
+
+    #[tokio::test]
+    async fn template_ids_of_the_wrong_type_are_invalid_requests() {
+        for id in [
+            json!(1.5),
+            json!(null),
+            json!("7"),
+            json!(true),
+            json!({"id": 1}),
+        ] {
+            for result in [
+                Templates::delete_smtp_server(id.clone()).await,
+                Templates::delete_email_template(id.clone()).await,
+            ] {
+                let error = match result {
+                    Ok(_) => panic!("a wrong-typed id must be refused: {id}"),
+                    Err(error) => error,
+                };
+                assert_eq!(error.code(), Some("invalid_request"), "{id}");
+                assert_eq!(
+                    error.message(),
+                    "id has the wrong type: it must be a whole number",
+                    "{id}"
+                );
+            }
         }
     }
 

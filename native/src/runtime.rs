@@ -249,12 +249,56 @@ pub(crate) fn limit(value: Option<f64>) -> u32 {
     }
 }
 
-/// A JS number as an `i32` row id. Row ids are whole and not negative, so NaN, infinities,
-/// fractions, negatives and values an `i32` cannot hold are refused instead of being truncated
-/// or wrapped onto another row.
-pub(crate) fn id32(value: f64) -> Result<i32, CoreApiError> {
-    if value.is_finite() && value.fract() == 0.0 && value >= 0.0 && value <= f64::from(i32::MAX) {
-        Ok(value as i32)
+/// A positional row id as the caller passed it: a JS number (`f64`) or any JS value
+/// (`JsonValue`). Binding an id parameter as `JsonValue` lets this crate answer a string, bool,
+/// null, array or object with `invalid_request` and "wrong type", where the binding layer would
+/// throw its own `TypeError` that carries no `code`.
+pub(crate) trait IdArg {
+    /// The id as a number; any value that is not a number is a wrong type.
+    fn to_number(&self) -> Result<f64, CoreApiError>;
+    /// Whether an optional id was left out (`null` counts as left out).
+    fn is_absent(&self) -> bool;
+}
+
+impl IdArg for f64 {
+    fn to_number(&self) -> Result<f64, CoreApiError> {
+        Ok(*self)
+    }
+
+    fn is_absent(&self) -> bool {
+        false
+    }
+}
+
+impl IdArg for JsonValue {
+    fn to_number(&self) -> Result<f64, CoreApiError> {
+        self.as_f64()
+            .ok_or_else(|| CoreApiError::invalid(ID_WRONG_TYPE))
+    }
+
+    fn is_absent(&self) -> bool {
+        self.is_null()
+    }
+}
+
+/// A positional id as a whole number. NaN, infinities and fractions are not whole numbers, so
+/// they are a wrong type like a string is; a whole number that does not fit is a range fault.
+fn whole_id(value: &impl IdArg) -> Result<f64, CoreApiError> {
+    let number = value.to_number()?;
+    if number.is_finite() && number.fract() == 0.0 {
+        Ok(number)
+    } else {
+        Err(CoreApiError::invalid(ID_WRONG_TYPE))
+    }
+}
+
+/// A JS value as an `i32` row id. Row ids are whole and not negative, so NaN, infinities,
+/// fractions, negatives, non-numbers and values an `i32` cannot hold are refused instead of being
+/// truncated or wrapped onto another row.
+pub(crate) fn id32(value: impl IdArg) -> Result<i32, CoreApiError> {
+    let number = whole_id(&value)?;
+    if number >= 0.0 && number <= f64::from(i32::MAX) {
+        Ok(number as i32)
     } else {
         Err(CoreApiError::invalid("id is out of range"))
     }
@@ -263,25 +307,31 @@ pub(crate) fn id32(value: f64) -> Result<i32, CoreApiError> {
 /// The largest whole number a JS number holds exactly (2^53).
 const MAX_SAFE_ID: f64 = 9_007_199_254_740_992.0;
 
-/// A JS number as an `i64` row id. Row ids are whole, not negative and no larger than a JS number
-/// holds exactly, so NaN, infinities, fractions, negatives and values past 2^53 are refused instead
-/// of being truncated or rounded onto another row.
-pub(crate) fn id64(value: f64) -> Result<i64, CoreApiError> {
-    if value.is_finite() && value.fract() == 0.0 && (0.0..=MAX_SAFE_ID).contains(&value) {
-        Ok(value as i64)
+/// A JS value as an `i64` row id. Row ids are whole, not negative and no larger than a JS number
+/// holds exactly, so NaN, infinities, fractions, negatives, non-numbers and values past 2^53 are
+/// refused instead of being truncated or rounded onto another row.
+pub(crate) fn id64(value: impl IdArg) -> Result<i64, CoreApiError> {
+    let number = whole_id(&value)?;
+    if (0.0..=MAX_SAFE_ID).contains(&number) {
+        Ok(number as i64)
     } else {
         Err(CoreApiError::invalid("id is out of range"))
     }
 }
 
-/// An absent JS number as `None`, or a present one as a checked `i32` row id.
-pub(crate) fn optional_id32(value: Option<f64>) -> Result<Option<i32>, CoreApiError> {
-    value.map(id32).transpose()
+/// An absent (or `null`) id as `None`, or a present one as a checked `i32` row id.
+pub(crate) fn optional_id32<T: IdArg>(value: Option<T>) -> Result<Option<i32>, CoreApiError> {
+    value.filter(|v| !v.is_absent()).map(id32).transpose()
 }
 
-/// An absent JS number as `None`, or a present one as a checked `i64` row id.
-pub(crate) fn optional_id64(value: Option<f64>) -> Result<Option<i64>, CoreApiError> {
-    value.map(id64).transpose()
+/// An absent (or `null`) id as `None`, or a present one as a checked `i64` row id.
+pub(crate) fn optional_id64<T: IdArg>(value: Option<T>) -> Result<Option<i64>, CoreApiError> {
+    value.filter(|v| !v.is_absent()).map(id64).transpose()
+}
+
+/// A list of ids as checked `i32` row ids; a list that is not a list of numbers is a wrong type.
+pub(crate) fn id32_list<T: IdArg>(values: Vec<T>) -> Result<Vec<i32>, CoreApiError> {
+    values.into_iter().map(id32).collect()
 }
 
 /// A row id that reached a struct through `body`/`args` as an `i32`: it is whole by its type, so
@@ -352,6 +402,64 @@ mod tests {
             Ok(_) => (String::new(), String::new()),
             Err(error) => (error.code, error.message),
         }
+    }
+
+    #[test]
+    fn positional_ids_of_the_wrong_type_say_so() {
+        // int8: a string, bool, null, object, array or fraction never reaches the core, and
+        // reports a wrong type (not a null code, and not "out of range").
+        for value in [
+            serde_json::json!("7"),
+            serde_json::json!(true),
+            serde_json::json!(null),
+            serde_json::json!({ "id": 1 }),
+            serde_json::json!([1]),
+            serde_json::json!(1.5),
+        ] {
+            for error in [id32(value.clone()).err(), id64(value.clone()).err()] {
+                let error = error.unwrap_or_else(|| CoreApiError::invalid("accepted"));
+                assert_eq!(error.code, "invalid_request", "{value}");
+                assert_eq!(error.message, ID_WRONG_TYPE, "{value}");
+            }
+        }
+        assert_eq!(
+            id32(f64::NAN).err().map(|error| error.message),
+            Some(ID_WRONG_TYPE.to_owned())
+        );
+    }
+
+    #[test]
+    fn positional_ids_out_of_range_and_valid_ids() {
+        for value in [serde_json::json!(-1), serde_json::json!(4_294_967_297_u64)] {
+            let error = id32(value.clone()).err();
+            assert_eq!(
+                error.map(|error| (error.code, error.message)),
+                Some((
+                    "invalid_request".to_owned(),
+                    "id is out of range".to_owned()
+                )),
+                "{value}"
+            );
+        }
+        assert_eq!(id32(serde_json::json!(7)).ok(), Some(7));
+        assert_eq!(id32(7.0_f64).ok(), Some(7));
+        assert_eq!(id64(serde_json::json!(9)).ok(), Some(9));
+        assert_eq!(optional_id32::<JsonValue>(None).ok(), Some(None));
+        assert_eq!(
+            optional_id32(Some(serde_json::json!(null))).ok(),
+            Some(None)
+        );
+        assert_eq!(
+            optional_id32(Some(serde_json::json!("x")))
+                .err()
+                .map(|error| error.message),
+            Some(ID_WRONG_TYPE.to_owned())
+        );
+        assert_eq!(
+            id32_list(vec![serde_json::json!(1), serde_json::json!(2)]).ok(),
+            Some(vec![1, 2])
+        );
+        assert!(id32_list(vec![serde_json::json!(1), serde_json::json!("2")]).is_err());
     }
 
     #[test]
@@ -507,10 +615,10 @@ mod tests {
 
     #[test]
     fn optional_ids_keep_an_absent_value() {
-        assert_eq!(optional_id32(None).ok(), Some(None));
+        assert_eq!(optional_id32::<f64>(None).ok(), Some(None));
         assert_eq!(optional_id32(Some(5.0)).ok(), Some(Some(5)));
         assert!(optional_id32(Some(5.5)).is_err());
-        assert_eq!(optional_id64(None).ok(), Some(None));
+        assert_eq!(optional_id64::<f64>(None).ok(), Some(None));
         assert_eq!(optional_id64(Some(5.0)).ok(), Some(Some(5)));
         assert!(optional_id64(Some(5.5)).is_err());
     }

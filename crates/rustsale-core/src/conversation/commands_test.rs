@@ -691,7 +691,7 @@ async fn quick_template_command_update_validation() {
         },
     )
     .unwrap_err();
-    assert_eq!(err.code, ConversationErrorCode::InvalidRequest);
+    assert_eq!(err.code, ConversationErrorCode::NotFound);
 }
 
 #[tokio::test]
@@ -757,7 +757,7 @@ async fn quick_template_command_delete_success() {
         DeleteConversationQuickTemplateRequest { id: created.id },
     )
     .unwrap_err();
-    assert_eq!(err.code, ConversationErrorCode::InvalidRequest);
+    assert_eq!(err.code, ConversationErrorCode::NotFound);
 }
 
 #[tokio::test]
@@ -826,7 +826,7 @@ async fn quick_template_command_mark_used_updates_usage() {
         MarkConversationQuickTemplateUsedRequest { id: 99999 },
     )
     .unwrap_err();
-    assert_eq!(err.code, ConversationErrorCode::InvalidRequest);
+    assert_eq!(err.code, ConversationErrorCode::NotFound);
 }
 
 #[tokio::test]

@@ -473,5 +473,5 @@ pub fn save_unified_campaign_internal(
 
 pub fn delete_unified_campaign_internal(conn: &Connection, campaign_id: i64) -> Result<(), String> {
     crate::db::delete_campaign(conn, campaign_id)
-        .map_err(|e| format!("Failed to delete campaign: {}", e))
+        .map_err(|e| crate::commands::db_write_error(e, "campaign", campaign_id))
 }

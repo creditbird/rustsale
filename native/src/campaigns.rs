@@ -3,8 +3,8 @@
 
 use crate::error::CoreApiError;
 use crate::runtime::{
-    body, checked_id64, checked_ids64, checked_optional_id64, id32, id64, on_blocking, on_core,
-    state_of,
+    body, checked_id64, checked_ids64, checked_optional_id64, id32, id32_list, id64, on_blocking,
+    on_core, state_of,
 };
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
@@ -17,8 +17,8 @@ use rustsale_core::conversation::whatsapp::campaign::{
 use rustsale_core::models::{Campaign, CampaignStep};
 
 /// JS numbers as lead ids, refusing anything that is not a whole, non-negative `i32`.
-fn lead_ids(values: Vec<f64>) -> Result<Vec<i32>, CoreApiError> {
-    values.into_iter().map(id32).collect()
+fn lead_ids(values: Vec<JsonValue>) -> Result<Vec<i32>, CoreApiError> {
+    id32_list(values)
 }
 
 /// An optional JS number as a `u32`.
@@ -69,7 +69,7 @@ impl Campaigns {
 
     /// Replaces the name, content and image of outreach template `id`.
     pub async fn update_outreach_template(
-        template_id: f64,
+        template_id: JsonValue,
         name: String,
         content: String,
         image_url: Option<String>,
@@ -85,7 +85,7 @@ impl Campaigns {
     }
 
     /// Deletes outreach template `id`.
-    pub async fn delete_outreach_template(template_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn delete_outreach_template(template_id: JsonValue) -> Result<JsonValue, JsError> {
         let template = id32(template_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -98,8 +98,8 @@ impl Campaigns {
     /// optionally throttled by a burst limit and inter-message delay; progress arrives as events.
     pub async fn start_zalo_outreach(
         imeis: Vec<String>,
-        template_id: f64,
-        lead_ids_: Vec<f64>,
+        template_id: JsonValue,
+        lead_ids_: Vec<JsonValue>,
         enable_burst_limit: Option<bool>,
         burst_max_messages: Option<f64>,
         burst_delay_seconds: Option<f64>,
@@ -131,9 +131,9 @@ impl Campaigns {
     /// Sends email outreach through SMTP account `smtpId` with template `templateId` to `leadIds`;
     /// the job runs in the background and reports `email-outreach-progress`/`-log`/`-complete`.
     pub async fn send_email_outreach(
-        smtp_id: f64,
-        template_id: f64,
-        lead_ids_: Vec<f64>,
+        smtp_id: JsonValue,
+        template_id: JsonValue,
+        lead_ids_: Vec<JsonValue>,
     ) -> Result<JsonValue, JsError> {
         let leads = lead_ids(lead_ids_)?;
         let smtp = id32(smtp_id)?;
@@ -163,7 +163,7 @@ impl Campaigns {
     /// Replaces the recipients of WhatsApp campaign `campaignId`; `recipients` are
     /// `{ lead_id, recipient_phone_raw, template, lead_vars }` and `template` is the default text.
     pub async fn populate_whatsapp_campaign_recipients(
-        campaign_id: f64,
+        campaign_id: JsonValue,
         recipients: JsonValue,
         template: Option<String>,
     ) -> Result<JsonValue, JsError> {
@@ -182,7 +182,7 @@ impl Campaigns {
     }
 
     /// Starts the worker of WhatsApp campaign `campaignId`.
-    pub async fn start_whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn start_whatsapp_campaign(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -192,7 +192,7 @@ impl Campaigns {
     }
 
     /// Pauses WhatsApp campaign `campaignId`.
-    pub async fn pause_whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn pause_whatsapp_campaign(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -202,7 +202,7 @@ impl Campaigns {
     }
 
     /// Resumes a paused WhatsApp campaign `campaignId`.
-    pub async fn resume_whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn resume_whatsapp_campaign(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -212,7 +212,7 @@ impl Campaigns {
     }
 
     /// Cancels WhatsApp campaign `campaignId`.
-    pub async fn cancel_whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn cancel_whatsapp_campaign(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -222,7 +222,7 @@ impl Campaigns {
     }
 
     /// One WhatsApp campaign with its counters.
-    pub async fn whatsapp_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn whatsapp_campaign(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;
@@ -242,7 +242,7 @@ impl Campaigns {
 
     /// Recipients of WhatsApp campaign `campaignId`, with send status and the last error.
     pub async fn whatsapp_campaign_recipients(
-        campaign_id: f64,
+        campaign_id: JsonValue,
         limit_: Option<f64>,
         offset: Option<f64>,
     ) -> Result<JsonValue, JsError> {
@@ -259,7 +259,7 @@ impl Campaigns {
     }
 
     /// Sets unified campaign `campaignId` active. It only changes the status; the scheduler sends.
-    pub async fn start_unified_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn start_unified_campaign(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -269,7 +269,7 @@ impl Campaigns {
     }
 
     /// Pauses unified campaign `campaignId`.
-    pub async fn pause_unified_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn pause_unified_campaign(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -281,8 +281,8 @@ impl Campaigns {
     /// Enrolls `leadIds` at the first step of unified campaign `campaignId`; resolves how many
     /// were enrolled.
     pub async fn enroll_leads_into_campaign(
-        campaign_id: f64,
-        lead_ids_: Vec<f64>,
+        campaign_id: JsonValue,
+        lead_ids_: Vec<JsonValue>,
     ) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         let leads = lead_ids(lead_ids_)?;
@@ -294,7 +294,7 @@ impl Campaigns {
     }
 
     /// Per-step analytics of unified campaign `campaignId`, with response and conversion rates.
-    pub async fn unified_campaign_analytics(campaign_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn unified_campaign_analytics(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -337,7 +337,7 @@ impl Campaigns {
     }
 
     /// Deletes unified campaign `campaignId` and its steps.
-    pub async fn delete_unified_campaign(campaign_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn delete_unified_campaign(campaign_id: JsonValue) -> Result<JsonValue, JsError> {
         let campaign = id64(campaign_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;

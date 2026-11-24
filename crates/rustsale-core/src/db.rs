@@ -1515,8 +1515,8 @@ pub fn update_campaign(
 
 #[allow(dead_code)]
 pub fn delete_campaign(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM campaigns WHERE id = ?1", [id])?;
-    Ok(())
+    let changed = conn.execute("DELETE FROM campaigns WHERE id = ?1", [id])?;
+    ensure_row_changed(changed)
 }
 
 // ============================================================================
