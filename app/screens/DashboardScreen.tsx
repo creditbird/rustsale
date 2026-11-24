@@ -7,13 +7,17 @@ import { startCore } from "../stores/core";
 import { report } from "../stores/toast";
 import {
   convertAmount,
+  dealInPeriod,
   displayMoney,
+  stageBreakdown,
   summarize,
   type CurrencySettings,
   type DashboardActivity,
   type DashboardDeal,
   type DashboardLead,
   type DashboardSummary,
+  type Period,
+  type StageSlice,
 } from "../stores/dashboard";
 
 /** Tổng quan (UI-04): the v2 KPIs and the recent deals and activities, read from the core. */
@@ -21,9 +25,20 @@ export function DashboardScreen() {
   const summary = signal<DashboardSummary | null>(null);
   const activities = signal<DashboardActivity[]>([]);
   const currency = signal<CurrencySettings>({ base_currency: "VND", exchange_rate: 25400 });
+  const leadsRaw = signal<DashboardLead[]>([]);
+  const dealsRaw = signal<DashboardDeal[]>([]);
+  const period = signal<Period>("");
   const failed = signal(false);
   const loading = signal(false);
   let generation = 0;
+
+  const applyPeriod = (next: Period) => {
+    period.set(next);
+    const deals = dealsRaw().filter((deal) => dealInPeriod(deal, next));
+    summary.set(summarize(leadsRaw(), deals, currency()));
+  };
+  const stages = (): StageSlice[] =>
+    stageBreakdown(dealsRaw().filter((deal) => dealInPeriod(deal, period())), currency());
 
   const load = async () => {
     generation += 1;
@@ -40,7 +55,13 @@ export function DashboardScreen() {
       if (mine !== generation) return;
       const base = settings as CurrencySettings;
       currency.set(base);
-      summary.set(summarize(leads as DashboardLead[], deals as DashboardDeal[], base));
+      leadsRaw.set(leads as DashboardLead[]);
+      dealsRaw.set(deals as DashboardDeal[]);
+      summary.set(summarize(
+        leads as DashboardLead[],
+        (deals as DashboardDeal[]).filter((deal) => dealInPeriod(deal, period())),
+        base,
+      ));
       activities.set(recent as DashboardActivity[]);
       failed.set(false);
     } catch (e) {
@@ -74,6 +95,18 @@ export function DashboardScreen() {
               disabled={loading()}
               onPress={() => { void load(); }}
             />
+          </View>
+
+          <View testID="dash-periods" class="flex-row flex-wrap items-center gap-2">
+            <Text class="text-xs text-muted-foreground">Kỳ</Text>
+            <Button testID="dash-period-all" label="Tất cả" size="sm"
+              variant={period() === "" ? "primary" : "secondary"} onPress={() => applyPeriod("")} />
+            <Button testID="dash-period-30" label="30 ngày" size="sm"
+              variant={period() === "30" ? "primary" : "secondary"} onPress={() => applyPeriod("30")} />
+            <Button testID="dash-period-90" label="90 ngày" size="sm"
+              variant={period() === "90" ? "primary" : "secondary"} onPress={() => applyPeriod("90")} />
+            <Button testID="dash-period-year" label="Năm nay" size="sm"
+              variant={period() === "year" ? "primary" : "secondary"} onPress={() => applyPeriod("year")} />
           </View>
 
           <If when={summary() === null && !failed()}>
@@ -116,6 +149,22 @@ export function DashboardScreen() {
                       {displayMoney(s().pipelineValue, currency().base_currency)}
                     </Text>
                   </View>
+                </View>
+
+                <View class="gap-2 rounded-(--radius) border border-border bg-card p-4">
+                  <Text class="text-sm font-semibold text-foreground">Phân bố theo giai đoạn</Text>
+                  <Each of={stages()} key={(row) => row.stage}>
+                    {(row) => (
+                      <View testID={`dash-stage-${row().stage}`} class="flex-row items-center gap-3 border-b border-border py-2">
+                        <Text class="min-w-0 flex-1 truncate text-sm text-foreground">{row().label}</Text>
+                        <Text class="text-sm text-muted-foreground">{`${row().count} deal`}</Text>
+                        <Text class="w-40 text-right text-sm text-foreground">
+                          {displayMoney(row().value, currency().base_currency)}
+                        </Text>
+                        <Text class="w-12 text-right text-xs text-muted-foreground">{`${row().pct}%`}</Text>
+                      </View>
+                    )}
+                  </Each>
                 </View>
 
                 <View class="flex-row gap-4">
