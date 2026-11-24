@@ -85,7 +85,7 @@ Mỗi lô: 1 nhánh `feat/nsh-v3-ui-L<n>` từ `feat/nsh-v3-ui2`; mỗi màn kè
 - Không chờ DB hay mạng trên luồng UI: mọi export là promise; chặn bấm lặp bằng cờ `sending`/`busy`.
 - `Host.start` chỉ chạy một lần mỗi tiến trình; test dùng chung một thư mục tạm nên không giả định bảng rỗng (so sánh trước/sau).
 - Kiểu trả về là `unknown`; khai báo interface cục bộ (xem `Lead`, `InboxItem`, `Job`) và đọc theo tên trường thật của core (`snake_case` cho Templates/Leads/Scrape, `camelCase` cho Conversations).
-- `GoogleMaps.runtimeStatus()` ném `not_found` khi thiếu CloakBrowser, màn Scraper coi đó là "chưa sẵn sàng". Lẽ ra là `unavailable` (việc native, báo Nakroth).
+- `GoogleMaps.runtimeStatus()` ném `unavailable` khi thiếu CloakBrowser (sửa ở 6094f4e); màn Scraper chỉ coi `unavailable` là "chưa sẵn sàng", mã khác hiện "không kiểm tra được" kèm thông báo (`app/stores/scraperRuntime.ts`).
 - Ảnh chụp màn: `nsh run --target gpui` với `XDG_DATA_HOME` trỏ thư mục tạm đã seed (`Demo.seed` chỉ chạy trong thư mục tạm).
 
 ## 6. Pipeline: cách chuyển stage (Ishar, 2026-11-24, nhánh `feat/nsh-v3-ui-pipeline`)

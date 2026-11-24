@@ -64,7 +64,7 @@ impl Leads {
 
     /// Like `page`, for the leads of category `categoryId`.
     pub async fn by_category_page(
-        category_id: f64,
+        category_id: JsonValue,
         query: Option<JsonValue>,
         cursor: Option<String>,
         limit_: Option<f64>,
@@ -83,7 +83,7 @@ impl Leads {
     }
 
     /// One lead by id. Rejects with `not_found` when there is none.
-    pub async fn details(id: f64) -> Result<JsonValue, JsError> {
+    pub async fn details(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -116,7 +116,7 @@ impl Leads {
     }
 
     /// Sets the pipeline status of lead `id`.
-    pub async fn update_status(id: f64, status: String) -> Result<JsonValue, JsError> {
+    pub async fn update_status(id: JsonValue, status: String) -> Result<JsonValue, JsError> {
         let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -128,7 +128,7 @@ impl Leads {
     /// One page of the activity log, newest first: of lead `leadId`, or of all leads when absent.
     /// Resolves `{ items, total, nextCursor }`.
     pub async fn activities_page(
-        lead_id: Option<f64>,
+        lead_id: Option<JsonValue>,
         cursor: Option<String>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {

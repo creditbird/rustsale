@@ -24,6 +24,9 @@ function EventApp() {
         <Button testID="emit-out-progress" size="sm" label="out-progress" onPress={() => Demo.emit("outreach-progress", { progress: 40, status: "running", message: "Đang gửi 2/5 L2P" })} />
         <Button testID="emit-out-log" size="sm" label="out-log" onPress={() => Demo.emit("outreach-log", { message: "Dòng log L2Q khi rời màn" })} />
         <Button testID="emit-out-failed" size="sm" label="out-failed" onPress={() => Demo.emit("outreach-progress", { progress: 0, status: "failed", message: "Session not found L2R" })} />
+        <Button testID="emit-email-log" size="sm" label="email-log" onPress={() => Demo.emit("email-outreach-log", { message: "Successfully sent email to An (an@example.test)" })} />
+        <Button testID="emit-email-progress" size="sm" label="email-progress" onPress={() => Demo.emit("email-outreach-progress", { progress: 50, status: "running", message: "Processed 1/2 leads" })} />
+        <Button testID="emit-email-complete" size="sm" label="email-complete" onPress={() => Demo.emit("email-outreach-complete", { total_sent: 2, message: "Email outreach completed. 2 emails sent." })} />
         <Button testID="emit-scrape" size="sm" label="scrape" onPress={() => Demo.emit("google-maps-scrape-job-event", {})} />
       </View>
     </View>

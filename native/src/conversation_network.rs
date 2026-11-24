@@ -17,9 +17,15 @@ use rustsale_core::conversation::types::{
 };
 
 /// A JS number as a sticker id, refusing values a `u32` cannot hold.
-fn sticker_id(value: f64) -> Result<u32, CoreApiError> {
-    if value.is_finite() && value.fract() == 0.0 && value >= 0.0 && value <= f64::from(u32::MAX) {
-        Ok(value as u32)
+fn sticker_id(value: JsonValue) -> Result<u32, CoreApiError> {
+    let number = value
+        .as_f64()
+        .filter(|n| n.is_finite() && n.fract() == 0.0)
+        .ok_or_else(|| {
+            CoreApiError::invalid("sticker id has the wrong type: it must be a whole number")
+        })?;
+    if number >= 0.0 && number <= f64::from(u32::MAX) {
+        Ok(number as u32)
     } else {
         Err(CoreApiError::invalid("sticker id is out of range"))
     }
@@ -59,7 +65,7 @@ impl ConversationNetwork {
     /// Copies the files at `paths` into the staging area of conversation `conversationId` and
     /// resolves their metadata.
     pub async fn stage_attachment_paths(
-        conversation_id: f64,
+        conversation_id: JsonValue,
         paths: Vec<String>,
     ) -> Result<JsonValue, JsError> {
         let conversation = id64(conversation_id)?;
@@ -103,7 +109,7 @@ impl ConversationNetwork {
 
     /// Searches Zalo stickers for conversation `conversationId`; `limit` absent means 20.
     pub async fn search_stickers(
-        conversation_id: f64,
+        conversation_id: JsonValue,
         query: String,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
@@ -120,7 +126,10 @@ impl ConversationNetwork {
 
     /// One Zalo sticker by id, as the chat of conversation `conversationId` sees it; `null` when
     /// Zalo has no such sticker.
-    pub async fn sticker_detail(conversation_id: f64, sticker: f64) -> Result<JsonValue, JsError> {
+    pub async fn sticker_detail(
+        conversation_id: JsonValue,
+        sticker: JsonValue,
+    ) -> Result<JsonValue, JsError> {
         let conversation = id64(conversation_id)?;
         let sticker = sticker_id(sticker)?;
         on_core(move |h| async move {
@@ -185,7 +194,7 @@ impl ConversationNetwork {
 
     /// The members of group conversation `conversationId` with their lead and categories. The
     /// name keeps the v2 `unrestricted` meaning: the group may have more than the page shows.
-    pub async fn group_members(conversation_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn group_members(conversation_id: JsonValue) -> Result<JsonValue, JsError> {
         let conversation = id64(conversation_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -217,7 +226,7 @@ impl ConversationNetwork {
 
     /// Pulls the member profiles of group `conversationId` from the channel runtime and resolves
     /// the scan result.
-    pub async fn deep_scan_group_members(conversation_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn deep_scan_group_members(conversation_id: JsonValue) -> Result<JsonValue, JsError> {
         let conversation = id64(conversation_id)?;
         on_core(move |h| async move {
             let db = state_of::<DbState>(&h)?;
@@ -231,7 +240,7 @@ impl ConversationNetwork {
 
     /// Backfills up to five pages of the Zalo group history of `conversationId`; resolves how many
     /// messages were added.
-    pub async fn sync_zalo_group_history(conversation_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn sync_zalo_group_history(conversation_id: JsonValue) -> Result<JsonValue, JsError> {
         let conversation = id64(conversation_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -252,7 +261,7 @@ impl ConversationNetwork {
     }
 
     /// Downloads attachment `attachmentId` into the local spool and resolves its record.
-    pub async fn download_attachment(attachment_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn download_attachment(attachment_id: JsonValue) -> Result<JsonValue, JsError> {
         let attachment = id64(attachment_id)?;
         on_core(move |h| async move {
             let state = state_of::<ConversationState>(&h)?;
@@ -293,7 +302,7 @@ impl ConversationNetwork {
 
     /// Disconnects WhatsApp account `channelAccountId`: it stops the bot and deletes the session.
     pub async fn disconnect_whatsapp_account(
-        channel_account_id: f64,
+        channel_account_id: JsonValue,
     ) -> Result<JsonValue, JsError> {
         let account = id64(channel_account_id)?;
         on_core(move |h| async move {

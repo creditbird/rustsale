@@ -8,7 +8,7 @@ use rustsale_core::ai::commands as ai;
 use rustsale_core::commands::DbState;
 
 /// A JS number as a lead id, refusing anything that is not a whole, non-negative `i32`.
-fn lead_id(value: f64) -> Result<i32, CoreApiError> {
+fn lead_id(value: JsonValue) -> Result<i32, CoreApiError> {
     id32(value)
 }
 
@@ -33,8 +33,8 @@ impl Ai {
     /// `conversationId` and `customPrompt` may be absent; the answer is `{ conversation_id,
     /// variants, ... }` as the core returns it.
     pub async fn smart_reply_suggestions(
-        lead_id_: f64,
-        conversation_id: Option<f64>,
+        lead_id_: JsonValue,
+        conversation_id: Option<JsonValue>,
         custom_prompt: Option<String>,
     ) -> Result<JsonValue, JsError> {
         let lead = lead_id(lead_id_)?;
@@ -70,7 +70,10 @@ impl Ai {
 
     /// Saves the reviewer's edit of the text of a pending proposal `proposalId`. Review it
     /// afterwards to approve the edited text.
-    pub async fn edit_proposal(proposal_id: f64, content: String) -> Result<JsonValue, JsError> {
+    pub async fn edit_proposal(
+        proposal_id: JsonValue,
+        content: String,
+    ) -> Result<JsonValue, JsError> {
         let proposal = id64(proposal_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -82,7 +85,7 @@ impl Ai {
     /// Reviews proposal `proposalId` as `APPROVED`, `REJECTED`, `APPLIED` or `PENDING`, recording
     /// `reviewer`.
     pub async fn review_proposal(
-        proposal_id: f64,
+        proposal_id: JsonValue,
         status: String,
         reviewer: String,
     ) -> Result<JsonValue, JsError> {
@@ -96,7 +99,7 @@ impl Ai {
 
     /// The CRM evidence of lead `leadId` that the copilot reads: the lead, its deal, recent
     /// messages and the journey stage.
-    pub async fn lead_evidence_context(lead_id_: f64) -> Result<JsonValue, JsError> {
+    pub async fn lead_evidence_context(lead_id_: JsonValue) -> Result<JsonValue, JsError> {
         let lead = lead_id(lead_id_)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;

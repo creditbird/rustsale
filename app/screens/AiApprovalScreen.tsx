@@ -17,11 +17,12 @@ function platformLabel(platform: string): string {
 function statusLabel(status: string): string {
   if (status === "APPROVED") return "ĐÃ DUYỆT";
   if (status === "REJECTED") return "ĐÃ TỪ CHỐI";
+  if (status === "APPLIED") return "ĐÃ ÁP DỤNG";
   return "CHỜ DUYỆT";
 }
 
 function statusTone(status: string): BadgeTone {
-  if (status === "APPROVED") return "success";
+  if (status === "APPROVED" || status === "APPLIED") return "success";
   if (status === "REJECTED") return "danger";
   return "warning";
 }
@@ -153,15 +154,16 @@ function EditModal(props: { state: AiApprovalState }) {
         <Input testID="ai-edit-text" multiline value={st.editedContent()}
           class="h-32 rounded-(--radius) border border-input bg-background px-3 py-2 text-sm text-foreground focus:border-ring"
           onValue={(v) => st.editedContent.set(v)} />
-        <Text testID="ai-edit-note" class={st.editChanged() ? "text-[11px] text-destructive" : "text-[11px] text-muted-foreground"}>
-          {st.editChanged()
-            ? "Bản v3 chưa lưu được nội dung đã sửa nên không thể duyệt bản này. Hãy khôi phục nội dung gốc hoặc Huỷ rồi Từ chối."
-            : "Bản v3 chưa có API lưu nội dung đã sửa: chỉ duyệt được nội dung gốc của đề xuất."}
+        <Text testID="ai-edit-note" class={st.editProblem() !== null || st.editError() !== null ? "text-[11px] text-destructive" : "text-[11px] text-muted-foreground"}>
+          {st.editProblem() ?? st.editError()
+            ?? (st.editChanged()
+              ? "Nội dung đã sửa sẽ được lưu lại trước khi duyệt."
+              : "Giữ nguyên nội dung gốc hoặc sửa trước khi duyệt.")}
         </Text>
         <View class="flex-row items-center justify-between border-t border-border pt-2">
           <Button label="Huỷ" onPress={st.closeEdit} disabled={st.reviewing()} />
-          <Button testID="ai-edit-save" variant="primary" label="Duyệt nội dung gốc"
-            disabled={st.reviewing() || st.editChanged()} onPress={() => { void st.saveAndApprove(); }} />
+          <Button testID="ai-edit-save" variant="primary" label="Lưu & Duyệt"
+            disabled={st.reviewing() || st.editProblem() !== null} onPress={() => { void st.saveAndApprove(); }} />
         </View>
       </View>
     </Modal>
@@ -192,7 +194,7 @@ export function AiApprovalScreen() {
             <View class="min-w-0 flex-1 gap-1">
               <View class="flex-row items-center gap-2">
                 <Text class="text-lg font-semibold text-foreground">Hàng đợi duyệt tin AI (Human-in-the-Loop)</Text>
-                <Badge label={`${st.proposals().length} tin chờ duyệt`} tone="neutral" />
+                <Badge label={`${st.pendingCount()} tin chờ duyệt`} tone="neutral" />
               </View>
               <Text class="text-xs text-muted-foreground">
                 Mọi tin nhắn outbound do AI Agent soạn đều dừng ở đây để nhân viên kiểm duyệt. Bản v3 chỉ ghi trạng thái duyệt, chưa tự gửi tin.
@@ -227,16 +229,16 @@ export function AiApprovalScreen() {
           <If when={st.ready() && st.loading() && st.proposals().length === 0}>
             <View class="gap-2"><Skeleton class="h-32" /><Skeleton class="h-32" /></View>
           </If>
-          <If when={st.statusFilter() !== "PENDING"}>
-            <View testID="ai-history-note" class="rounded-(--radius) border border-border bg-muted/30 p-3">
-              <Text class="text-xs text-muted-foreground">
-                Bản v3 chưa có API đọc các đề xuất đã duyệt hoặc đã từ chối, nên tab này chỉ hiện đề xuất đang chờ. Danh sách trống không có nghĩa là chưa xử lý đề xuất nào.
-              </Text>
+          <If when={st.ready() && st.filtered().length === 0}>
+            <View testID="ai-empty">
+              <EmptyState
+                title={st.statusFilter() === "PENDING"
+                  ? "Không có tin nhắn nào đang chờ duyệt"
+                  : "Không có đề xuất nào ở trạng thái này"}
+                hint={st.statusFilter() === "PENDING"
+                  ? "Tất cả đề xuất của AI đã được xử lý xong."
+                  : "Đổi bộ lọc trạng thái để xem các đề xuất khác."} />
             </View>
-          </If>
-          <If when={st.ready() && st.filtered().length === 0 && st.statusFilter() === "PENDING"}>
-            <EmptyState title="Không có tin nhắn nào đang chờ duyệt"
-              hint="Tất cả đề xuất của AI đã được xử lý xong." />
           </If>
           <View class="gap-3">
             <Each of={st.filtered()} key={(p) => String(p.id)}>

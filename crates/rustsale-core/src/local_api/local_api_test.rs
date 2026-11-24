@@ -592,6 +592,7 @@ fn conversation_errors_map_to_http_status() {
     use crate::conversation::error::{ConversationError, ConversationErrorCode as C};
     let map = |code| ApiError::from(ConversationError::new(code, "detail"));
     assert_eq!(map(C::InvalidRequest).status, StatusCode::BAD_REQUEST);
+    assert_eq!(map(C::NotFound).status, StatusCode::NOT_FOUND);
     assert_eq!(map(C::AccountDisconnected).status, StatusCode::CONFLICT);
     assert_eq!(
         map(C::ProviderRateLimited).status,

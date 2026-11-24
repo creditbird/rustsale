@@ -37,7 +37,7 @@ impl Deals {
     }
 
     /// Moves deal `id` to `stage`; the core accepts any stage string.
-    pub async fn update_stage(id: f64, stage: String) -> Result<JsonValue, JsError> {
+    pub async fn update_stage(id: JsonValue, stage: String) -> Result<JsonValue, JsError> {
         let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -66,7 +66,7 @@ impl Deals {
     }
 
     /// Deletes deal `id`; a missing id is not an error.
-    pub async fn delete(id: f64) -> Result<JsonValue, JsError> {
+    pub async fn delete(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;

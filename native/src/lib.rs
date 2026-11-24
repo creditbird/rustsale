@@ -2,8 +2,12 @@
 //! The only place TSX reaches `rustsale-core`.
 
 mod ai;
+#[cfg(test)]
+#[path = "../build_env.rs"]
+mod build_env;
 mod campaigns;
 mod categories;
+pub mod config;
 mod conversation_actions;
 mod conversation_network;
 mod conversations;

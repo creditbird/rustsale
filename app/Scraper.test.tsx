@@ -50,3 +50,9 @@ test("a scrape job event from the core refreshes the list", async () => {
   await app.press("id:emit-scrape");
   await app.waitUntil(() => has(app, "tiệm bánh sự kiện"), { timeout: 4000 });
 });
+
+test("without the browser sidecar the screen says chưa sẵn sàng and shows no error toast", async () => {
+  const app = await openScraper();
+  await app.waitUntil(() => has(app, "Trình duyệt: chưa sẵn sàng"));
+  expect(has(app, "Có lỗi khi xử lý")).toBe(false);
+});

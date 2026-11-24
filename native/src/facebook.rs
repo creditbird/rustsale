@@ -82,7 +82,7 @@ impl Facebook {
     }
 
     /// Queues post `postId` for immediate publishing; resolves whether it changed.
-    pub async fn publish_post_now(post_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn publish_post_now(post_id: JsonValue) -> Result<JsonValue, JsError> {
         let post = id64(post_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -101,7 +101,7 @@ impl Facebook {
     }
 
     /// Cancels draft or queued post `postId`; resolves whether it existed.
-    pub async fn cancel_scheduled_post(post_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn cancel_scheduled_post(post_id: JsonValue) -> Result<JsonValue, JsError> {
         let post = id64(post_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -145,7 +145,7 @@ impl Facebook {
     }
 
     /// Deletes comment automation rule `id`; resolves whether it existed.
-    pub async fn delete_comment_automation(rule_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn delete_comment_automation(rule_id: JsonValue) -> Result<JsonValue, JsError> {
         let rule = id64(rule_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;

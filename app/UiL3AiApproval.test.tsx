@@ -1,5 +1,5 @@
 // Headless: the AI approval queue with the native module stubbed, so no provider is called and
-// nothing is sent. Only the queue and review calls are stand-ins; leads still come from the core.
+// nothing is sent. The queue's own exports are stand-ins; leads still come from the core.
 import { open, test } from "nsh/test";
 import { eventually } from "./testing";
 import { Host, Leads } from "rustsale/native";
@@ -30,7 +30,7 @@ async function openQueue(options?: Parameters<typeof open>[1]) {
   return app;
 }
 
-function proposal(id: number, leadId: number | null, platform: string, content: string): Proposal {
+function proposal(id: number, leadId: number | null, platform: string, content: string, status = "PENDING"): Proposal {
   return {
     id,
     lead_id: leadId,
@@ -38,21 +38,37 @@ function proposal(id: number, leadId: number | null, platform: string, content: 
     platform,
     proposed_content: content,
     reasoning: `Vì khách đã hỏi ${content}`,
-    status: "PENDING",
-    reviewed_by: null,
-    reviewed_at: null,
+    status,
+    reviewed_by: status === "PENDING" ? null : "Reviewer",
+    reviewed_at: status === "PENDING" ? null : "2026-11-23T03:00:00Z",
     created_at: "2026-11-23T02:00:00Z",
   };
 }
 
-function modulesFor(pending: Proposal[], reviewed: { id: number; status: string; reviewer: string }[], evidence?: unknown) {
+function modulesFor(
+  rows: Proposal[],
+  reviewed: { id: number; status: string; reviewer: string }[],
+  edited: { id: number; content: string }[],
+  evidence?: unknown,
+) {
+  const byStatus = (status: unknown): Proposal[] => {
+    const wanted = typeof status === "string" ? status.trim().toUpperCase() : "";
+    if (wanted === "" || wanted === "ALL") return rows;
+    return rows.filter((p) => p.status === wanted);
+  };
   return {
     modules: {
       "rustsale/native": {
-        "Ai.pendingProposals": () => pending.filter((p) => p.status === "PENDING"),
+        "Ai.proposals": (status: unknown) => byStatus(status),
+        "Ai.editProposal": (id: number, content: string) => {
+          edited.push({ id, content });
+          const found = rows.find((p) => p.id === id);
+          if (found) found.proposed_content = content.trim();
+          return null;
+        },
         "Ai.reviewProposal": (id: number, status: string, reviewer: string) => {
           reviewed.push({ id, status, reviewer });
-          const found = pending.find((p) => p.id === id);
+          const found = rows.find((p) => p.id === id);
           if (found) found.status = status;
           return null;
         },
@@ -66,11 +82,12 @@ test("the queue shows proposals, filters them and opens the CRM evidence", async
   const stamp = Date.now();
   await Host.start(dir);
   const leadId = (await Leads.add({ name: `Khách AI ${stamp}`, phone: "0901111111", status: "New" })) as number;
-  const pending = [
+  const rows = [
     proposal(1, leadId, "zalo", `Nội dung A ${stamp}`),
     proposal(2, null, "whatsapp", `Nội dung B ${stamp}`),
   ];
   const reviewed: { id: number; status: string; reviewer: string }[] = [];
+  const edited: { id: number; content: string }[] = [];
   const evidence = {
     lead_id: leadId,
     lead_name: `Khách AI ${stamp}`,
@@ -96,7 +113,7 @@ test("the queue shows proposals, filters them and opens the CRM evidence", async
     verified_channels: ["zalo"],
   };
 
-  const app = await openQueue(modulesFor(pending, reviewed, evidence));
+  const app = await openQueue(modulesFor(rows, reviewed, edited, evidence));
   await app.waitUntil(() => has(app, `Nội dung A ${stamp}`));
   await app.waitUntil(() => has(app, `Nội dung B ${stamp}`));
   await app.waitUntil(() => has(app, "2 tin chờ duyệt"));
@@ -115,15 +132,16 @@ test("the queue shows proposals, filters them and opens the CRM evidence", async
   await app.press("text:Đóng");
 });
 
-test("approve, reject and edit call the review export and clear the queue", async () => {
+test("approve and reject call the review export and clear the pending queue", async () => {
   const stamp = Date.now();
   await Host.start(dir);
-  const pending = [
+  const rows = [
     proposal(11, null, "zalo", `Duyệt ${stamp}`),
     proposal(12, null, "email", `Từ chối ${stamp}`),
   ];
   const reviewed: { id: number; status: string; reviewer: string }[] = [];
-  const app = await openQueue(modulesFor(pending, reviewed));
+  const edited: { id: number; content: string }[] = [];
+  const app = await openQueue(modulesFor(rows, reviewed, edited));
   await app.waitUntil(() => has(app, `Duyệt ${stamp}`));
 
   await app.press("id:ai-approve-11");
@@ -137,50 +155,77 @@ test("approve, reject and edit call the review export and clear the queue", asyn
   await app.waitUntil(() => has(app, "Không có tin nhắn nào đang chờ duyệt"));
 });
 
-test("an edited text cannot be approved, the stored text can", async () => {
+test("an edited text is saved by the core and then approved", async () => {
   const stamp = Date.now();
   await Host.start(dir);
-  const pending = [proposal(21, null, "zalo", `Sửa ${stamp}`)];
+  const rows = [proposal(21, null, "zalo", `Sửa ${stamp}`)];
   const reviewed: { id: number; status: string; reviewer: string }[] = [];
-  const app = await openQueue(modulesFor(pending, reviewed));
+  const edited: { id: number; content: string }[] = [];
+  const app = await openQueue(modulesFor(rows, reviewed, edited));
   await app.waitUntil(() => has(app, `Sửa ${stamp}`));
 
   await app.press("id:ai-edit-21");
   await app.waitFor("id:ai-edit-text");
-  await app.waitUntil(() => has(app, "Bản v3 chưa có API lưu nội dung đã sửa"));
-  await app.type("id:ai-edit-text", ` đã sửa`);
-  await app.waitUntil(() => has(app, "không thể duyệt bản này"));
-  // The button is disabled for an edited text, so pressing it must be refused.
-  let refused = false;
-  try { await app.press("id:ai-edit-save"); } catch { refused = true; }
-  if (!refused) throw new Error("the save button must be disabled for an edited text");
-  await new Promise((r) => setTimeout(r, 400));
-  if (reviewed.length !== 0) throw new Error("an edited text must not be approved");
+  await app.waitUntil(() => has(app, "Giữ nguyên nội dung gốc hoặc sửa trước khi duyệt."));
+  const wanted = `Sửa ${stamp} đã sửa`;
+  await app.type("id:ai-edit-text", " đã sửa");
+  await app.waitUntil(() => has(app, "Nội dung đã sửa sẽ được lưu lại trước khi duyệt."));
+  await app.press("id:ai-edit-save");
 
-  await app.clear("id:ai-edit-text");
-  await app.type("id:ai-edit-text", `Sửa ${stamp}`);
-  await app.waitUntil(() => has(app, "chỉ duyệt được nội dung gốc"));
+  await app.waitUntil(() => edited.some((e) => e.id === 21 && e.content === wanted));
+  await app.waitUntil(() => reviewed.some((r) => r.id === 21 && r.status === "APPROVED" && r.reviewer === "Human Reviewer (Edited)"));
+  await app.waitUntil(() => !app.shows("id:ai-edit-text"));
+  await app.waitUntil(() => has(app, "Đã lưu nội dung đã sửa và duyệt"));
+
+  await app.press("id:ai-filter-ALL");
+  await app.waitUntil(() => has(app, wanted));
+  await app.waitUntil(() => has(app, "ĐÃ DUYỆT"));
 });
 
-test("the approved and rejected tabs say the history is not readable yet", async () => {
+test("the history tabs show approved, rejected and applied proposals", async () => {
   const stamp = Date.now();
   await Host.start(dir);
-  const app = await openQueue(modulesFor([proposal(41, null, "zalo", `Tab ${stamp}`)], []));
-  await app.waitUntil(() => has(app, `Tab ${stamp}`));
+  const rows = [
+    proposal(31, null, "zalo", `Chờ ${stamp}`),
+    proposal(32, null, "email", `Đã duyệt ${stamp}`, "APPROVED"),
+    proposal(33, null, "zalo", `Đã từ chối ${stamp}`, "REJECTED"),
+    proposal(34, null, "whatsapp", `Đã áp dụng ${stamp}`, "APPLIED"),
+  ];
+  const reviewed: { id: number; status: string; reviewer: string }[] = [];
+  const edited: { id: number; content: string }[] = [];
+  const app = await openQueue(modulesFor(rows, reviewed, edited));
+  await app.waitUntil(() => has(app, `Chờ ${stamp}`));
+  await app.waitUntil(() => has(app, "1 tin chờ duyệt"));
+
   await app.press("id:ai-filter-APPROVED");
-  await app.waitFor("id:ai-history-note");
-  await app.waitUntil(() => !has(app, "Không có tin nhắn nào đang chờ duyệt"));
+  await app.waitUntil(() => has(app, `Đã duyệt ${stamp}`));
+  await app.waitUntil(() => !has(app, `Chờ ${stamp}`));
+  await app.waitUntil(() => !app.shows("id:ai-history-note"));
+
+  await app.press("id:ai-filter-REJECTED");
+  await app.waitUntil(() => has(app, `Đã từ chối ${stamp}`));
+  await app.waitUntil(() => has(app, "ĐÃ TỪ CHỐI"));
+
+  await app.press("id:ai-filter-APPLIED");
+  await app.waitUntil(() => has(app, `Đã áp dụng ${stamp}`));
+  await app.waitUntil(() => has(app, "ĐÃ ÁP DỤNG"));
+
+  await app.press("id:ai-filter-ALL");
+  await app.waitUntil(() => has(app, `Chờ ${stamp}`));
+  await app.waitUntil(() => has(app, `Đã duyệt ${stamp}`));
+  await app.waitUntil(() => has(app, `Đã từ chối ${stamp}`));
+  await app.waitUntil(() => has(app, `Đã áp dụng ${stamp}`));
 });
 
 test("a provider failure shows the error and retry loads the queue again", async () => {
   const stamp = Date.now();
   await Host.start(dir);
-  const pending = [proposal(31, null, "zalo", `Lỗi ${stamp}`)];
+  const pending = [proposal(41, null, "zalo", `Lỗi ${stamp}`)];
   let fail = true;
   const modules = {
     modules: {
       "rustsale/native": {
-        "Ai.pendingProposals": () => {
+        "Ai.proposals": () => {
           if (fail) throw Object.assign(new Error("provider down"), { code: "internal" });
           return pending;
         },

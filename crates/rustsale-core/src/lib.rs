@@ -24,6 +24,8 @@ pub mod google_maps_jobs;
 pub mod host;
 #[cfg(test)]
 mod int7_core_test;
+#[cfg(test)]
+mod int8_core_test;
 pub mod lead_importer;
 pub mod local_api;
 pub mod models;

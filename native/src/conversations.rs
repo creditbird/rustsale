@@ -48,7 +48,7 @@ impl Conversations {
     /// `before` to fetch the page before it; it is null when there is nothing older. `before` is
     /// absent for the newest page. Older pages are therefore prepended to what is on screen.
     pub async fn timeline(
-        conversation_id: f64,
+        conversation_id: JsonValue,
         before: Option<JsonValue>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {

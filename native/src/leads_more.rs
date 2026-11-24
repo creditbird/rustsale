@@ -123,7 +123,7 @@ impl LeadsMore {
     /// Every lead id matching `filters` (same shape as `outreachPage`), without `excludedLeadIds`.
     pub async fn outreach_ids(
         filters: Option<JsonValue>,
-        excluded_lead_ids: Option<Vec<f64>>,
+        excluded_lead_ids: Option<Vec<JsonValue>>,
     ) -> Result<JsonValue, JsError> {
         let filters = OutreachFilters::checked(args(filters)?)?;
         let excluded = excluded_lead_ids
@@ -159,7 +159,7 @@ impl LeadsMore {
     }
 
     /// The full activity log of lead `leadId`, newest first.
-    pub async fn activities(lead_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn activities(lead_id: JsonValue) -> Result<JsonValue, JsError> {
         let lead = id32(lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -222,8 +222,8 @@ impl LeadsMore {
         .await
     }
 
-    /// Deletes lead `id` with its activities and deals; a missing id is not an error.
-    pub async fn delete(id: f64) -> Result<JsonValue, JsError> {
+    /// Deletes lead `id` with its activities and deals; an id that is missing or already deleted is `not_found`.
+    pub async fn delete(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;

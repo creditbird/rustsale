@@ -90,6 +90,7 @@ Build được sau khi cài `webkitgtk-6.0` 2.54.3 (chủ đồng ý 22/11). Lý
 - Metadata gói không khai phụ thuộc: `nsh/app.json` chỉ có name/id/version/schemes, `.desktop` không có trường nào về gói; `RustSale.tar.gz` chỉ chứa binary + bundle, không kèm thư viện. Người dùng cuối phải tự cài `webkitgtk-6.0` (Arch), `libwebkitgtk-6.0-4` (Debian/Ubuntu 24.04+), `webkitgtk6.0` (Fedora), kèm GTK 4.14+. Đó là vài trăm MB phụ thuộc cho một app không dùng WebView.
 - Nguyên nhân: nsh-cli luôn bật feature `webview` của `nsh-platform-linux` khi build host app mixed (`HOST_ONLY_FEATURES`, mục trên).
 - Đề xuất (chưa làm, không vá nsh-cli): (1) gói `.deb`/`.rpm`/PKGBUILD tự ta viết cho bản phát hành, khai `Depends: libwebkitgtk-6.0-4, libgtk-4-1`; (2) hỏi upstream nsh (github.com/longbridge/nsh) cho tắt feature `webview` với app không dùng WebView; khi có, binary không còn kéo WebKit. Trong lúc chờ: chọn (1). Nakroth quyết có mở issue upstream không.
+- Đã làm (24/11, #49): `packaging/linux/` (`.deb` khai `libwebkitgtk-6.0-4`, `libgtk-4-1 (>= 4.14)`; PKGBUILD khai `webkitgtk-6.0`, `gtk4`; spec `.rpm`). Binary build trên Arch còn cần glibc 2.44 và `libssl.so.4` (OpenSSL 4), nên `.deb` chỉ cài được trên distro mới bằng máy build; bản cho Debian 13 / Ubuntu 24.04 phải build trong chính distro đó (xem `packaging/linux/README.md`).
 
 ## 4c. Sửa khựng khi cuộn bảng khách (22/11 10:00 đến 10:13)
 
@@ -143,3 +144,17 @@ cd ../native && cargo test --release -- --include-ignored --nocapture           
 | Google Maps Scraper | mở, job giả chạy và dừng | mở, job giả chạy tới "Hoàn tất" | Scraper.test.tsx 2/2 |
 
 Ghi chú: Scraper dùng store giả (`app/stores/scraper.ts`) cho tới khi nối core của Toro. Ảnh: `docs/v3/screens/scraper-gpui-form.png`, `scraper-gtk4-release.png`. Ảnh Hội thoại có tin thật từ bản sao nên không đưa vào repo. Máy tải 25 khi chụp, chưa đo cold start lại.
+
+## 4e. GPUI host build: gpui-fast pinned to 0.1.17 (#55, 24/11)
+
+`nsh run --target gpui` stopped building: `nsh-platform-gpui` 0.6.1 asks for `gpui-fast ^0.1.16`, a fresh resolution
+picks 0.1.19, and 0.1.19 defines its own `FillOptions` without lyon's `FillOptions::even_odd()` that
+`nsh-platform-gpui` calls at `render.rs:466` (E0599). 0.1.17 still re-exports lyon's `FillOptions`.
+
+Fix: `native/Cargo.toml` requires `gpui-fast` and `gpui-fast-platform` as `=0.1.17` under `[target.'cfg(any())'.dependencies]`.
+nsh writes the GPUI host's own workspace and lockfile under `native/.nsh/rust/gpui` and resolves it from the app's
+requirements (not from `native/Cargo.lock`); `cfg(any())` is false on every target, so the two crates are resolved but
+never compiled or linked into the app. Checked: the host builds (9 min cold), connects and draws its first frame.
+
+To drop the pin: delete that table once an `nsh-platform-gpui` release fixes the call for gpui-fast 0.1.19, then delete
+`native/.nsh/rust/gpui/Cargo.lock` and run `nsh run --target gpui` again.
