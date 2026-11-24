@@ -43,6 +43,7 @@ export function TemplatesScreen() {
   const body = signal("");
   const channel = signal<string>("zalo");
   const folderId = signal<number | null>(null);
+  const unfiled = signal(false);
   const formFolder = signal<number | null>(null);
   const folders = signal<TemplateFolder[]>([]);
   const folderOpen = signal(false);
@@ -56,7 +57,9 @@ export function TemplatesScreen() {
     try {
       await startCore();
       const current = folderId();
-      const filter = current === null ? null : { folder_id: current };
+      const filter = unfiled()
+        ? { unfiled: true }
+        : current === null ? null : { folder_id: current };
       items.set((await Templates.list(filter)) as Template[]);
       ready.set(true);
     } catch (e) {
@@ -72,7 +75,13 @@ export function TemplatesScreen() {
     }
   };
   const pickFolder = (id: number | null) => {
+    unfiled.set(false);
     folderId.set(id);
+    void refresh();
+  };
+  const pickUnfiled = () => {
+    folderId.set(null);
+    unfiled.set(true);
     void refresh();
   };
   const createFolder = async () => {
@@ -157,11 +166,13 @@ export function TemplatesScreen() {
       <View class="flex-row flex-wrap items-center gap-2 px-6 pb-3">
         <Text class="text-xs text-muted-foreground">Thư mục</Text>
         <Button testID="tpl-folder-all" label="Tất cả" size="sm"
-          variant={folderId() === null ? "primary" : "secondary"} onPress={() => pickFolder(null)} />
+          variant={folderId() === null && !unfiled() ? "primary" : "secondary"} onPress={() => pickFolder(null)} />
+        <Button testID="tpl-folder-unfiled" label="Chưa xếp" size="sm"
+          variant={unfiled() ? "primary" : "secondary"} onPress={pickUnfiled} />
         <Each of={folders()} key={(f) => String(f.id)}>
           {(f) => (
             <Button testID={`tpl-folder-${f().id}`} label={f().name} size="sm"
-              variant={folderId() === f().id ? "primary" : "secondary"}
+              variant={folderId() === f().id && !unfiled() ? "primary" : "secondary"}
               onPress={() => pickFolder(f().id)} />
           )}
         </Each>

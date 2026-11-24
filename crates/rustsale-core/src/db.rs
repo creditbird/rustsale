@@ -2189,6 +2189,13 @@ pub fn get_templates(
                 sql.push_str(" AND folder_id IS NULL");
             }
         }
+        if let Some(unfiled) = f.unfiled {
+            sql.push_str(if unfiled {
+                " AND folder_id IS NULL"
+            } else {
+                " AND folder_id IS NOT NULL"
+            });
+        }
         if let Some(stage) = &f.stage {
             let st = stage.trim();
             if !st.is_empty() && st.to_lowercase() != "all" {
