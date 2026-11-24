@@ -16,11 +16,19 @@ ROOT="$WORK/root"
 mkdir -p "$ROOT" "$OUT"
 stage_tree "$SRC" "$ROOT"
 assert_no_demo "$(find_runner "$SRC")"
-warn_needed "$(find_runner "$SRC")"
 
-GLIBC="$(min_glibc "$(find_runner "$SRC")")"
-DEPENDS="libwebkitgtk-6.0-4, libgtk-4-1 (>= $GTK_MIN)"
-[[ -n "$GLIBC" ]] && DEPENDS="libc6 (>= $GLIBC), $DEPENDS"
+RUNNER="$(find_runner "$SRC")"
+if command -v dpkg-shlibdeps >/dev/null 2>&1; then
+  # On a Debian or Ubuntu host (the container of build-deb-container.sh) the dependencies come from the distro's
+  # own shlibs data: libc6 (>= <the glibc that built it>), libssl3t64, libgtk-4-1, libwebkitgtk-6.0-4, ...
+  DEPENDS="$(shlibs_depends "$RUNNER" "$WORK")"
+else
+  # No dpkg tooling (Arch, for example): name the libraries by hand, with the glibc floor read from the runner.
+  warn_needed "$RUNNER"
+  GLIBC="$(min_glibc "$RUNNER")"
+  DEPENDS="libwebkitgtk-6.0-4, libgtk-4-1 (>= $GTK_MIN)"
+  [[ -n "$GLIBC" ]] && DEPENDS="libc6 (>= $GLIBC), $DEPENDS"
+fi
 
 INSTALLED_KB="$(du -sk "$ROOT" | cut -f1)"
 mkdir -p "$ROOT/DEBIAN"

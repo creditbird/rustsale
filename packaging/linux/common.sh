@@ -64,3 +64,14 @@ warn_needed() {
   done
   echo "note: the runner needs glibc >= $(min_glibc "$1"); build on the oldest distro you support" >&2
 }
+
+# The Depends line dpkg-shlibdeps works out for the runner, from the shlibs data of the distro it is built on.
+# Fails when it finds nothing: an empty Depends would let apt install a package that cannot start.
+shlibs_depends() {
+  local runner="$1" work="$2" out
+  mkdir -p "$work/shlibdeps/debian"
+  printf 'Source: %s\n\nPackage: %s\nArchitecture: any\n' "$PKG_NAME" "$PKG_NAME" > "$work/shlibdeps/debian/control"
+  out="$(cd "$work/shlibdeps" && dpkg-shlibdeps -O -e"$runner" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')"
+  [[ -n "$out" ]] || { echo "dpkg-shlibdeps found no dependencies for $runner" >&2; return 1; }
+  printf '%s\n' "$out"
+}
