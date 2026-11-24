@@ -1191,6 +1191,7 @@ Nhánh `feat/nsh-v3-scraper-fix2`, nền `feat/nsh-v3-int8` @fdbe8fa. Mỗi lỗ
 | A-U5 | Hạn tổng `SITE_DEADLINE` = 30 s cho mỗi website; quá hạn trả lỗi `TransientNetwork`, `retryable` (không bị tính là "không có email"); website được xử lý song song (có test đếm đồng thời) | 84 s, 154 s, 315 s theo 3 kịch bản chậm | `site_deadline::a_slow_site_is_cut_off_at_the_per_website_deadline`: cả 3 kịch bản ≤ 30 s; `a_healthy_site_is_not_affected_by_the_deadline`: site khoẻ < 10 s, đủ 6 request |
 | C10 | `hasPlaceHeading` chỉ đúng khi có `h1` mang chữ (`googleMaps.ts`) | place không tồn tại (h1 rỗng ẩn) vẫn `Ready`, extractor trả `SelectorChanged` sai nhãn | test sidecar `classify_place_with_empty_h1_is_not_ready`: **đỏ** trên `googleMaps.ts` cũ (`Expected: not "ready"`), **xanh** trên bản sửa; 22/22 test nhóm "Google Maps block detection" đạt |
 | B-U4 | Xoá `GridScraper` (−281 dòng ở `scrapers/grid.rs`); không còn nơi nào gọi | chỉ test dùng | build và test không còn tham chiếu |
+| Ghi chú A-U1 (profile) | Release profile đặt `panic = "abort"` (`Cargo.toml`), nên `catch_unwind` của A-U1 chỉ có tác dụng ở dev/test. Ở release, panic trong runner làm app thoát; lần mở sau, recovery đánh job đó `Interrupted`, không phải `Failed`. Nakroth quyết giữ `abort` (xem comment trên #56). | n/a | n/a |
 
 Kết quả gate trên nhánh này (máy dev, qua hàng đợi `heavy-job`):
 
