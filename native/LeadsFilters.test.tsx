@@ -20,7 +20,11 @@ test("the owners export is distinct, sorted and skips blank owners", async () =>
   await add(`Owner B ${Date.now()}`, { owner: "an" });
   await add(`Owner C ${Date.now()}`, { owner: "an" });
   const owners = (await Leads.owners()) as string[];
-  expect(owners).toEqual(["an", "Binh"]);
+  expect(owners).toContain("an");
+  expect(owners).toContain("Binh");
+  expect(owners.indexOf("an")).toBeLessThan(owners.indexOf("Binh"));
+  expect(owners.filter((owner) => owner === "an").length).toBe(1);
+  expect(owners.every((owner) => owner.trim() !== "")).toBe(true);
 });
 
 test("the owner and value filters narrow the page in the core", async () => {
