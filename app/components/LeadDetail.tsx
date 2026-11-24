@@ -1,6 +1,9 @@
 import { signal, Text, View } from "nsh";
-import { Badge, Button, Input } from "../ui";
+import { Select } from "nsh/base";
+import { Campaigns, LeadsMore, Templates, Zalo } from "rustsale/native";
+import { Badge, Button, Input, Modal } from "../ui";
 import type { BadgeTone } from "../ui/Badge";
+import { notify, report } from "../stores/toast";
 
 export interface Lead {
   id: number;
@@ -92,7 +95,34 @@ export interface LeadDetailProps {
   saving?: () => boolean;
   /** The message of a failed save (invalid_request), shown under the fields. */
   saveError?: () => string | null;
+  /** When present, the panel offers a one-lead Zalo and email send, and reloads after one. */
+  onSent?: () => void;
 }
+
+interface ZaloAccount {
+  account_key: string;
+  display_name: string | null;
+  auth_status: string;
+}
+
+interface ZaloTemplate {
+  id: number;
+  name: string;
+}
+
+interface SmtpAccount {
+  id: number;
+  name: string;
+  from_email: string;
+}
+
+interface EmailTemplate {
+  id: number;
+  name: string;
+  subject: string;
+}
+
+const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 /** The lead detail panel the Leads, Contacts and Categories screens share. */
 export function LeadDetail(props: LeadDetailProps) {
@@ -106,6 +136,142 @@ export function LeadDetail(props: LeadDetailProps) {
   const about = signal("");
   const address = signal("");
   const localError = signal<string | null>(null);
+  const zaloOpen = signal(false);
+  const zaloAccounts = signal<ZaloAccount[]>([]);
+  const zaloTemplates = signal<ZaloTemplate[]>([]);
+  const zaloAccount = signal("");
+  const zaloTemplate = signal<number | null>(null);
+  const zaloBusy = signal(false);
+  const zaloError = signal<string | null>(null);
+  const emailOpen = signal(false);
+  const smtpAccounts = signal<SmtpAccount[]>([]);
+  const emailTemplates = signal<EmailTemplate[]>([]);
+  const smtpId = signal<number | null>(null);
+  const emailTemplateId = signal<number | null>(null);
+  const emailBusy = signal(false);
+  const emailError = signal<string | null>(null);
+
+  const zaloLabel = (account: ZaloAccount) => account.display_name || account.account_key;
+  const zaloTemplateName = () =>
+    zaloTemplates().find((template) => template.id === zaloTemplate())?.name ?? "mẫu Zalo";
+  const emailTemplateName = () =>
+    emailTemplates().find((template) => template.id === emailTemplateId())?.name ?? "mẫu email";
+
+  const openZalo = async () => {
+    zaloOpen.set(true);
+    zaloError.set(null);
+    zaloAccounts.set([]);
+    zaloTemplates.set([]);
+    try {
+      const [accounts, templates] = await Promise.all([
+        Zalo.accounts(),
+        Campaigns.outreachTemplates(),
+      ]);
+      const accountRows = accounts as ZaloAccount[];
+      const templateRows = templates as ZaloTemplate[];
+      zaloAccounts.set(accountRows);
+      zaloTemplates.set(templateRows);
+      const valid = accountRows.find((account) => account.auth_status === "valid") ?? accountRows[0];
+      zaloAccount.set(valid?.account_key ?? "");
+      zaloTemplate.set(templateRows[0]?.id ?? null);
+    } catch (e) {
+      report(e, { retry: () => { void openZalo(); } });
+    }
+  };
+  const closeZalo = () => {
+    if (!zaloBusy()) zaloOpen.set(false);
+  };
+  const sendZalo = async () => {
+    if (zaloBusy()) return;
+    if (zaloAccount() === "") {
+      zaloError.set("Chưa có tài khoản Zalo đã đăng nhập.");
+      return;
+    }
+    if (zaloTemplate() === null) {
+      zaloError.set("Chưa có mẫu tin Zalo.");
+      return;
+    }
+    const lead = props.lead();
+    zaloBusy.set(true);
+    zaloError.set(null);
+    try {
+      await Campaigns.startZaloOutreach([zaloAccount()], zaloTemplate(), [lead.id]);
+      await LeadsMore.addActivity({
+        leadId: lead.id,
+        activityType: "Zalo",
+        content: `Đã gửi Zalo: ${zaloTemplateName()}`,
+        performedBy: "Self",
+      });
+      zaloOpen.set(false);
+      notify(`Đã gửi Zalo cho ${lead.name}`, "success");
+      props.onSent?.();
+    } catch (e) {
+      const f = report(e, { retry: () => { void sendZalo(); } });
+      if (f.action === "fix") zaloError.set(f.message);
+    } finally {
+      zaloBusy.set(false);
+    }
+  };
+
+  const openEmail = async () => {
+    const lead = props.lead();
+    if (lead.email === null || !EMAIL_SHAPE.test(lead.email.trim())) {
+      notify("Khách chưa có email hợp lệ.", "warning");
+      return;
+    }
+    emailOpen.set(true);
+    emailError.set(null);
+    smtpAccounts.set([]);
+    emailTemplates.set([]);
+    try {
+      const [accounts, templates] = await Promise.all([
+        Templates.smtpAccounts(),
+        Templates.emailTemplates(),
+      ]);
+      const smtpRows = accounts as SmtpAccount[];
+      const templateRows = templates as EmailTemplate[];
+      smtpAccounts.set(smtpRows);
+      emailTemplates.set(templateRows);
+      smtpId.set(smtpRows[0]?.id ?? null);
+      emailTemplateId.set(templateRows[0]?.id ?? null);
+    } catch (e) {
+      report(e, { retry: () => { void openEmail(); } });
+    }
+  };
+  const closeEmail = () => {
+    if (!emailBusy()) emailOpen.set(false);
+  };
+  const sendEmail = async () => {
+    if (emailBusy()) return;
+    if (smtpId() === null) {
+      emailError.set("Chưa có tài khoản SMTP.");
+      return;
+    }
+    if (emailTemplateId() === null) {
+      emailError.set("Chưa có mẫu email.");
+      return;
+    }
+    const lead = props.lead();
+    emailBusy.set(true);
+    emailError.set(null);
+    try {
+      await Campaigns.sendEmailOutreach(smtpId()!, emailTemplateId()!, [lead.id]);
+      await LeadsMore.addActivity({
+        leadId: lead.id,
+        activityType: "Email",
+        content: `Đã gửi email: ${emailTemplateName()}`,
+        performedBy: "Self",
+      });
+      emailOpen.set(false);
+      notify(`Đã gửi email cho ${lead.name}`, "success");
+      props.onSent?.();
+    } catch (e) {
+      const f = report(e, { retry: () => { void sendEmail(); } });
+      if (f.action === "fix") emailError.set(f.message);
+    } finally {
+      emailBusy.set(false);
+    }
+  };
 
   const startEdit = () => {
     const lead = props.lead();
@@ -196,6 +362,14 @@ export function LeadDetail(props: LeadDetailProps) {
               )}
             </Each>
           </View>
+          <If when={props.onSent !== undefined}>
+            <View class="flex-row gap-2">
+              <Button testID="lead-send-zalo" label="Gửi Zalo" size="sm" variant="secondary"
+                onPress={() => { void openZalo(); }} />
+              <Button testID="lead-send-email" label="Gửi email" size="sm" variant="secondary"
+                onPress={() => { void openEmail(); }} />
+            </View>
+          </If>
           <Text class="mt-2 text-xs font-medium text-muted-foreground">Hoạt động gần đây</Text>
           <If when={props.activities().length === 0}><Text class="text-sm text-muted-foreground">Chưa có hoạt động.</Text></If>
           <Each of={props.activities().slice(0, 6)} key={(a) => String(a.id)}>
@@ -216,6 +390,118 @@ export function LeadDetail(props: LeadDetailProps) {
           </Each>
         </View>
       </If>
+
+      <Modal open={zaloOpen()} title="Gửi Zalo" onClose={closeZalo}>
+        <View class="gap-3">
+          <Text class="text-sm text-muted-foreground">{`Gửi một tin Zalo cho ${props.lead().name}.`}</Text>
+          <View class="w-full">
+            <Select testID="send-zalo-account"
+              items={zaloAccounts().map((account) => ({ value: account.account_key, title: zaloLabel(account) }))}
+              value={zaloAccount()}
+              placeholder="Chọn tài khoản Zalo"
+              onChange={({ value }) => zaloAccount.set(value ?? "")}
+              trigger={
+                <View testID="send-zalo-account-trigger" class="h-9 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
+                  <Text class="truncate text-sm text-foreground">
+                    {zaloAccounts().find((account) => account.account_key === zaloAccount())?.display_name
+                      ?? zaloAccounts().find((account) => account.account_key === zaloAccount())?.account_key
+                      ?? "Chọn tài khoản Zalo"}
+                  </Text>
+                  <Text class="text-xs text-muted-foreground">▾</Text>
+                </View>
+              }
+              itemClass="px-3 py-2 selected:bg-accent"
+              renderItem={(entry) => (
+                <View testID={`send-zalo-account-item-${entry.value}`}>
+                  <Text class="text-sm text-foreground">{entry.title}</Text>
+                </View>
+              )} />
+          </View>
+          <View class="w-full">
+            <Select testID="send-zalo-template"
+              items={zaloTemplates().map((template) => ({ value: String(template.id), title: template.name }))}
+              value={zaloTemplate() === null ? null : String(zaloTemplate())}
+              placeholder="Chọn mẫu tin"
+              onChange={({ value }) => zaloTemplate.set(value === null ? null : Number(value))}
+              trigger={
+                <View testID="send-zalo-template-trigger" class="h-9 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
+                  <Text class="truncate text-sm text-foreground">{zaloTemplateName()}</Text>
+                  <Text class="text-xs text-muted-foreground">▾</Text>
+                </View>
+              }
+              itemClass="px-3 py-2 selected:bg-accent"
+              renderItem={(entry) => (
+                <View testID={`send-zalo-template-item-${entry.value}`}>
+                  <Text class="text-sm text-foreground">{entry.title}</Text>
+                </View>
+              )} />
+          </View>
+          <If when={zaloError() !== null}>
+            <Text testID="send-zalo-error" class="text-sm text-destructive">{zaloError() ?? ""}</Text>
+          </If>
+          <View class="flex-row justify-end gap-2">
+            <Button label="Huỷ" disabled={zaloBusy()} onPress={closeZalo} />
+            <Button testID="send-zalo-confirm" variant="primary"
+              label={zaloBusy() ? "Đang gửi…" : "Gửi"} disabled={zaloBusy()}
+              onPress={() => { void sendZalo(); }} />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal open={emailOpen()} title="Gửi email" onClose={closeEmail}>
+        <View class="gap-3">
+          <Text class="text-sm text-muted-foreground">{`Gửi email tới ${props.lead().email ?? ""}.`}</Text>
+          <View class="w-full">
+            <Select testID="send-email-smtp"
+              items={smtpAccounts().map((account) => ({ value: String(account.id), title: `${account.name} · ${account.from_email}` }))}
+              value={smtpId() === null ? null : String(smtpId())}
+              placeholder="Chọn tài khoản SMTP"
+              onChange={({ value }) => smtpId.set(value === null ? null : Number(value))}
+              trigger={
+                <View testID="send-email-smtp-trigger" class="h-9 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
+                  <Text class="truncate text-sm text-foreground">
+                    {smtpAccounts().find((account) => account.id === smtpId())?.name ?? "Chọn tài khoản SMTP"}
+                  </Text>
+                  <Text class="text-xs text-muted-foreground">▾</Text>
+                </View>
+              }
+              itemClass="px-3 py-2 selected:bg-accent"
+              renderItem={(entry) => (
+                <View testID={`send-email-smtp-item-${entry.value}`}>
+                  <Text class="text-sm text-foreground">{entry.title}</Text>
+                </View>
+              )} />
+          </View>
+          <View class="w-full">
+            <Select testID="send-email-template"
+              items={emailTemplates().map((template) => ({ value: String(template.id), title: template.name }))}
+              value={emailTemplateId() === null ? null : String(emailTemplateId())}
+              placeholder="Chọn mẫu email"
+              onChange={({ value }) => emailTemplateId.set(value === null ? null : Number(value))}
+              trigger={
+                <View testID="send-email-template-trigger" class="h-9 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
+                  <Text class="truncate text-sm text-foreground">{emailTemplateName()}</Text>
+                  <Text class="text-xs text-muted-foreground">▾</Text>
+                </View>
+              }
+              itemClass="px-3 py-2 selected:bg-accent"
+              renderItem={(entry) => (
+                <View testID={`send-email-template-item-${entry.value}`}>
+                  <Text class="text-sm text-foreground">{entry.title}</Text>
+                </View>
+              )} />
+          </View>
+          <If when={emailError() !== null}>
+            <Text testID="send-email-error" class="text-sm text-destructive">{emailError() ?? ""}</Text>
+          </If>
+          <View class="flex-row justify-end gap-2">
+            <Button label="Huỷ" disabled={emailBusy()} onPress={closeEmail} />
+            <Button testID="send-email-confirm" variant="primary"
+              label={emailBusy() ? "Đang gửi…" : "Gửi"} disabled={emailBusy()}
+              onPress={() => { void sendEmail(); }} />
+          </View>
+        </View>
+      </Modal>
     </View>
   );
 }

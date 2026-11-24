@@ -370,6 +370,7 @@ export function LeadsScreen() {
             onSave={saveLead}
             saving={() => saving()}
             saveError={() => editError()}
+            onSent={() => { const lead = selected(); if (lead !== null) void open(lead); }}
           />
         )}
       </If>
