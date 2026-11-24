@@ -1,5 +1,5 @@
 import { signal, Text, View } from "nsh";
-import { Button, Input } from "../ui";
+import { Badge, Button, Input } from "../ui";
 import type { BadgeTone } from "../ui/Badge";
 
 export interface Lead {
@@ -15,6 +15,9 @@ export interface Lead {
   about: string | null;
   address: string | null;
   last_activity: string | null;
+  has_zalo?: number | null;
+  zalo_status?: string | null;
+  zalo_uid?: string | null;
 }
 
 export interface Activity {
@@ -36,6 +39,16 @@ export interface LeadEditDraft {
   about: string | null;
   address: string | null;
   currency: string | null;
+}
+
+export interface Deal {
+  id: number;
+  lead_id: number;
+  title: string;
+  value: number;
+  stage: string;
+  currency: string | null;
+  created_at: string;
 }
 
 export const STATUSES = ["New", "Contacted", "Qualified", "Proposal", "Won", "Lost", "Converted"];
@@ -69,6 +82,8 @@ export function amountOf(text: string): number {
 export interface LeadDetailProps {
   lead: () => Lead;
   activities: () => Activity[];
+  /** The lead's deals; screens that do not load them leave the section empty. */
+  deals?: () => Deal[];
   onClose: () => void;
   onStatus: (status: string) => void;
   /** When present, the panel offers the edit form; resolves true once the core saved the lead. */
@@ -144,7 +159,6 @@ export function LeadDetail(props: LeadDetailProps) {
         </If>
         <View class="shrink-0"><Button testID="lead-close" label="Đóng" variant="ghost" size="sm" onPress={() => props.onClose()} /></View>
       </View>
-
       <If when={editing()}>
         <View class="gap-2">
           <Input testID="lead-edit-name" value={name()} placeholder="Tên khách" onValue={(v) => name.set(v)} />
@@ -186,6 +200,19 @@ export function LeadDetail(props: LeadDetailProps) {
           <If when={props.activities().length === 0}><Text class="text-sm text-muted-foreground">Chưa có hoạt động.</Text></If>
           <Each of={props.activities().slice(0, 6)} key={(a) => String(a.id)}>
             {(a) => <Text class="text-sm text-foreground">{`${a().activity_type}: ${a().content}`}</Text>}
+          </Each>
+          <Text class="mt-2 text-xs font-medium text-muted-foreground">Deal</Text>
+          <If when={(props.deals?.() ?? []).length === 0}>
+            <Text testID="lead-deals-empty" class="text-sm text-muted-foreground">Chưa có deal.</Text>
+          </If>
+          <Each of={props.deals?.() ?? []} key={(d) => String(d.id)}>
+            {(d) => (
+              <View testID={`lead-deal-${d().id}`} class="flex-row items-center gap-2">
+                <Text class="min-w-0 flex-1 truncate text-sm text-foreground">{d().title}</Text>
+                <Badge label={d().stage} tone="neutral" />
+                <Text class="shrink-0 text-sm text-muted-foreground">{money(d().value, d().currency)}</Text>
+              </View>
+            )}
           </Each>
         </View>
       </If>
