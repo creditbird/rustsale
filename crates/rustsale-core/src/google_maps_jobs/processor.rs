@@ -18,6 +18,7 @@ use crate::scrapers::grid::{
 };
 
 use async_trait::async_trait;
+use futures_util::StreamExt;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -29,6 +30,11 @@ use url::Url;
 /// to be truncated by ranking rather than by the absence of further results.
 const GRID_SATURATION_THRESHOLD: usize = 55;
 
+/// Websites enriched at the same time. Each one is capped at 30 s, so a batch
+/// of slow sites no longer adds up one after another (A-U5), while a handful
+/// of requests in flight stays polite to the sites and to the user's network.
+const ENRICHMENT_CONCURRENCY: usize = 4;
+
 struct ActiveBrowser {
     job_id: String,
     manager: Arc<BrowserManager>,
@@ -38,14 +44,35 @@ pub struct GoogleMapsUnitProcessor {
     repository: Arc<ScrapeJobRepository>,
     events: Arc<ScrapeEventPublisher>,
     active_browser: Mutex<Option<ActiveBrowser>>,
+    enricher: Arc<EmailEnricher>,
+}
+
+/// What enriching one result came to.
+enum EnrichmentStep {
+    /// Another worker already owns the result.
+    Skipped,
+    /// The job was paused or cancelled; the claim went back to `pending`.
+    Cancelled,
+    Saved {
+        unresolved: bool,
+    },
 }
 
 impl GoogleMapsUnitProcessor {
     pub fn new(repository: Arc<ScrapeJobRepository>, events: Arc<ScrapeEventPublisher>) -> Self {
+        Self::with_enricher(repository, events, EmailEnricher::default())
+    }
+
+    pub(crate) fn with_enricher(
+        repository: Arc<ScrapeJobRepository>,
+        events: Arc<ScrapeEventPublisher>,
+        enricher: EmailEnricher,
+    ) -> Self {
         Self {
             repository,
             events,
             active_browser: Mutex::new(None),
+            enricher: Arc::new(enricher),
         }
     }
 
@@ -286,58 +313,31 @@ impl GoogleMapsUnitProcessor {
             .list_results_for_enrichment(&job.id)
             .await
             .map_err(database_error)?;
-        let enricher = EmailEnricher::default();
+        // A database failure stops the remaining workers through `stop`; the
+        // cancellation the caller gave us is never triggered from here.
+        let stop = cancellation.child_token();
+        let mut steps = futures_util::stream::iter(pending)
+            .map(|result| self.enrich_one(&job.id, result, &stop))
+            .buffer_unordered(ENRICHMENT_CONCURRENCY);
         let mut unresolved = false;
-        for result in pending {
-            if cancellation.is_cancelled() {
-                return Ok(FinalizeOutcome::default());
-            }
-            let Some(claimed) = self
-                .repository
-                .claim_result_for_enrichment(&job.id, &result.id)
-                .await
-                .map_err(database_error)?
-            else {
-                continue;
-            };
-            let outcome = match claimed
-                .website
-                .as_deref()
-                .and_then(|value| Url::parse(value).ok())
-            {
-                Some(url) => {
-                    let found = tokio::select! {
-                        _ = cancellation.cancelled() => None,
-                        found = enricher.find_email(url) => Some(found),
-                    };
-                    let Some(found) = found else {
-                        // Paused or cancelled mid-request: hand the result
-                        // back so a later run enriches it instead of leaving
-                        // it stuck at `running` (A6).
-                        self.repository
-                            .release_enrichment_claim(&job.id, &claimed.id)
-                            .await
-                            .map_err(database_error)?;
-                        return Ok(FinalizeOutcome::default());
-                    };
-                    match found {
-                        Ok(Some(email)) => EnrichmentOutcome::found(email),
-                        Ok(None) => EnrichmentOutcome::not_found(),
-                        Err(error) => EnrichmentOutcome::from_error(error),
-                    }
+        let mut interrupted = false;
+        let mut failure = None;
+        while let Some(step) = steps.next().await {
+            match step {
+                Ok(EnrichmentStep::Saved { unresolved: item }) => unresolved |= item,
+                Ok(EnrichmentStep::Cancelled) => interrupted = true,
+                Ok(EnrichmentStep::Skipped) => {}
+                Err(error) => {
+                    stop.cancel();
+                    failure.get_or_insert(error);
                 }
-                None => EnrichmentOutcome::from_error(invalid_response(
-                    "enrichment website URL is invalid",
-                )),
-            };
-            unresolved |= enrichment_is_unresolved(&outcome);
-            self.repository
-                .save_enrichment_outcome(&job.id, &claimed.id, outcome)
-                .await
-                .map_err(database_error)?;
+            }
         }
-
-        if cancellation.is_cancelled() {
+        drop(steps);
+        if let Some(error) = failure {
+            return Err(error);
+        }
+        if interrupted || cancellation.is_cancelled() {
             return Ok(FinalizeOutcome::default());
         }
         let import_stage = self
@@ -355,6 +355,64 @@ impl GoogleMapsUnitProcessor {
         Ok(FinalizeOutcome {
             partial: unresolved,
         })
+    }
+}
+
+impl GoogleMapsUnitProcessor {
+    /// Claims one result, looks its website up and stores the outcome.
+    async fn enrich_one(
+        &self,
+        job_id: &str,
+        result: ScrapeResult,
+        cancellation: &CancellationToken,
+    ) -> Result<EnrichmentStep, ScrapeJobError> {
+        if cancellation.is_cancelled() {
+            return Ok(EnrichmentStep::Cancelled);
+        }
+        let Some(claimed) = self
+            .repository
+            .claim_result_for_enrichment(job_id, &result.id)
+            .await
+            .map_err(database_error)?
+        else {
+            return Ok(EnrichmentStep::Skipped);
+        };
+        let outcome = match claimed
+            .website
+            .as_deref()
+            .and_then(|value| Url::parse(value).ok())
+        {
+            Some(url) => {
+                let found = tokio::select! {
+                    _ = cancellation.cancelled() => None,
+                    found = self.enricher.find_email(url) => Some(found),
+                };
+                let Some(found) = found else {
+                    // Paused or cancelled mid-request: hand the result back so
+                    // a later run enriches it instead of leaving it stuck at
+                    // `running` (A6).
+                    self.repository
+                        .release_enrichment_claim(job_id, &claimed.id)
+                        .await
+                        .map_err(database_error)?;
+                    return Ok(EnrichmentStep::Cancelled);
+                };
+                match found {
+                    Ok(Some(email)) => EnrichmentOutcome::found(email),
+                    Ok(None) => EnrichmentOutcome::not_found(),
+                    Err(error) => EnrichmentOutcome::from_error(error),
+                }
+            }
+            None => {
+                EnrichmentOutcome::from_error(invalid_response("enrichment website URL is invalid"))
+            }
+        };
+        let unresolved = enrichment_is_unresolved(&outcome);
+        self.repository
+            .save_enrichment_outcome(job_id, &claimed.id, outcome)
+            .await
+            .map_err(database_error)?;
+        Ok(EnrichmentStep::Saved { unresolved })
     }
 }
 
@@ -1128,6 +1186,95 @@ mod tests {
             result.enrichment_status, "skipped_outside_area",
             "enrichment is never attempted for this row, so leaving it pending is a lie"
         );
+    }
+
+    /// A-U5: twelve slow websites take about three rounds, not twelve, and never
+    /// more than `ENRICHMENT_CONCURRENCY` are open at once.
+    #[tokio::test(start_paused = true)]
+    async fn slow_websites_are_enriched_in_bounded_parallel() {
+        use crate::google_maps_jobs::email::test_support::{
+            enricher_with_slow_sites, ConcurrencyProbe,
+        };
+
+        let path = std::env::temp_dir().join(format!(
+            "rustsale-processor-parallel-{}.db",
+            rand::random::<u64>()
+        ));
+        let repository =
+            Arc::new(ScrapeJobRepository::new(path.to_string_lossy().to_string()).unwrap());
+        let job = repository.create_job(test_job(None)).await.unwrap();
+        let unit = test_unit("keyword", serde_json::json!({"location": "HCM"}));
+        let websites = 12;
+        let results = (0..websites)
+            .map(|index| {
+                let mut result = pending_result(&job.id, index);
+                result.source_unit_id = unit.id.clone();
+                result
+            })
+            .collect::<Vec<_>>();
+        repository
+            .insert_units(&job.id, vec![unit.clone()])
+            .await
+            .unwrap();
+        repository.upsert_results(&job.id, results).await.unwrap();
+
+        let probe = Arc::new(ConcurrencyProbe::default());
+        // Two requests of 5 s per site: 10 s each, 120 s one after another.
+        let enricher = enricher_with_slow_sites(Duration::from_secs(5), probe.clone());
+        let processor = GoogleMapsUnitProcessor::with_enricher(
+            repository.clone(),
+            Arc::new(ScrapeEventPublisher::new(8)),
+            enricher,
+        );
+
+        let started = tokio::time::Instant::now();
+        processor
+            .finalize_job(&job, &CancellationToken::new())
+            .await
+            .unwrap();
+        let elapsed = started.elapsed().as_secs();
+
+        assert_eq!(probe.peak(), ENRICHMENT_CONCURRENCY);
+        assert!(
+            elapsed <= 40,
+            "12 sites of 10 s took {elapsed}s; sequentially they would take 120 s"
+        );
+        let leftovers = repository
+            .list_results_for_enrichment(&job.id)
+            .await
+            .unwrap();
+        assert!(leftovers.is_empty(), "every site was enriched exactly once");
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn pending_result(job_id: &str, index: usize) -> ScrapeResult {
+        ScrapeResult {
+            id: format!("result-{index}"),
+            job_id: job_id.to_string(),
+            source_unit_id: "unit-1".to_string(),
+            place_id: Some(format!("place-{index}")),
+            canonical_url: None,
+            dedup_key: format!("place:place-{index}"),
+            name: format!("Cafe {index}"),
+            phone: None,
+            normalized_phone: None,
+            email: None,
+            normalized_email: None,
+            address: None,
+            website: Some(format!("https://site-{index}.example.test/")),
+            facebook: None,
+            zalo: None,
+            latitude: None,
+            longitude: None,
+            inside_requested_area: Some(true),
+            detail_status: "completed".to_string(),
+            enrichment_status: "pending".to_string(),
+            import_status: "pending".to_string(),
+            last_error_kind: None,
+            last_error_message: None,
+            first_seen_at: format!("2026-07-26T00:00:{index:02}Z"),
+            last_seen_at: format!("2026-07-26T00:00:{index:02}Z"),
+        }
     }
 
     fn test_job(bbox: Option<[f64; 4]>) -> ScrapeJob {

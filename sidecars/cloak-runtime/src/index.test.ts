@@ -463,6 +463,20 @@ describe('Google Maps block detection', () => {
     expect(consent.state).toBe('consent_required');
   }, 30_000);
 
+  test('classify_place_with_empty_h1_is_not_ready', async () => {
+    const gone = await inspectFixture(
+      '<div role="main"><h1 class="sr-only"> </h1><button aria-label="Zoom in">+</button></div>',
+      'https://www.google.com/maps/place/?q=place_id:ChIJdoesnotexist',
+    );
+    expect(gone.state).not.toBe('ready');
+
+    const real = await inspectFixture(
+      '<div role="main"><h1>Cafe Sam</h1><button data-item-id="address">1 Le Loi</button></div>',
+      'https://www.google.com/maps/place/Cafe+Sam',
+    );
+    expect(real.state).toBe('ready');
+  });
+
   test('classify_error_page_with_h1_is_not_ready', () => {
     expect(
       classifyGoogleMapsPageState({

@@ -8,11 +8,14 @@ use crate::google_maps_jobs::types::{
 use crate::scrapers::browser::{GoogleMapsPageHealth, GoogleMapsPageState};
 use anyhow::{anyhow, Context, Result};
 use async_trait::async_trait;
+use futures_util::FutureExt;
 use rand::Rng;
 use serde_json::json;
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
+use tokio::sync::{watch, Mutex};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
@@ -135,6 +138,46 @@ impl Default for RetryPolicy {
     }
 }
 
+/// How often a running job renews its lease (A-U2).
+const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+/// A lease not renewed for this long belongs to an instance that is gone.
+/// Several heartbeats, so one slow database write never looks like a crash.
+pub const LEASE_TTL: Duration = Duration::from_secs(45);
+/// Longest a job start waits for start-up recovery before giving up (A-U4).
+const RECOVERY_WAIT: Duration = Duration::from_secs(60);
+
+/// Why a job task stopped abnormally, as opposed to a unit failing.
+#[derive(Debug, thiserror::Error)]
+enum RunnerError {
+    #[error("scrape runner panicked: {0}")]
+    Panicked(String),
+}
+
+/// Whether start-up recovery still has to run before jobs may start (A-U4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RecoveryState {
+    NotRequired,
+    Pending,
+    Done,
+}
+
+/// Stops the lease heartbeat when the job task ends, however it ends.
+struct HeartbeatGuard(JoinHandle<()>);
+
+impl Drop for HeartbeatGuard {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<&str>()
+        .map(|message| (*message).to_string())
+        .or_else(|| payload.downcast_ref::<String>().cloned())
+        .unwrap_or_else(|| "unknown panic".to_string())
+}
+
 pub struct ActiveJob {
     pub job_id: String,
     pub cancellation: CancellationToken,
@@ -147,6 +190,9 @@ pub struct ScrapeJobRunner {
     processor: Arc<dyn ScrapeUnitProcessor>,
     events: Arc<ScrapeEventPublisher>,
     retry_policy: RetryPolicy,
+    /// Identity of this app instance; stamped on the jobs it runs (A-U2).
+    instance_id: String,
+    recovery: watch::Sender<RecoveryState>,
 }
 
 impl ScrapeJobRunner {
@@ -162,7 +208,34 @@ impl ScrapeJobRunner {
             processor,
             events,
             retry_policy,
+            instance_id: uuid::Uuid::new_v4().to_string(),
+            recovery: watch::channel(RecoveryState::NotRequired).0,
         }
+    }
+
+    /// Identity this runner stamps on the jobs it runs.
+    pub fn instance_id(&self) -> &str {
+        &self.instance_id
+    }
+
+    /// Makes job starts wait until [`Self::recover_startup`] (or
+    /// [`Self::recover_startup_exclusive`]) has finished. Call it synchronously
+    /// before the recovery task is spawned, so a start that arrives in the
+    /// first milliseconds cannot overtake recovery (A-U4).
+    pub fn expect_startup_recovery(&self) {
+        self.recovery.send_replace(RecoveryState::Pending);
+    }
+
+    async fn wait_for_startup_recovery(&self) -> Result<()> {
+        let mut state = self.recovery.subscribe();
+        tokio::time::timeout(
+            RECOVERY_WAIT,
+            state.wait_for(|state| *state != RecoveryState::Pending),
+        )
+        .await
+        .map_err(|_| anyhow!("timed out waiting for start-up recovery of scrape jobs"))?
+        .map_err(|_| anyhow!("start-up recovery of scrape jobs was abandoned"))?;
+        Ok(())
     }
 
     pub async fn start(self: &Arc<Self>, job_id: &str) -> Result<ScrapeJob> {
@@ -234,6 +307,7 @@ impl ScrapeJobRunner {
         current: ScrapeJob,
         cause: TransitionCause,
     ) -> Result<ScrapeJob> {
+        self.wait_for_startup_recovery().await?;
         let mut active = self.active.lock().await;
         if let Some(active_job) = active.as_ref() {
             if !active_job.handle.is_finished() {
@@ -249,7 +323,13 @@ impl ScrapeJobRunner {
         let resumed = current.status != ScrapeJobStatus::Queued;
         let running = self
             .repository
-            .transition_job(&job_id, current.version, ScrapeJobStatus::Running, cause)
+            .transition_job_as(
+                &job_id,
+                current.version,
+                ScrapeJobStatus::Running,
+                cause,
+                Some(&self.instance_id),
+            )
             .await?;
         self.events
             .publish_job(&running, "Scrape job started")
@@ -269,16 +349,7 @@ impl ScrapeJobRunner {
         );
 
         let cancellation = CancellationToken::new();
-        let task_cancellation = cancellation.clone();
-        let task_job_id = job_id.clone();
-        let runner = self.clone();
-        let handle = tokio::spawn(async move {
-            let result = runner.run_job(&task_job_id, task_cancellation).await;
-            if let Err(error) = result {
-                runner.record_runner_failure(&task_job_id, error).await;
-            }
-            runner.clear_active(&task_job_id).await;
-        });
+        let handle = self.spawn_job_task(job_id.clone(), cancellation.clone());
         *active = Some(ActiveJob {
             job_id,
             cancellation,
@@ -357,21 +428,16 @@ impl ScrapeJobRunner {
             }
             active.take();
         }
-        let running = self.repository.reopen_for_email_retry(job_id).await?;
+        self.wait_for_startup_recovery().await?;
+        let running = self
+            .repository
+            .reopen_for_email_retry(job_id, &self.instance_id)
+            .await?;
         self.events
             .publish_job(&running, "Email enrichment retry started")
             .await;
         let cancellation = CancellationToken::new();
-        let task_cancellation = cancellation.clone();
-        let task_job_id = running.id.clone();
-        let runner = self.clone();
-        let handle = tokio::spawn(async move {
-            let result = runner.run_job(&task_job_id, task_cancellation).await;
-            if let Err(error) = result {
-                runner.record_runner_failure(&task_job_id, error).await;
-            }
-            runner.clear_active(&task_job_id).await;
-        });
+        let handle = self.spawn_job_task(running.id.clone(), cancellation.clone());
         *active = Some(ActiveJob {
             job_id: running.id.clone(),
             cancellation,
@@ -380,8 +446,87 @@ impl ScrapeJobRunner {
         Ok(running)
     }
 
+    /// Spawns the task that runs one job. A panic in the processor is caught
+    /// and recorded as a failed job: without that the task died silently,
+    /// `clear_active` never ran and the job stayed `running` for good (A-U1).
+    fn spawn_job_task(
+        self: &Arc<Self>,
+        job_id: String,
+        cancellation: CancellationToken,
+    ) -> JoinHandle<()> {
+        let runner = self.clone();
+        tokio::spawn(async move {
+            let heartbeat = HeartbeatGuard(runner.spawn_heartbeat(job_id.clone()));
+            let outcome = AssertUnwindSafe(runner.run_job(&job_id, cancellation))
+                .catch_unwind()
+                .await;
+            let failure = match outcome {
+                Ok(Ok(())) => None,
+                Ok(Err(error)) => Some(error),
+                Err(payload) => Some(anyhow::Error::new(RunnerError::Panicked(panic_message(
+                    payload.as_ref(),
+                )))),
+            };
+            drop(heartbeat);
+            if let Some(error) = failure {
+                runner.record_runner_failure(&job_id, error).await;
+            }
+            runner.clear_active(&job_id).await;
+        })
+    }
+
+    /// Renews the lease of `job_id` until the job stops being ours.
+    fn spawn_heartbeat(&self, job_id: String) -> JoinHandle<()> {
+        let repository = self.repository.clone();
+        let owner_id = self.instance_id.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(HEARTBEAT_INTERVAL);
+            ticker.tick().await;
+            loop {
+                ticker.tick().await;
+                match repository.heartbeat_job(&job_id, &owner_id).await {
+                    Ok(true) => {}
+                    Ok(false) => break,
+                    Err(error) => {
+                        // One missed beat is harmless: the lease outlives
+                        // several intervals.
+                        tracing::warn!(
+                            target: "google_maps_scraper",
+                            event = "heartbeat_failed",
+                            job_id = %job_id,
+                            error = %error,
+                        );
+                    }
+                }
+            }
+        })
+    }
+
+    /// Start-up recovery for hosts that cannot prove they are the only
+    /// instance: interrupts only the jobs whose lease is dead (no owner, or an
+    /// owner whose heartbeat stopped). A job this instance started, or one a
+    /// live instance keeps renewing, is left running (A-U2, A-U4).
     pub async fn recover_startup(&self) -> Result<usize> {
-        let recovered = self.repository.recover_interrupted_jobs().await?;
+        let recovered = self
+            .repository
+            .recover_dead_owner_jobs(&self.instance_id, LEASE_TTL)
+            .await;
+        self.finish_startup_recovery(recovered)
+    }
+
+    /// Start-up recovery for a host that holds the exclusive instance lock, so
+    /// every `running` job left in the database belongs to a dead process and
+    /// need not wait for its lease to expire.
+    pub async fn recover_startup_exclusive(&self) -> Result<usize> {
+        let recovered = self.repository.recover_interrupted_jobs().await;
+        self.finish_startup_recovery(recovered)
+    }
+
+    fn finish_startup_recovery(&self, recovered: Result<usize>) -> Result<usize> {
+        // Release waiting starts even when recovery failed: a job start must
+        // not hang on a recovery error the user can do nothing about.
+        self.recovery.send_replace(RecoveryState::Done);
+        let recovered = recovered?;
         log_scrape_event(
             "startup_recovery",
             None,
@@ -746,6 +891,7 @@ impl ScrapeJobRunner {
                     let retry_exhausted = error.retryable;
                     let error_kind = format!("{:?}", error.kind).to_ascii_lowercase();
                     let tolerable = tolerable_unit_failure(&unit.unit_type, error.kind);
+                    let checkpoint_error_kind = error.kind;
                     log_scrape_event(
                         "unit_failed",
                         Some(job_id),
@@ -763,7 +909,11 @@ impl ScrapeJobRunner {
                     // A place is one listing among many. Losing it is recorded
                     // and the job carries on, up to the point where the failures
                     // stop looking incidental and start looking systemic.
-                    consecutive_failures = consecutive_failures.saturating_add(1);
+                    // A withdrawn place says nothing about whether the scraper is
+                    // healthy, so it does not extend the streak that ends the job.
+                    if checkpoint_error_kind != ScrapeErrorKind::PlaceUnavailable {
+                        consecutive_failures = consecutive_failures.saturating_add(1);
+                    }
                     let (places_completed, places_failed) =
                         self.repository.count_place_unit_outcomes(job_id).await?;
                     if tolerable
@@ -1835,6 +1985,60 @@ mod tests {
         assert_eq!(
             repository
                 .get_job("intolerant-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::Failed
+        );
+    }
+
+    /// C10: places that no longer exist are incidental to the listing. They are
+    /// recorded as failed units, but they do not build the streak that stops a
+    /// job as if the selectors had drifted.
+    #[tokio::test]
+    async fn withdrawn_places_do_not_count_towards_the_failure_streak() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("withdrawn-places", ScrapeMode::Keyword),
+            vec![
+                unit("withdrawn-places", "p1", "p1", "place"),
+                unit("withdrawn-places", "p2", "p2", "place"),
+                unit("withdrawn-places", "p3", "p3", "place"),
+            ],
+        )
+        .await;
+        let processor = Arc::new(FakeProcessor::new(vec![
+            error(ScrapeErrorKind::PlaceUnavailable, false),
+            error(ScrapeErrorKind::PlaceUnavailable, false),
+            error(ScrapeErrorKind::PlaceUnavailable, false),
+        ]));
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repository.clone(),
+            processor.clone(),
+            Arc::new(ScrapeEventPublisher::new(64)),
+            RetryPolicy {
+                max_retries: 3,
+                base_delay: Duration::from_millis(2),
+                failure_tolerance: FailureTolerance {
+                    max_consecutive_failures: 2,
+                    ..FailureTolerance::default()
+                },
+            },
+        ));
+
+        runner.start("withdrawn-places").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+
+        assert_eq!(
+            processor.calls(),
+            vec!["p1", "p2", "p3"],
+            "all three places are visited; none of them stops the job"
+        );
+        assert_ne!(
+            repository
+                .get_job("withdrawn-places")
                 .await
                 .unwrap()
                 .unwrap()
@@ -2926,6 +3130,178 @@ mod tests {
                 .status,
             ScrapeUnitStatus::Pending
         );
+    }
+
+    /// Panics inside `execute`, the way a bug in a processor or scraper would.
+    struct PanickingProcessor {
+        shutdowns: AtomicUsize,
+    }
+
+    #[async_trait]
+    impl ScrapeUnitProcessor for PanickingProcessor {
+        async fn execute(
+            &self,
+            _job: &ScrapeJob,
+            _unit: &ScrapeUnit,
+        ) -> Result<UnitExecution, ScrapeJobError> {
+            panic!("simulated processor panic");
+        }
+
+        async fn action_health(
+            &self,
+            _job: &ScrapeJob,
+        ) -> Result<GoogleMapsPageHealth, ScrapeJobError> {
+            Ok(GoogleMapsPageHealth {
+                state: GoogleMapsPageState::Ready,
+                url: String::new(),
+                title: String::new(),
+            })
+        }
+
+        async fn relaunch_for_action(&self, _job: &ScrapeJob) -> Result<(), ScrapeJobError> {
+            Ok(())
+        }
+
+        async fn shutdown(&self) -> Result<(), ScrapeJobError> {
+            self.shutdowns.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    /// A-U1: a panic inside the job task used to leave the job `running` in the
+    /// database forever, with no way to pause or cancel it.
+    #[tokio::test]
+    async fn processor_panic_fails_the_job_instead_of_leaving_it_running() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("panic-job", ScrapeMode::Keyword),
+            vec![unit("panic-job", "panic-unit", "panic", "keyword")],
+        )
+        .await;
+        let processor = Arc::new(PanickingProcessor {
+            shutdowns: AtomicUsize::new(0),
+        });
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repository.clone(),
+            processor.clone(),
+            Arc::new(ScrapeEventPublisher::new(64)),
+            RetryPolicy {
+                max_retries: 3,
+                base_delay: Duration::from_millis(2),
+                failure_tolerance: FailureTolerance::default(),
+            },
+        ));
+
+        runner.start("panic-job").await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+
+        let failed = repository.get_job("panic-job").await.unwrap().unwrap();
+        assert_eq!(failed.status, ScrapeJobStatus::Failed);
+        assert_eq!(failed.last_error_kind, Some(ScrapeErrorKind::Database));
+        assert!(
+            failed
+                .last_error_message
+                .as_deref()
+                .is_some_and(|message| message.contains("simulated processor panic")),
+            "the panic message must reach the user: {:?}",
+            failed.last_error_message
+        );
+        assert!(runner.active_job_id().await.is_none());
+        assert_eq!(
+            processor.shutdowns.load(Ordering::SeqCst),
+            1,
+            "the browser must be closed after a panic"
+        );
+    }
+
+    /// Two repositories on one file stand in for two app instances sharing a database.
+    fn two_instances_on_one_file() -> (
+        Arc<ScrapeJobRepository>,
+        Arc<ScrapeJobRepository>,
+        std::path::PathBuf,
+    ) {
+        let (first, path) = repository_with_path();
+        let second =
+            Arc::new(ScrapeJobRepository::new(path.to_string_lossy().to_string()).unwrap());
+        (first, second, path)
+    }
+
+    /// A-U2: a second instance's startup recovery must not touch a job that a
+    /// live instance is running.
+    #[tokio::test]
+    async fn second_instance_recovery_leaves_a_live_instances_job_alone() {
+        let (first_repository, second_repository, _path) = two_instances_on_one_file();
+        create_job_with_units(
+            &first_repository,
+            job("live-job", ScrapeMode::Keyword),
+            vec![unit("live-job", "live-unit", "live", "keyword")],
+        )
+        .await;
+        let gate = Arc::new(Notify::new());
+        let first_processor = Arc::new(FakeProcessor::blocking(vec![success()], gate.clone()));
+        let first = runner(first_repository.clone(), first_processor.clone());
+        first.start("live-job").await.unwrap();
+        first_processor.wait_started().await;
+
+        let second = runner(second_repository, Arc::new(FakeProcessor::new(Vec::new())));
+        assert_eq!(second.recover_startup().await.unwrap(), 0);
+
+        let still_running = first_repository.get_job("live-job").await.unwrap().unwrap();
+        assert_eq!(still_running.status, ScrapeJobStatus::Running);
+        let unit_state = first_repository
+            .get_unit("live-unit")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unit_state.status, ScrapeUnitStatus::Running);
+
+        gate.notify_waiters();
+        first.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+        assert_eq!(
+            first_repository
+                .get_job("live-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::Completed
+        );
+    }
+
+    /// A-U4: startup recovery that runs after the user already started a job
+    /// in this same instance must not mark that job interrupted.
+    #[tokio::test]
+    async fn startup_recovery_does_not_interrupt_a_job_this_instance_just_started() {
+        let repository = repository();
+        create_job_with_units(
+            &repository,
+            job("race-job", ScrapeMode::Keyword),
+            vec![unit("race-job", "race-unit", "race", "keyword")],
+        )
+        .await;
+        let gate = Arc::new(Notify::new());
+        let processor = Arc::new(FakeProcessor::blocking(vec![success()], gate.clone()));
+        let runner = runner(repository.clone(), processor.clone());
+        runner.start("race-job").await.unwrap();
+        processor.wait_started().await;
+
+        assert_eq!(runner.recover_startup().await.unwrap(), 0);
+        assert_eq!(
+            repository
+                .get_job("race-job")
+                .await
+                .unwrap()
+                .unwrap()
+                .status,
+            ScrapeJobStatus::Running
+        );
+
+        gate.notify_waiters();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+        let done = repository.get_job("race-job").await.unwrap().unwrap();
+        assert_eq!(done.status, ScrapeJobStatus::Completed);
+        assert_eq!(done.processed_units, 1);
     }
 
     #[tokio::test]

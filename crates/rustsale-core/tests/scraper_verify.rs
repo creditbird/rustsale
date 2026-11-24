@@ -33,20 +33,30 @@ struct Capped {
 }
 #[async_trait]
 impl ScrapeUnitProcessor for Capped {
-    async fn execute(&self, job: &ScrapeJob, unit: &ScrapeUnit) -> Result<UnitExecution, ScrapeJobError> {
+    async fn execute(
+        &self,
+        job: &ScrapeJob,
+        unit: &ScrapeUnit,
+    ) -> Result<UnitExecution, ScrapeJobError> {
         tokio::time::sleep(Duration::from_millis(self.pause_ms)).await;
         let started = Instant::now();
         let r = self.inner.execute(job, unit).await;
         println!(
             "[t+{:>4}s] unit {} type={} took={}ms ok={}",
-            self.t0.elapsed().as_secs(), unit.unit_key, unit.unit_type, started.elapsed().as_millis(), r.is_ok()
+            self.t0.elapsed().as_secs(),
+            unit.unit_key,
+            unit.unit_type,
+            started.elapsed().as_millis(),
+            r.is_ok()
         );
         let mut exec = r?;
         let before = exec.child_units.len();
         let mut kept = Vec::new();
         for c in exec.child_units.drain(..) {
             if c.unit_type == "place" {
-                if self.budget.load(Ordering::SeqCst) == 0 { continue; }
+                if self.budget.load(Ordering::SeqCst) == 0 {
+                    continue;
+                }
                 self.budget.fetch_sub(1, Ordering::SeqCst);
             }
             kept.push(c);
@@ -55,14 +65,30 @@ impl ScrapeUnitProcessor for Capped {
         exec.child_units = kept;
         Ok(exec)
     }
-    async fn action_health(&self, job: &ScrapeJob) -> Result<GoogleMapsPageHealth, ScrapeJobError> { self.inner.action_health(job).await }
-    async fn relaunch_for_action(&self, job: &ScrapeJob) -> Result<(), ScrapeJobError> { self.inner.relaunch_for_action(job).await }
-    async fn shutdown(&self) -> Result<(), ScrapeJobError> { self.inner.shutdown().await }
-    async fn shutdown_for(&self, id: &str) -> Result<(), ScrapeJobError> { self.inner.shutdown_for(id).await }
-    async fn finalize(&self, job: &ScrapeJob, c: &tokio_util::sync::CancellationToken) -> Result<FinalizeOutcome, ScrapeJobError> {
+    async fn action_health(&self, job: &ScrapeJob) -> Result<GoogleMapsPageHealth, ScrapeJobError> {
+        self.inner.action_health(job).await
+    }
+    async fn relaunch_for_action(&self, job: &ScrapeJob) -> Result<(), ScrapeJobError> {
+        self.inner.relaunch_for_action(job).await
+    }
+    async fn shutdown(&self) -> Result<(), ScrapeJobError> {
+        self.inner.shutdown().await
+    }
+    async fn shutdown_for(&self, id: &str) -> Result<(), ScrapeJobError> {
+        self.inner.shutdown_for(id).await
+    }
+    async fn finalize(
+        &self,
+        job: &ScrapeJob,
+        c: &tokio_util::sync::CancellationToken,
+    ) -> Result<FinalizeOutcome, ScrapeJobError> {
         let t = Instant::now();
         let r = self.inner.finalize(job, c).await;
-        println!("[finalize] enrichment+import took {}s ok={}", t.elapsed().as_secs(), r.is_ok());
+        println!(
+            "[finalize] enrichment+import took {}s ok={}",
+            t.elapsed().as_secs(),
+            r.is_ok()
+        );
         r
     }
 }
@@ -82,7 +108,12 @@ async fn live_keyword_job() {
         pause_ms: env_or("VERIFY_PAUSE_MS", "4000").parse().unwrap(),
         t0: Instant::now(),
     });
-    let runner = Arc::new(ScrapeJobRunner::new(repo.clone(), capped, events.clone(), RetryPolicy::default()));
+    let runner = Arc::new(ScrapeJobRunner::new(
+        repo.clone(),
+        capped,
+        events.clone(),
+        RetryPolicy::default(),
+    ));
     let service = GoogleMapsJobService::new(repo.clone(), runner.clone(), out.join("profiles"));
     let mut rx = events.subscribe();
     let log_task = tokio::spawn(async move {
@@ -92,29 +123,68 @@ async fn live_keyword_job() {
                 e.businesses_discovered, e.businesses_qualified, e.leads_created, e.message, e.error.as_ref().map(|x| (x.kind, x.retryable)));
         }
     });
-    let job = service.create_job(CreateScrapeJobRequest {
-        mode: ScrapeMode::Keyword,
-        keyword: env_or("VERIFY_KEYWORD", "quán cà phê"),
-        location: Some(env_or("VERIFY_LOCATION", "Quận 1, Thành phố Hồ Chí Minh")),
-        bbox: None, step_km: None, districts: vec![], headless: true,
-    }).await.unwrap();
-    println!("created job ...{}", &job.id[job.id.len()-6..]);
+    let job = service
+        .create_job(CreateScrapeJobRequest {
+            mode: ScrapeMode::Keyword,
+            keyword: env_or("VERIFY_KEYWORD", "quán cà phê"),
+            location: Some(env_or("VERIFY_LOCATION", "Quận 1, Thành phố Hồ Chí Minh")),
+            bbox: None,
+            step_km: None,
+            districts: vec![],
+            headless: true,
+        })
+        .await
+        .unwrap();
+    println!("created job ...{}", &job.id[job.id.len() - 6..]);
     runner.start(&job.id).await.unwrap();
-    let deadline = Instant::now() + Duration::from_secs(env_or("VERIFY_TIMEOUT_S", "1500").parse().unwrap());
+    let deadline =
+        Instant::now() + Duration::from_secs(env_or("VERIFY_TIMEOUT_S", "1500").parse().unwrap());
     let last = loop {
         let j = service.get_job(&job.id).await.unwrap();
-        if j.status.is_terminal() || matches!(j.status, ScrapeJobStatus::PausedRequiresAction | ScrapeJobStatus::PausedLimitReached) { break j; }
-        if Instant::now() > deadline { println!("DEADLINE reached; cancelling"); let _ = service.cancel_job(&job.id).await; break service.get_job(&job.id).await.unwrap(); }
+        if j.status.is_terminal()
+            || matches!(
+                j.status,
+                ScrapeJobStatus::PausedRequiresAction | ScrapeJobStatus::PausedLimitReached
+            )
+        {
+            break j;
+        }
+        if Instant::now() > deadline {
+            println!("DEADLINE reached; cancelling");
+            let _ = service.cancel_job(&job.id).await;
+            break service.get_job(&job.id).await.unwrap();
+        }
         tokio::time::sleep(Duration::from_secs(3)).await;
     };
     println!("FINAL status={:?} stage={:?} processed={}/{} failed={} disc={} qual={} leads={} err={:?}/{:?}",
         last.status, last.stage, last.processed_units, last.total_units, last.failed_units,
         last.businesses_discovered, last.businesses_qualified, last.leads_created, last.last_error_kind, last.last_error_message);
     let units = repo.list_units(&job.id).await.unwrap();
-    let results = repo.list_results_page(&job.id, rustsale_core::paging::places::PlaceQuery::default(), None, 200).await.map(|p| serde_json::to_value(p.items).unwrap()).unwrap_or_default();
-    std::fs::write(out.join("job.json"), serde_json::to_vec_pretty(&last).unwrap()).unwrap();
-    std::fs::write(out.join("units.json"), serde_json::to_vec_pretty(&units).unwrap()).unwrap();
-    std::fs::write(out.join("results.json"), serde_json::to_vec_pretty(&results).unwrap()).unwrap();
+    let results = repo
+        .list_results_page(
+            &job.id,
+            rustsale_core::paging::places::PlaceQuery::default(),
+            None,
+            200,
+        )
+        .await
+        .map(|p| serde_json::to_value(p.items).unwrap())
+        .unwrap_or_default();
+    std::fs::write(
+        out.join("job.json"),
+        serde_json::to_vec_pretty(&last).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        out.join("units.json"),
+        serde_json::to_vec_pretty(&units).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        out.join("results.json"),
+        serde_json::to_vec_pretty(&results).unwrap(),
+    )
+    .unwrap();
     let _ = runner.wait_for_idle(Duration::from_secs(60)).await;
     log_task.abort();
 }
@@ -152,7 +222,13 @@ async fn live_dom_probe() {
     // first few place links
     let links = sess.evaluate(r#"[...document.querySelectorAll('div[role="feed"] a[href*="/maps/place/"]')].slice(0,4).map(a=>a.href)"#).await.expect("links");
     let mut places = Vec::new();
-    for (i, l) in links.as_array().cloned().unwrap_or_default().iter().enumerate() {
+    for (i, l) in links
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .enumerate()
+    {
         let href = l.as_str().unwrap_or_default();
         // canonical URL exactly as the scraper opens it: query stripped (C18)
         let canon = href.split('?').next().unwrap_or(href).to_string();
@@ -184,7 +260,11 @@ async fn live_dom_probe() {
         places.push(v);
     }
     probe.insert("places".into(), serde_json::Value::Array(places));
-    std::fs::write(out.join("probe.json"), serde_json::to_vec_pretty(&probe).unwrap()).unwrap();
+    std::fs::write(
+        out.join("probe.json"),
+        serde_json::to_vec_pretty(&probe).unwrap(),
+    )
+    .unwrap();
     println!("LISTING {}", listing);
     drop(guard);
     let _ = mgr.close().await;
@@ -203,27 +283,52 @@ async fn live_state_probe() {
         feed: !!document.querySelector('div[role="feed"]'), url: location.href.slice(0,90),
         body: (document.body.innerText||'').replace(/\s+/g,' ').slice(0,160) }))()"#;
     for (name, url) in [
-        ("empty_search", "https://www.google.com/maps/search/zzqxjkwv9283746xx?hl=en"),
-        ("bogus_place", "https://www.google.com/maps/place/zzqxjkwv9283746qq?hl=en"),
-        ("blank_maps", "https://www.google.com/maps/@10.77,106.69,12z?hl=en"),
-        ("listing", "https://www.google.com/maps/search/cafe+District+1+Ho+Chi+Minh?hl=en"),
+        (
+            "empty_search",
+            "https://www.google.com/maps/search/zzqxjkwv9283746xx?hl=en",
+        ),
+        (
+            "bogus_place",
+            "https://www.google.com/maps/place/zzqxjkwv9283746qq?hl=en",
+        ),
+        (
+            "blank_maps",
+            "https://www.google.com/maps/@10.77,106.69,12z?hl=en",
+        ),
+        (
+            "listing",
+            "https://www.google.com/maps/search/cafe+District+1+Ho+Chi+Minh?hl=en",
+        ),
     ] {
         tokio::time::sleep(Duration::from_secs(6)).await;
         sess.navigate(url).await.expect("navigate");
         tokio::time::sleep(Duration::from_secs(7)).await;
         let st = sess.health_snapshot().await;
         let dom = sess.evaluate(h1js).await.unwrap_or_default();
-        println!("STATE {name}: {:?} dom={}", st.as_ref().map(|h| (format!("{:?}", h.state), h.title.clone())).map_err(|e| e.message.clone()), dom);
+        println!(
+            "STATE {name}: {:?} dom={}",
+            st.as_ref()
+                .map(|h| (format!("{:?}", h.state), h.title.clone()))
+                .map_err(|e| e.message.clone()),
+            dom
+        );
     }
     // C18: same place URL with and without hl
     let links = sess.evaluate(r#"[...document.querySelectorAll('div[role="feed"] a[href*="/maps/place/"]')].slice(0,1).map(a=>a.href.split('?')[0])"#).await.unwrap();
     let place = links[0].as_str().unwrap_or_default().to_string();
     let probe = r#"(() => { const a=document.querySelector('[data-item-id="address"]'); const cat=document.querySelector('button[jsaction*="category"]'); return {lang:document.documentElement.lang, addr_label:(a&&a.getAttribute('aria-label')||'').slice(0,14), category:(cat&&cat.textContent||'').slice(0,30), url_hl:/[?&]hl=/.test(location.href)}; })()"#;
-    for (name, u) in [("no_hl", place.clone()), ("hl_vi", format!("{place}?hl=vi")), ("hl_en", format!("{place}?hl=en"))] {
+    for (name, u) in [
+        ("no_hl", place.clone()),
+        ("hl_vi", format!("{place}?hl=vi")),
+        ("hl_en", format!("{place}?hl=en")),
+    ] {
         tokio::time::sleep(Duration::from_secs(6)).await;
         sess.navigate(&u).await.expect("navigate place");
         tokio::time::sleep(Duration::from_secs(6)).await;
-        println!("HL {name}: {}", sess.evaluate(probe).await.unwrap_or_default());
+        println!(
+            "HL {name}: {}",
+            sess.evaluate(probe).await.unwrap_or_default()
+        );
     }
     drop(guard);
     let _ = mgr.close().await;
@@ -239,43 +344,99 @@ struct Fake {
 }
 #[async_trait]
 impl ScrapeUnitProcessor for Fake {
-    async fn execute(&self, _j: &ScrapeJob, _u: &ScrapeUnit) -> Result<UnitExecution, ScrapeJobError> {
+    async fn execute(
+        &self,
+        _j: &ScrapeJob,
+        _u: &ScrapeUnit,
+    ) -> Result<UnitExecution, ScrapeJobError> {
         self.entered.notify_waiters();
-        if self.panic_in_execute { panic!("simulated panic inside processor"); }
-        if let Some(g) = &self.gate { g.notified().await; }
+        if self.panic_in_execute {
+            panic!("simulated panic inside processor");
+        }
+        if let Some(g) = &self.gate {
+            g.notified().await;
+        }
         Ok(UnitExecution::default())
     }
     async fn action_health(&self, _j: &ScrapeJob) -> Result<GoogleMapsPageHealth, ScrapeJobError> {
-        Ok(GoogleMapsPageHealth { state: GoogleMapsPageState::Ready, url: String::new(), title: String::new() })
+        Ok(GoogleMapsPageHealth {
+            state: GoogleMapsPageState::Ready,
+            url: String::new(),
+            title: String::new(),
+        })
     }
-    async fn relaunch_for_action(&self, _j: &ScrapeJob) -> Result<(), ScrapeJobError> { Ok(()) }
-    async fn shutdown(&self) -> Result<(), ScrapeJobError> { Ok(()) }
+    async fn relaunch_for_action(&self, _j: &ScrapeJob) -> Result<(), ScrapeJobError> {
+        Ok(())
+    }
+    async fn shutdown(&self) -> Result<(), ScrapeJobError> {
+        Ok(())
+    }
 }
 
-fn fake_stack(db: &std::path::Path, proc_: Fake) -> (Arc<ScrapeJobRepository>, Arc<ScrapeJobRunner>, GoogleMapsJobService) {
+fn fake_stack(
+    db: &std::path::Path,
+    proc_: Fake,
+) -> (
+    Arc<ScrapeJobRepository>,
+    Arc<ScrapeJobRunner>,
+    GoogleMapsJobService,
+) {
     let repo = Arc::new(ScrapeJobRepository::new(db.to_string_lossy().to_string()).unwrap());
     let events = Arc::new(ScrapeEventPublisher::new(64));
-    let runner = Arc::new(ScrapeJobRunner::new(repo.clone(), Arc::new(proc_), events, RetryPolicy::default()));
-    let svc = GoogleMapsJobService::new(repo.clone(), runner.clone(), db.parent().unwrap().join("profiles"));
+    let runner = Arc::new(ScrapeJobRunner::new(
+        repo.clone(),
+        Arc::new(proc_),
+        events,
+        RetryPolicy::default(),
+    ));
+    let svc = GoogleMapsJobService::new(
+        repo.clone(),
+        runner.clone(),
+        db.parent().unwrap().join("profiles"),
+    );
     (repo, runner, svc)
 }
 fn kw() -> CreateScrapeJobRequest {
-    CreateScrapeJobRequest { mode: ScrapeMode::Keyword, keyword: "x".into(), location: Some("y".into()), bbox: None, step_km: None, districts: vec![], headless: true }
+    CreateScrapeJobRequest {
+        mode: ScrapeMode::Keyword,
+        keyword: "x".into(),
+        location: Some("y".into()),
+        bbox: None,
+        step_km: None,
+        districts: vec![],
+        headless: true,
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
 async fn au1_panic_in_processor() {
     let out = out_dir();
-    let (repo, runner, svc) = fake_stack(&out.join("au1.db"), Fake { gate: None, panic_in_execute: true, entered: Arc::new(Notify::new()) });
+    let (repo, runner, svc) = fake_stack(
+        &out.join("au1.db"),
+        Fake {
+            gate: None,
+            panic_in_execute: true,
+            entered: Arc::new(Notify::new()),
+        },
+    );
     let job = svc.create_job(kw()).await.unwrap();
     runner.start(&job.id).await.unwrap();
     tokio::time::sleep(Duration::from_secs(5)).await;
     let j = repo.get_job(&job.id).await.unwrap().unwrap();
-    println!("AU1 after panic: db status={:?} stage={:?} err={:?}", j.status, j.stage, j.last_error_kind);
-    println!("AU1 runner.active_job_id={:?}", runner.active_job_id().await);
+    println!(
+        "AU1 after panic: db status={:?} stage={:?} err={:?}",
+        j.status, j.stage, j.last_error_kind
+    );
+    println!(
+        "AU1 runner.active_job_id={:?}",
+        runner.active_job_id().await
+    );
     let again = runner.pause(&job.id).await;
-    println!("AU1 pause after panic -> {:?}", again.as_ref().map(|j| j.status).map_err(|e| e.to_string()));
+    println!(
+        "AU1 pause after panic -> {:?}",
+        again.as_ref().map(|j| j.status).map_err(|e| e.to_string())
+    );
     let j2 = repo.get_job(&job.id).await.unwrap().unwrap();
     println!("AU1 final db status={:?}", j2.status);
 }
@@ -285,39 +446,81 @@ async fn recover_race(two_instances: bool) {
     let name = if two_instances { "au2.db" } else { "au4.db" };
     let gate = Arc::new(Notify::new());
     let entered = Arc::new(Notify::new());
-    let (repo, runner, svc) = fake_stack(&out.join(name), Fake { gate: Some(gate.clone()), panic_in_execute: false, entered: entered.clone() });
+    let (repo, runner, svc) = fake_stack(
+        &out.join(name),
+        Fake {
+            gate: Some(gate.clone()),
+            panic_in_execute: false,
+            entered: entered.clone(),
+        },
+    );
     let job = svc.create_job(kw()).await.unwrap();
     let waiter = entered.notified();
     tokio::pin!(waiter);
     waiter.as_mut().enable();
     runner.start(&job.id).await.unwrap();
     waiter.await; // unit is executing
-    let label = if two_instances { "AU2(second instance on same DB)" } else { "AU4(recover_startup racing a started job)" };
+    let label = if two_instances {
+        "AU2(second instance on same DB)"
+    } else {
+        "AU4(recover_startup racing a started job)"
+    };
     let before = repo.get_job(&job.id).await.unwrap().unwrap();
-    println!("{label} before: status={:?} version={}", before.status, before.version);
+    println!(
+        "{label} before: status={:?} version={}",
+        before.status, before.version
+    );
     let recovered = if two_instances {
-        let (_r2, runner2, _s2) = fake_stack(&out.join(name), Fake { gate: None, panic_in_execute: false, entered: Arc::new(Notify::new()) });
+        let (_r2, runner2, _s2) = fake_stack(
+            &out.join(name),
+            Fake {
+                gate: None,
+                panic_in_execute: false,
+                entered: Arc::new(Notify::new()),
+            },
+        );
         runner2.recover_startup().await.unwrap()
     } else {
         runner.recover_startup().await.unwrap()
     };
     let mid = repo.get_job(&job.id).await.unwrap().unwrap();
-    println!("{label} recovered_jobs={recovered} -> status={:?}", mid.status);
+    println!(
+        "{label} recovered_jobs={recovered} -> status={:?}",
+        mid.status
+    );
     gate.notify_waiters();
     tokio::time::sleep(Duration::from_secs(4)).await;
     gate.notify_waiters();
     tokio::time::sleep(Duration::from_secs(4)).await;
     let last = repo.get_job(&job.id).await.unwrap().unwrap();
-    println!("{label} final: status={:?} stage={:?} processed={}/{} err={:?}/{:?}", last.status, last.stage, last.processed_units, last.total_units, last.last_error_kind, last.last_error_message);
+    println!(
+        "{label} final: status={:?} stage={:?} processed={}/{} err={:?}/{:?}",
+        last.status,
+        last.stage,
+        last.processed_units,
+        last.total_units,
+        last.last_error_kind,
+        last.last_error_message
+    );
     let units = repo.list_units(&job.id).await.unwrap();
-    println!("{label} units: {:?}", units.iter().map(|u| (u.status, u.attempt_count)).collect::<Vec<_>>());
+    println!(
+        "{label} units: {:?}",
+        units
+            .iter()
+            .map(|u| (u.status, u.attempt_count))
+            .collect::<Vec<_>>()
+    );
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
-async fn au2_two_instances() { recover_race(true).await }
+async fn au2_two_instances() {
+    recover_race(true).await
+}
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore]
-async fn au4_recover_race() { recover_race(false).await }
+async fn au4_recover_race() {
+    recover_race(false).await
+}
 
 /// A-U3: start the real browser, print pids, then die the way the app does on Quit (no shutdown call).
 /// MODE=exit -> std::process::exit(0); MODE=kill -> SIGKILL self; MODE=drop -> orderly close() (control).
@@ -328,13 +531,29 @@ async fn au3_orphans_on_exit() {
     let mgr = BrowserManager::new(1).with_profile_dir(out.join("au3-profile"));
     mgr.start(true).await.expect("start");
     let guard = mgr.acquire().await.expect("acquire");
-    guard.navigate("https://www.google.com/maps?hl=en").await.expect("nav");
+    guard
+        .navigate("https://www.google.com/maps?hl=en")
+        .await
+        .expect("nav");
     tokio::time::sleep(Duration::from_secs(5)).await;
-    println!("AU3 sidecar_pid={:?} self_pid={}", mgr.process_id().await, std::process::id());
+    println!(
+        "AU3 sidecar_pid={:?} self_pid={}",
+        mgr.process_id().await,
+        std::process::id()
+    );
     match env_or("MODE", "exit").as_str() {
         "kill" => unsafe { libc_kill(std::process::id() as i32, 9) },
-        "drop" => { drop(guard); mgr.close().await.expect("close"); println!("AU3 closed orderly"); }
+        "drop" => {
+            drop(guard);
+            mgr.close().await.expect("close");
+            println!("AU3 closed orderly");
+        }
         _ => std::process::exit(0),
     }
 }
-unsafe fn libc_kill(pid: i32, sig: i32) { extern "C" { fn kill(pid: i32, sig: i32) -> i32; } kill(pid, sig); }
+unsafe fn libc_kill(pid: i32, sig: i32) {
+    extern "C" {
+        fn kill(pid: i32, sig: i32) -> i32;
+    }
+    kill(pid, sig);
+}

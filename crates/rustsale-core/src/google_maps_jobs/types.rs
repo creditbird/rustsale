@@ -64,6 +64,9 @@ pub enum ScrapeErrorKind {
     ConsentRequired,
     RateLimited,
     SelectorChanged,
+    /// The place page exists but carries no place: it was withdrawn or never
+    /// existed. Incidental to one listing, so it is not a sign the job is broken.
+    PlaceUnavailable,
     InvalidResponse,
     BrowserStartup,
     RuntimeUnavailable,

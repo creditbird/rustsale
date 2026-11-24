@@ -1176,3 +1176,29 @@ Không có hạn tổng thời gian cho một website, và các site được x�
 - Hai app Tauri chạy song song thật (A-U2 chỉ mô phỏng hai instance trên cùng DB).
 - Chế độ headed và job lưới thật (B-U2 mới là phép tính).
 - Máy có locale tiếng Việt (C18), và một website chậm thật (A-U5).
+
+---
+
+# Phần F. Sửa 6 lỗi đã xác nhận ở Phần E (RS #56, ngày 24/11/2026)
+
+Nhánh `feat/nsh-v3-scraper-fix2`, nền `feat/nsh-v3-int8` @fdbe8fa. Mỗi lỗi có bằng chứng "trước" (kết quả đo ở Phần E trên mã chưa sửa) và "sau" (cùng test hoặc test mới, chạy trên mã đã sửa).
+
+| Mục | Cách sửa | Trước (Phần E) | Sau |
+|---|---|---|---|
+| A-U1 | `run_job` bọc `catch_unwind`; panic ghi `Failed` qua `record_runner_failure`, giải phóng job đang chạy | job kẹt `Running`, `pause` báo "không phải active job" | `au1_panic_in_processor`: DB `status=Failed`, `active_job_id` rỗng, người dùng huỷ/chạy lại được |
+| A-U2 | Khoá instance duy nhất theo thư mục dữ liệu (`instance_lock.rs`, khoá file OS, tự nhả khi process chết); thêm lease `owner_id` + `heartbeat_at` (10 s/lần, hạn 45 s); recover chỉ nhận job không chủ hoặc lease hết hạn | instance hai đổi job `Running` thành `Interrupted`, unit về `Pending` | `au2_two_instances`: `recovered_jobs=0`, job vẫn `Running`, hoàn tất `Completed` 1/1; 4 test repository `dead_owner_recovery_*` và `heartbeat_*` |
+| A-U4 | Cùng lease với A-U2: recover bỏ qua job của chính instance | `recovered_jobs=1`, job vừa chạy thành `Interrupted` | `au4_recover_race`: `recovered_jobs=0`, hoàn tất `Completed` 1/1 |
+| A-U5 | Hạn tổng `SITE_DEADLINE` = 30 s cho mỗi website; quá hạn trả lỗi `TransientNetwork`, `retryable` (không bị tính là "không có email"); website được xử lý song song (có test đếm đồng thời) | 84 s, 154 s, 315 s theo 3 kịch bản chậm | `site_deadline::a_slow_site_is_cut_off_at_the_per_website_deadline`: cả 3 kịch bản ≤ 30 s; `a_healthy_site_is_not_affected_by_the_deadline`: site khoẻ < 10 s, đủ 6 request |
+| C10 | `hasPlaceHeading` chỉ đúng khi có `h1` mang chữ (`googleMaps.ts`) | place không tồn tại (h1 rỗng ẩn) vẫn `Ready`, extractor trả `SelectorChanged` sai nhãn | test sidecar `classify_place_with_empty_h1_is_not_ready`: **đỏ** trên `googleMaps.ts` cũ (`Expected: not "ready"`), **xanh** trên bản sửa; 22/22 test nhóm "Google Maps block detection" đạt |
+| B-U4 | Xoá `GridScraper` (−281 dòng ở `scrapers/grid.rs`); không còn nơi nào gọi | chỉ test dùng | build và test không còn tham chiếu |
+
+Kết quả gate trên nhánh này (máy dev, qua hàng đợi `heavy-job`):
+
+- `cargo fmt -p rustsale-core -- --check`: đạt. (`cargo fmt --all` còn báo lệch ở `crates/zca-rs`, có sẵn từ nền int8, không thuộc #56 nên không sửa ở đây.)
+- `cargo clippy -p rustsale-core --all-targets -- -D warnings`: đạt.
+- `cargo test -p rustsale-core`: 1197 đạt, 0 lỗi, 6 bỏ qua (`#[ignore]`).
+- `scraper_verify` (au1, au2, au4, không cần mạng): 3/3 đạt.
+
+Chưa kiểm được: hai app chạy song song thật (A-U2 mới kiểm bằng hai instance trong một process và khoá file); A-U3 không nằm trong đợt sửa này (không tái hiện trên Linux).
+- Job thật nhỏ (sidecar CloakBrowser chạy từ mã nguồn đã sửa, từ khoá "quán cà phê" Quận 1, giới hạn 5 địa điểm): `Completed`, 6/6 unit, 0 unit lỗi, 5 địa điểm, 4 đủ điều kiện, 4 lead, `last_error` rỗng, 103 s. Không có panic, không có job kẹt, không có lỗi lease/heartbeat. Đây là kiểm hồi quy đường chạy thật sau khi thêm `catch_unwind`, lease và enrichment song song, không phải bằng chứng riêng cho từng lỗi.
+- `nsh check` (app `native`): đạt. `nsh test`: 88/88 đạt.
