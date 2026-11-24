@@ -2,7 +2,7 @@ import { List, signal, Text, View } from "nsh";
 import { Button as Base } from "nsh/base";
 import { Leads, LeadsMore } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Modal, Skeleton } from "../ui";
-import { LeadDetail, STATUSES, money, tone, type Activity, type Lead } from "../components/LeadDetail";
+import { LeadDetail, STATUSES, money, tone, validateLeadEdit, type Activity, type Lead, type LeadEditDraft } from "../components/LeadDetail";
 import { startCore, type Page } from "../stores/core";
 import { pager } from "../stores/paged";
 import { notify, report } from "../stores/toast";
@@ -21,6 +21,10 @@ export function LeadsScreen() {
   const status = signal("");
   const sort = signal("name");
   const desc = signal(false);
+  const categoryId = signal<number | null>(null);
+  const categories = signal<{ id: number; name: string }[]>([]);
+  const saving = signal(false);
+  const editError = signal<string | null>(null);
   const selected = signal<Lead | null>(null);
   const activities = signal<Activity[]>([]);
   const adding = signal(false);
@@ -35,6 +39,7 @@ export function LeadsScreen() {
       const query = {
         search: search().trim() || undefined,
         status: status() || undefined,
+        categoryId: categoryId() ?? undefined,
         sort: sort(),
         descending: desc(),
       };
@@ -56,9 +61,23 @@ export function LeadsScreen() {
     reload();
   };
 
+  const loadCategories = async () => {
+    try {
+      await startCore();
+      categories.set((await Leads.categories()) as { id: number; name: string }[]);
+    } catch (e) {
+      report(e, { retry: () => { void loadCategories(); } });
+    }
+  };
+  const pickCategory = (id: number | null) => {
+    categoryId.set(id);
+    reload();
+  };
+
   const open = async (lead: Lead) => {
     selected.set(lead);
     activities.set([]);
+    editError.set(null);
     try {
       const [fresh, acts] = await Promise.all([Leads.details(lead.id), LeadsMore.activities(lead.id)]);
       if (selected()?.id === lead.id) {
@@ -79,6 +98,44 @@ export function LeadsScreen() {
       report(e, { refresh: () => { selected.set(null); reload(); }, retry: () => { void setStatus(lead, next); } });
     }
   };
+  const saveLead = async (draft: LeadEditDraft): Promise<boolean> => {
+    const lead = selected();
+    if (lead === null || saving()) return false;
+    const problem = validateLeadEdit(draft);
+    if (problem !== null) { editError.set(problem); return false; }
+    saving.set(true);
+    editError.set(null);
+    try {
+      await LeadsMore.update({
+        id: lead.id,
+        name: draft.name,
+        company: draft.company,
+        status: draft.status,
+        value: draft.value,
+        owner: draft.owner,
+        email: draft.email,
+        phone: draft.phone,
+        about: draft.about,
+        address: draft.address,
+        currency: draft.currency,
+      });
+      const fresh = (await Leads.details(lead.id)) as Lead;
+      if (selected()?.id === lead.id) selected.set(fresh);
+      notify("Đã lưu khách", "success");
+      reload();
+      return true;
+    } catch (e) {
+      const f = report(e, {
+        refresh: () => { selected.set(null); reload(); },
+        retry: () => { void saveLead(draft); },
+      });
+      if (f.action === "fix") editError.set(f.message);
+      return false;
+    } finally {
+      saving.set(false);
+    }
+  };
+
   const submitAdd = async () => {
     if (newName().trim() === "") { formError.set("Cần nhập tên khách."); return; }
     try {
@@ -94,6 +151,7 @@ export function LeadsScreen() {
   };
 
   reload();
+  loadCategories();
 
   return (
     <View class="flex-1 flex-row">
@@ -115,6 +173,18 @@ export function LeadsScreen() {
             {(s) => (
               <Button testID={`status-${s()}`} label={s()} size="sm" variant={status() === s() ? "primary" : "secondary"}
                 onPress={() => { status.set(s()); reload(); }} />
+            )}
+          </Each>
+        </View>
+        <View class="flex-row flex-wrap items-center gap-2">
+          <Text class="text-xs text-muted-foreground">Danh mục</Text>
+          <Button testID="lead-cat-all" label="Tất cả" size="sm" variant={categoryId() === null ? "primary" : "secondary"}
+            onPress={() => pickCategory(null)} />
+          <Each of={categories()} key={(c) => String(c.id)}>
+            {(c) => (
+              <Button testID={`lead-cat-${c().id}`} label={c().name} size="sm"
+                variant={categoryId() === c().id ? "primary" : "secondary"}
+                onPress={() => pickCategory(c().id)} />
             )}
           </Each>
         </View>
@@ -159,6 +229,9 @@ export function LeadsScreen() {
             activities={activities}
             onClose={() => selected.set(null)}
             onStatus={(next) => { void setStatus(lead(), next); }}
+            onSave={saveLead}
+            saving={() => saving()}
+            saveError={() => editError()}
           />
         )}
       </If>
