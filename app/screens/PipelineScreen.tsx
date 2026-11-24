@@ -5,7 +5,7 @@ import { Button, EmptyState, Input, Modal, Skeleton } from "../ui";
 import { money, type Lead } from "../components/LeadDetail";
 import { startCore, type Page } from "../stores/core";
 import { notify, report } from "../stores/toast";
-import { group, neighbour, OTHER, STAGES, totalOf, type Deal } from "../stores/pipeline";
+import { group, neighbour, OTHER, parseAmount, STAGES, totalOf, type Deal } from "../stores/pipeline";
 
 const COLUMNS = [...STAGES.map((s) => ({ key: s.key, label: s.label, hint: s.prob })), { key: OTHER, label: "Khác", hint: "" }];
 
@@ -111,8 +111,9 @@ export function PipelineScreen() {
     const lead = picked();
     if (lead === null) { formError.set("Chọn khách hàng cho deal này."); return; }
     if (title().trim() === "") { formError.set("Cần nhập tên deal."); return; }
-    const amount = Number(value().replace(/[\s,.]/g, ""));
-    if (!Number.isFinite(amount) || amount < 0) { formError.set("Giá trị phải là số, không âm."); return; }
+    const parsed = parseAmount(value(), currency());
+    if (!parsed.ok) { formError.set(parsed.message); return; }
+    const amount = parsed.value;
     saving.set(true);
     try {
       await Deals.create({ leadId: lead.id, title: title().trim(), value: amount, stage: stage(), currency: currency() });

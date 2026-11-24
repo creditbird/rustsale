@@ -65,3 +65,29 @@ export function totalOf(deals: Deal[]): string {
   }
   return parts.length === 0 ? "—" : parts.join(" · ");
 }
+
+export type AmountResult = { ok: true; value: number } | { ok: false; message: string };
+
+/**
+ * Reads the "Giá trị" field. The core stores a deal value as a REAL in the currency's major unit
+ * (VND dong, USD dollars), so the result is that number, never minor units.
+ * VND: whole number; "." or "," (one kind only) may group thousands in threes ("1.000.000", "1,234").
+ * USD: "," groups thousands, "." starts at most 2 decimals ("1.5", "1,234.50").
+ * Anything that could be read two ways ("1.234" USD, "1.234,5") is rejected rather than guessed.
+ */
+export function parseAmount(raw: string, currency: string): AmountResult {
+  const s = raw.replace(/\s/g, "");
+  const bad = (message: string): AmountResult => ({ ok: false, message });
+  if (s === "") return bad("Nhập giá trị của deal.");
+  if (s.startsWith("-")) return bad("Giá trị không được âm.");
+  if (!/^[0-9.,]+$/.test(s)) return bad("Giá trị chỉ gồm chữ số và dấu phân tách.");
+  if (currency === "USD") {
+    const m = /^(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?$/.exec(s);
+    if (m === null) return bad("USD: tối đa 2 số lẻ, dấu phẩy ngăn hàng nghìn (vd 1,234.50). Giá trị này mơ hồ, hãy nhập lại.");
+    return { ok: true, value: Number(`${m[1].replace(/,/g, "")}${m[2] ? `.${m[2]}` : ""}`) };
+  }
+  const m = /^(\d{1,3}(?:([.,])\d{3}(?:\2\d{3})*)|\d+)$/.exec(s);
+  if (m === null) return bad("VND chỉ nhận số nguyên, dấu . hoặc , chỉ để ngăn hàng nghìn (vd 1.000.000). Giá trị này mơ hồ, hãy nhập lại.");
+  const value = Number(s.replace(/[.,]/g, ""));
+  return Number.isSafeInteger(value) ? { ok: true, value } : bad("Giá trị quá lớn.");
+}
