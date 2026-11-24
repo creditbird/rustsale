@@ -128,24 +128,57 @@ export function validateCampaign(name: string, steps: StepDraft[]): string | nul
   return null;
 }
 
-/** What `Campaigns.saveUnifiedCampaign` takes for a new campaign (the core assigns the ids). */
-export function buildPayload(name: string, description: string, steps: StepDraft[]) {
+/** A step as `Campaigns.unifiedCampaignSteps` returns it (the shape `saveUnifiedCampaign` takes back). */
+export interface StepRecord {
+  id: number | null;
+  campaign_id: number;
+  step_order: number;
+  channel: string;
+  delay_minutes: number;
+  condition_type: string;
+  template_content: string;
+  ai_prompt_override: string | null;
+  created_at: string;
+  template_id: number | null;
+}
+
+/** The editor's drafts from the stored steps: ordered by step_order then id, renumbered 1..n. An empty list stays empty. */
+export function stepsToDrafts(rows: StepRecord[]): StepDraft[] {
+  const sorted = [...rows].sort((a, b) => a.step_order - b.step_order || (a.id ?? 0) - (b.id ?? 0));
+  return renumber(
+    sorted.map((r) => ({
+      step_order: r.step_order,
+      channel: r.channel,
+      delay_minutes: r.delay_minutes,
+      condition_type: r.condition_type,
+      template_content: r.template_content,
+      ai_prompt_override: r.ai_prompt_override ?? null,
+      template_id: r.template_id ?? null,
+    })),
+  );
+}
+
+/**
+ * What `Campaigns.saveUnifiedCampaign` takes. Without `existing` it is a new DRAFT campaign (the core assigns the ids);
+ * with it the campaign keeps its id, status, channel type, audience and schedule, and only name, description and steps change.
+ */
+export function buildPayload(name: string, description: string, steps: StepDraft[], existing?: UnifiedCampaign) {
   const stamp = new Date().toISOString();
   return {
     campaign: {
-      id: null,
+      id: existing?.id ?? null,
       name: name.trim(),
       description: description.trim() === "" ? null : description.trim(),
-      channel_type: "omnichannel",
-      status: "DRAFT",
-      audience_filter_json: null,
-      schedule_config_json: null,
-      created_at: stamp,
+      channel_type: existing?.channel_type ?? "omnichannel",
+      status: existing?.status ?? "DRAFT",
+      audience_filter_json: existing?.audience_filter_json ?? null,
+      schedule_config_json: existing?.schedule_config_json ?? null,
+      created_at: existing?.created_at ?? stamp,
       updated_at: stamp,
     },
     steps: steps.map((s) => ({
       id: null,
-      campaign_id: 0,
+      campaign_id: existing?.id ?? 0,
       step_order: s.step_order,
       channel: s.channel,
       delay_minutes: s.delay_minutes,

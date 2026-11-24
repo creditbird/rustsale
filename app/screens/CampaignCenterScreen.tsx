@@ -7,8 +7,8 @@ import { notify, report } from "../stores/toast";
 import {
   CHANNELS, CONDITIONS, DELAYS, PLACEHOLDERS, TEMPLATE_CHANNELS, TEMPLATE_STAGES,
   buildPayload, delayLabel, filterTemplates, moveStep, newStep, parseTags, percent, previewSpintax, renumber,
-  statusLabel, stringifyTags, validateCampaign, validateTemplateDraft,
-  type CampaignAnalytics, type StepDraft, type TemplateFolder, type TemplateRecord, type UnifiedCampaign,
+  statusLabel, stepsToDrafts, stringifyTags, validateCampaign, validateTemplateDraft,
+  type CampaignAnalytics, type StepDraft, type StepRecord, type TemplateFolder, type TemplateRecord, type UnifiedCampaign,
 } from "../stores/campaigns";
 
 interface PickLead { id: number; name: string; phone: string; company: string }
@@ -56,12 +56,49 @@ export function CampaignCenterScreen() {
   const buildError = signal<string | null>(null);
   const saving = signal(false);
 
+  // editing: the campaign being edited (null = a new one) and where its stored steps are in loading
+  const editing = signal<UnifiedCampaign | null>(null);
+  const stepsState = signal<"ready" | "loading" | "error">("ready");
+  let editGen = 0;
+
   const openBuilder = () => {
+    editGen += 1;
+    editing.set(null);
+    stepsState.set("ready");
     name.set("");
     description.set("");
     steps.set([newStep(1)]);
     buildError.set(null);
     building.set(true);
+  };
+  const loadEditSteps = async (c: UnifiedCampaign) => {
+    editGen += 1;
+    const mine = editGen;
+    stepsState.set("loading");
+    buildError.set(null);
+    try {
+      await startCore();
+      const rows = (await Campaigns.unifiedCampaignSteps(c.id)) as StepRecord[];
+      if (mine !== editGen) return;
+      steps.set(stepsToDrafts(rows));
+      stepsState.set("ready");
+    } catch (e) {
+      if (mine !== editGen) return;
+      stepsState.set("error");
+      report(e, { retry: () => { void loadEditSteps(c); } });
+    }
+  };
+  const openEditor = (c: UnifiedCampaign) => {
+    editing.set(c);
+    name.set(c.name);
+    description.set(c.description ?? "");
+    steps.set([]);
+    building.set(true);
+    void loadEditSteps(c);
+  };
+  const closeBuilder = () => {
+    editGen += 1;
+    building.set(false);
   };
   const patchStep = (i: number, patch: Partial<StepDraft>) =>
     steps.set(steps().map((s, k) => (k === i ? { ...s, ...patch } : s)));
@@ -70,14 +107,15 @@ export function CampaignCenterScreen() {
 
   const save = async () => {
     if (saving()) return;
+    if (stepsState() !== "ready") return;
     const problem = validateCampaign(name(), steps());
     if (problem !== null) { buildError.set(problem); return; }
     saving.set(true);
     buildError.set(null);
     try {
-      const body = buildPayload(name(), description(), steps());
+      const body = buildPayload(name(), description(), steps(), editing() ?? undefined);
       await Campaigns.saveUnifiedCampaign(body.campaign, body.steps);
-      building.set(false);
+      closeBuilder();
       notify("Đã lưu chiến dịch", "success");
       await loadList();
     } catch (e) {
@@ -375,6 +413,7 @@ export function CampaignCenterScreen() {
                     label={c().status === "ACTIVE" ? "Dừng" : "Chạy"}
                     variant={c().status === "ACTIVE" ? "secondary" : "primary"}
                     onPress={() => { void toggle(c()); }} />
+                  <Button testID={`cc-edit-${c().id}`} label="Sửa" size="sm" onPress={() => openEditor(c())} />
                   <Button testID={`cc-enrol-${c().id}`} label="Ghi danh" size="sm" onPress={() => { void openEnrol(c()); }} />
                   <Button testID={`cc-analytics-${c().id}`} label="Báo cáo" size="sm" onPress={() => { void openAnalytics(c()); }} />
                   <Button testID={`cc-delete-${c().id}`} label="Xoá" size="sm" variant="ghost" onPress={() => deleting.set(c())} />
@@ -385,12 +424,23 @@ export function CampaignCenterScreen() {
         </View>
       </Scroll>
 
-      <Modal open={building() && pickFor() === null && saveTplFor() === null} title="Kịch bản chiến dịch mới" onClose={() => building.set(false)}
+      <Modal open={building() && pickFor() === null && saveTplFor() === null} title={editing() === null ? "Kịch bản chiến dịch mới" : "Sửa kịch bản chiến dịch"} onClose={closeBuilder}
         class="m-auto h-[640px] w-[720px] max-w-full rounded-(--radius) border border-border bg-popover p-5">
         <View class="flex-1 gap-3">
           <Input testID="cc-name" value={name()} placeholder="Tên chiến dịch" onValue={(v) => name.set(v)} />
           <Input testID="cc-desc" value={description()} placeholder="Mô tả (không bắt buộc)" onValue={(v) => description.set(v)} />
           <Text class="text-xs text-muted-foreground">{`Biến dùng được: ${PLACEHOLDERS.join(" ")} · spintax: {Chào|Xin chào}`}</Text>
+          <If when={stepsState() === "loading"}>
+            <View testID="cc-steps-loading" class="gap-2"><Skeleton /><Skeleton /></View>
+          </If>
+          <If when={stepsState() === "error"}>
+            <View class="rounded-(--radius) border border-border">
+              <ErrorState message="Chưa tải được các bước của chiến dịch." onRetry={() => { const c = editing(); if (c !== null) void loadEditSteps(c); }} />
+            </View>
+          </If>
+          <If when={stepsState() === "ready" && steps().length === 0}>
+            <Text testID="cc-steps-empty" class="text-sm text-muted-foreground">Chiến dịch này chưa có bước nào. Thêm bước để lưu.</Text>
+          </If>
           <Scroll class="h-[360px]">
             <View class="gap-3">
               <Each of={steps()} key={(s) => String(s.step_order)}>
@@ -452,14 +502,14 @@ export function CampaignCenterScreen() {
               </Each>
             </View>
           </Scroll>
-          <Button testID="cc-add-step" label="+ Thêm bước" size="sm" onPress={addStep} />
+          <Button testID="cc-add-step" label="+ Thêm bước" size="sm" disabled={stepsState() !== "ready"} onPress={addStep} />
           <If when={buildError()}>
             {(m) => <Text testID="cc-build-error" class="text-sm text-destructive">{m()}</Text>}
           </If>
           <View class="flex-row justify-end gap-2">
-            <Button testID="cc-build-cancel" label="Huỷ" disabled={saving()} onPress={() => building.set(false)} />
+            <Button testID="cc-build-cancel" label="Huỷ" disabled={saving()} onPress={closeBuilder} />
             <Button testID="cc-save" variant="primary" label={saving() ? "Đang lưu…" : "Lưu chiến dịch"}
-              disabled={saving()} onPress={() => { void save(); }} />
+              disabled={saving() || stepsState() !== "ready"} onPress={() => { void save(); }} />
           </View>
         </View>
       </Modal>

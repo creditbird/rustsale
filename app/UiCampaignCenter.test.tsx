@@ -2,7 +2,7 @@
 import { expect, open, test } from "nsh/test";
 import { Campaigns, Host, LeadsMore, Templates } from "rustsale/native";
 import {
-  buildPayload, filterTemplates, moveStep, newStep, parseTags, previewSpintax, stringifyTags, validateCampaign,
+  buildPayload, filterTemplates, moveStep, newStep, parseTags, previewSpintax, stepsToDrafts, stringifyTags, validateCampaign,
   type TemplateRecord,
 } from "./stores/campaigns";
 
@@ -137,4 +137,98 @@ test("a step takes a saved template and a step is saved as a template", async ()
   const made = ((await Templates.list(null)) as { name: string; content: string }[]).find((x) => x.name === saved);
   expect(made?.content).toBe(`Mẫu chào ${stamp}`);
   await Templates.deleteTemplate(tplId);
+});
+
+test("stored steps become ordered drafts and an edit keeps the campaign's own fields", () => {
+  const row = (id: number, order: number, text: string) => ({
+    id, campaign_id: 7, step_order: order, channel: "email", delay_minutes: 60, condition_type: "ALWAYS",
+    template_content: text, ai_prompt_override: null, created_at: "2026-01-01T00:00:00Z", template_id: null,
+  });
+  const drafts = stepsToDrafts([row(2, 5, "sau"), row(1, 2, "trước")]);
+  expect(drafts.map((d) => d.template_content)).toEqual(["trước", "sau"]);
+  expect(drafts.map((d) => d.step_order)).toEqual([1, 2]);
+  expect(stepsToDrafts([])).toEqual([]);
+  const existing = {
+    id: 7, name: "Cũ", description: null, channel_type: "zalo", status: "ACTIVE", audience_filter_json: "{}",
+    schedule_config_json: "{\"a\":1}", created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z",
+  };
+  const body = buildPayload("Mới", "", drafts, existing);
+  expect(body.campaign.id).toBe(7);
+  expect(body.campaign.status).toBe("ACTIVE");
+  expect(body.campaign.channel_type).toBe("zalo");
+  expect(body.campaign.schedule_config_json).toBe("{\"a\":1}");
+  expect(body.steps.every((x) => x.campaign_id === 7)).toBe(true);
+});
+
+const stepsOf = async (id: number) =>
+  (await Campaigns.unifiedCampaignSteps(id)) as { step_order: number; channel: string; template_content: string }[];
+
+test("a campaign is edited: its real steps load, a change is saved, status is kept", async () => {
+  const stamp = Date.now();
+  const title = `CC sửa ${stamp}`;
+  await Host.start(dir);
+  const app = await openCampaigns();
+  await app.press("id:cc-new");
+  await app.waitFor("id:cc-name");
+  await app.type("id:cc-name", title);
+  await app.type("id:cc-step-1-content", "Gốc một");
+  await app.press("id:cc-add-step");
+  await app.waitFor("id:cc-step-2-content");
+  await app.press("id:cc-step-2-ch-email");
+  await app.type("id:cc-step-2-content", "Gốc hai");
+  await app.press("id:cc-save");
+  await app.waitUntil(() => has(app, title));
+  const id = (await list()).find((c) => c.name === title)!.id;
+  await app.press(`id:cc-toggle-${id}`);
+  await app.waitUntil(() => has(app, "Đang chạy"));
+
+  await app.press(`id:cc-edit-${id}`);
+  await app.waitUntil(() => has(app, "Gốc một") && has(app, "Gốc hai"));
+  expect(has(app, "Sửa kịch bản chiến dịch")).toBe(true);
+  await app.type("id:cc-step-2-content", "Hai đã sửa");
+  await app.press("id:cc-step-1-ch-whatsapp");
+  await app.press("id:cc-save");
+  await app.waitUntil(() => !has(app, "Sửa kịch bản chiến dịch"));
+
+  const after = await stepsOf(id);
+  expect(after.map((x) => x.template_content)).toEqual(["Gốc một", "Hai đã sửa"]);
+  expect(after.map((x) => x.channel)).toEqual(["whatsapp", "email"]);
+  expect((await list()).find((c) => c.id === id)?.status).toBe("ACTIVE");
+  expect((await list()).filter((c) => c.name === title).length).toBe(1);
+  await Campaigns.deleteUnifiedCampaign(id);
+});
+
+test("editing a campaign with no steps shows the empty note and refuses to save it empty", async () => {
+  const title = `CC rỗng ${Date.now()}`;
+  await Host.start(dir);
+  const stamp = new Date().toISOString();
+  const id = Number(await Campaigns.saveUnifiedCampaign({
+    id: null, name: title, description: null, channel_type: "omnichannel", status: "DRAFT",
+    audience_filter_json: null, schedule_config_json: null, created_at: stamp, updated_at: stamp,
+  }, []));
+  const app = await openCampaigns();
+  await app.waitUntil(() => has(app, title));
+  await app.press(`id:cc-edit-${id}`);
+  await app.waitFor("id:cc-steps-empty");
+  await app.press("id:cc-save");
+  await app.waitUntil(() => has(app, "Cần ít nhất 1 bước trong kịch bản."));
+  expect((await stepsOf(id)).length).toBe(0);
+  await Campaigns.deleteUnifiedCampaign(id);
+});
+
+test("a campaign that vanished shows the load error and cannot be saved", async () => {
+  const title = `CC mất ${Date.now()}`;
+  await Host.start(dir);
+  const stamp = new Date().toISOString();
+  const id = Number(await Campaigns.saveUnifiedCampaign({
+    id: null, name: title, description: null, channel_type: "omnichannel", status: "DRAFT",
+    audience_filter_json: null, schedule_config_json: null, created_at: stamp, updated_at: stamp,
+  }, []));
+  const app = await openCampaigns();
+  await app.waitUntil(() => has(app, title));
+  await Campaigns.deleteUnifiedCampaign(id);
+  await app.press(`id:cc-edit-${id}`);
+  await app.waitUntil(() => has(app, "Chưa tải được các bước của chiến dịch."));
+  await app.press("id:cc-save");
+  expect((await list()).some((c) => c.id === id)).toBe(false);
 });
