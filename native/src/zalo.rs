@@ -5,6 +5,7 @@ use crate::runtime::{on_blocking, on_core, state_of};
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands::{self, DbState};
+use rustsale_core::conversation::commands::{self as conversation, ConversationState};
 
 /// Managed Zalo accounts and their sessions. The QR login is a long job: it answers once the
 /// login session ends and reports each step through `zalo-qr-*` events on `Host.onEvent`.
@@ -50,6 +51,18 @@ impl Zalo {
         on_core(move |h| async move {
             let state = state_of::<DbState>(&h)?;
             Ok::<_, CoreApiError>(commands::verify_zalo_session(imei, state).await?)
+        })
+        .await
+    }
+
+    /// Restarts the listener of account `accountKey` (the v2 `reconnect_zalo_account`); resolves
+    /// once it is connected again and rejects with the core's reason otherwise.
+    pub async fn reconnect(account_key: String) -> Result<JsonValue, JsError> {
+        on_core(move |h| async move {
+            let state = state_of::<ConversationState>(&h)?;
+            Ok::<_, CoreApiError>(
+                conversation::restart_conversation_account(state, account_key).await?,
+            )
         })
         .await
     }

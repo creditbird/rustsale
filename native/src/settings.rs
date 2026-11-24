@@ -90,4 +90,52 @@ impl Settings {
         })
         .await
     }
+
+    /// The interface language, as `{ language }` with `vi` or `en`; a missing or unknown value
+    /// reads as `vi`.
+    pub async fn language() -> Result<JsonValue, JsError> {
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            let language = commands::get_language_setting(state)?;
+            Ok::<_, CoreApiError>(serde_json::json!({ "language": language }))
+        })
+        .await
+    }
+
+    /// Saves the interface language (`vi` or `en`) and resolves `{ language }` with the saved value.
+    pub async fn set_language(language: String) -> Result<JsonValue, JsError> {
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            let saved = commands::update_language_setting(language, state)?;
+            Ok::<_, CoreApiError>(serde_json::json!({ "language": saved }))
+        })
+        .await
+    }
+
+    /// Whether RustSale starts when the user signs in, as `{ enabled, supported }`. On systems this
+    /// build does not cover (anything but Linux) `supported` is false and nothing is read.
+    pub fn autostart() -> Result<JsonValue, JsError> {
+        if !cfg!(target_os = "linux") {
+            return Ok(serde_json::json!({ "enabled": false, "supported": false }));
+        }
+        let paths = crate::autostart::paths()?;
+        Ok(serde_json::json!({
+            "enabled": crate::autostart::is_enabled_at(&paths.config_home),
+            "supported": true,
+        }))
+    }
+
+    /// Turns starting at sign-in on or off (Linux: the XDG autostart entry `rustsale.desktop`) and
+    /// resolves `{ enabled }`. Rejects with `unsupported` on systems this build does not cover.
+    pub fn set_autostart(enabled: bool) -> Result<JsonValue, JsError> {
+        if !cfg!(target_os = "linux") {
+            return Err(CoreApiError::unsupported(
+                "starting at sign-in is implemented on Linux only",
+            )
+            .into());
+        }
+        let paths = crate::autostart::paths()?;
+        crate::autostart::set_enabled_at(&paths.config_home, &paths.exe, enabled)?;
+        Ok(serde_json::json!({ "enabled": enabled }))
+    }
 }

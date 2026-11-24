@@ -6067,4 +6067,39 @@ mod tests {
             complete_count.load(Ordering::SeqCst)
         );
     }
+
+    #[test]
+    fn language_setting_defaults_to_vi_and_saves_en() {
+        let conn = db::init_db(":memory:").unwrap();
+        assert_eq!(
+            commands::get_language_setting_internal(&conn).unwrap(),
+            "vi",
+            "a fresh database reads as the product default"
+        );
+
+        assert_eq!(
+            commands::update_language_setting_internal(&conn, "EN").unwrap(),
+            "en"
+        );
+        assert_eq!(
+            commands::get_language_setting_internal(&conn).unwrap(),
+            "en"
+        );
+
+        assert!(
+            commands::update_language_setting_internal(&conn, "fr").is_err(),
+            "an unsupported language is refused"
+        );
+        assert_eq!(
+            commands::get_language_setting_internal(&conn).unwrap(),
+            "en",
+            "a refused save must not change the stored language"
+        );
+
+        assert_eq!(
+            commands::update_language_setting_internal(&conn, "  ").unwrap(),
+            "vi",
+            "a blank value falls back to the product default"
+        );
+    }
 }

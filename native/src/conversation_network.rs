@@ -300,6 +300,12 @@ impl ConversationNetwork {
         .await
     }
 
+    /// The WhatsApp login code `qrRaw` drawn as a PNG image: `data:image/png;base64,...`, ready for
+    /// `<Image src>`. Empty content rejects before anything is encoded.
+    pub fn whatsapp_qr_image(qr_raw: String) -> Result<JsonValue, JsError> {
+        Ok(JsonValue::String(crate::qr::png_data_url(&qr_raw)?))
+    }
+
     /// Disconnects WhatsApp account `channelAccountId`: it stops the bot and deletes the session.
     pub async fn disconnect_whatsapp_account(
         channel_account_id: JsonValue,

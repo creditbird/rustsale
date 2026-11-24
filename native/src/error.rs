@@ -41,6 +41,12 @@ impl CoreApiError {
     pub fn invalid(message: impl Into<String>) -> Self {
         Self::new("invalid_request", message)
     }
+
+    /// This system does not have the feature: the call is well-formed but the platform is not
+    /// covered by this build (an autostart entry on Windows or macOS, for example).
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self::new("unsupported", message)
+    }
 }
 
 /// Core commands report plain `String` errors. They carry no code, so the
@@ -63,6 +69,7 @@ impl From<String> for CoreApiError {
             || lower.contains("returned no rows")
             || lower.contains("does not exist")
             || lower.contains("không tồn tại")
+            || lower.contains("no zalo session matches")
         {
             "not_found"
         } else if lower.contains("invalid")
@@ -193,6 +200,12 @@ mod tests {
             CoreApiError::from("scrape job qa was not found").code,
             "not_found"
         );
+    }
+
+    #[test]
+    fn a_missing_zalo_session_is_not_found() {
+        let error = CoreApiError::from("No Zalo session matches account key demo-zalo-uid");
+        assert_eq!(error.code, "not_found");
     }
 
     #[test]

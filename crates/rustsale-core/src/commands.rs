@@ -745,6 +745,65 @@ pub fn update_currency_settings_internal(
     })
 }
 
+/// The interface language (`vi` or `en`). Stored as `app_metadata.language`; a missing or unknown
+/// value reads as `vi`, the product's default.
+pub fn get_language_setting(state: State<DbState>) -> Result<String, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    get_language_setting_internal(&conn)
+}
+
+pub fn get_language_setting_internal(conn: &Connection) -> Result<String, String> {
+    let stored: Option<String> = conn
+        .query_row(
+            "SELECT value FROM app_metadata WHERE key = 'language'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|e| format!("Database query error: {}", e))?;
+    // A stored value this build does not know reads as the product default instead of failing the
+    // settings screen; saving still validates strictly.
+    Ok(normalize_language(stored.as_deref())
+        .unwrap_or("vi")
+        .to_string())
+}
+
+pub fn update_language_setting(language: String, state: State<DbState>) -> Result<String, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    update_language_setting_internal(&conn, &language)
+}
+
+pub fn update_language_setting_internal(
+    conn: &Connection,
+    language: &str,
+) -> Result<String, String> {
+    let valid = normalize_language(Some(language))?.to_string();
+    conn.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('language', ?1)
+         ON CONFLICT(key) DO UPDATE SET value = ?1",
+        rusqlite::params![valid],
+    )
+    .map_err(|e| format!("Database query error: {}", e))?;
+    Ok(valid)
+}
+
+fn normalize_language(value: Option<&str>) -> Result<&'static str, String> {
+    match value.map(str::trim) {
+        None | Some("") => Ok("vi"),
+        Some(v) if v.eq_ignore_ascii_case("vi") => Ok("vi"),
+        Some(v) if v.eq_ignore_ascii_case("en") => Ok("en"),
+        Some(v) => Err(format!(
+            "Invalid language '{v}': RustSale CRM supports 'vi' and 'en'"
+        )),
+    }
+}
+
 pub fn delete_deal(id: i32, state: State<DbState>) -> Result<(), String> {
     let conn = state
         .conn
