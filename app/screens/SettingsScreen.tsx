@@ -5,6 +5,7 @@ import { ConversationNetwork, Desktop, Facebook, Host, Settings, Templates, Zalo
 import { Badge, Button, Checkbox, EmptyState, Input, Modal, Skeleton } from "../ui";
 import type { BadgeTone } from "../ui/Badge";
 import { startCore } from "../stores/core";
+import { facebookTokenFromInput } from "../stores/facebookToken";
 import { notify, report } from "../stores/toast";
 
 interface NotificationSettings {
@@ -67,7 +68,21 @@ interface WhatsAppAccount {
   phone_number: string | null;
 }
 
+interface DiscoveredFacebookPage {
+  id: string;
+  name: string;
+  category: string | null;
+  avatarUrl: string | null;
+  accessToken: string;
+  permissions: string[];
+}
+
 const SECURITY = ["STARTTLS", "TLS", "NONE"] as const;
+
+const LANGUAGES = [
+  { id: "vi", label: "Tiếng Việt" },
+  { id: "en", label: "English" },
+] as const;
 
 function authTone(status: string): BadgeTone {
   if (status === "valid" || status === "connected") return "success";
@@ -162,19 +177,41 @@ function GeneralSettings() {
   const updateStatus = signal("Chưa kiểm tra.");
   const checking = signal(false);
   const update = signal<{ version: string; notes: string } | null>(null);
+  const language = signal("vi");
+  const savingLanguage = signal(false);
+  const autostart = signal(false);
+  const autostartSupported = signal(true);
+  const autostartBusy = signal(false);
 
   const load = async () => {
     try {
       await startCore();
-      const [n, t, c] = await Promise.all([Settings.notifications(), Settings.tray(), Settings.currency()]);
+      const [n, t, c, lang] = await Promise.all([
+        Settings.notifications(),
+        Settings.tray(),
+        Settings.currency(),
+        Settings.language(),
+      ]);
       notifications.set(n as NotificationSettings);
       tray.set(t as TraySettings);
       const currency = c as CurrencySettings;
       base.set(currency.base_currency);
       rate.set(String(currency.exchange_rate));
+      language.set((lang as { language: string }).language);
       ready.set(true);
     } catch (e) {
       report(e, { retry: () => { void load(); } });
+    }
+  };
+
+  const loadAutostart = async () => {
+    try {
+      const state = (await Settings.autostart()) as { enabled: boolean; supported: boolean };
+      autostart.set(state.enabled);
+      autostartSupported.set(state.supported);
+    } catch (e) {
+      autostartSupported.set(false);
+      report(e, { retry: () => { void loadAutostart(); } });
     }
   };
 
@@ -275,7 +312,42 @@ function GeneralSettings() {
     }
   };
 
+  const chooseLanguage = async (next: string) => {
+    if (savingLanguage() || language() === next) return;
+    const before = language();
+    language.set(next);
+    savingLanguage.set(true);
+    try {
+      const saved = (await Settings.setLanguage(next)) as { language: string };
+      language.set(saved.language);
+      notify("Đã lưu ngôn ngữ", "success");
+    } catch (e) {
+      language.set(before);
+      report(e, { retry: () => { void chooseLanguage(next); } });
+    } finally {
+      savingLanguage.set(false);
+    }
+  };
+
+  const saveAutostart = async (next: boolean) => {
+    if (autostartBusy()) return;
+    const before = autostart();
+    autostart.set(next);
+    autostartBusy.set(true);
+    try {
+      const saved = (await Settings.setAutostart(next)) as { enabled: boolean };
+      autostart.set(saved.enabled);
+      notify(saved.enabled ? "Sẽ mở RustSale khi đăng nhập máy" : "Đã tắt mở RustSale khi đăng nhập máy", "success");
+    } catch (e) {
+      autostart.set(before);
+      report(e, { retry: () => { void saveAutostart(next); } });
+    } finally {
+      autostartBusy.set(false);
+    }
+  };
+
   void load();
+  void loadAutostart();
 
   return (
     <View class="gap-5 p-6">
@@ -337,6 +409,36 @@ function GeneralSettings() {
       </View>
 
       <View class="gap-3 rounded-(--radius) border border-border bg-card p-4">
+        <Text class="text-base font-semibold text-foreground">Ngôn ngữ</Text>
+        <View class="flex-row gap-2">
+          <Each of={LANGUAGES} key={(l) => l.id}>
+            {(l) => (
+              <Base testID={`settings-lang-${l().id}`} accessibilityLabel={l().label}
+                onPress={() => { void chooseLanguage(l().id); }}
+                class={`rounded-full border px-3 py-1 ${language() === l().id ? "border-primary bg-primary" : "border-border bg-card"}`}>
+                <Text class={`text-sm ${language() === l().id ? "text-primary-foreground" : "text-foreground"}`}>{l().label}</Text>
+              </Base>
+            )}
+          </Each>
+        </View>
+        <Text class="text-xs text-muted-foreground">Lựa chọn được lưu trên máy này.</Text>
+      </View>
+
+      <View class="gap-3 rounded-(--radius) border border-border bg-card p-4">
+        <Text class="text-base font-semibold text-foreground">Khởi động cùng máy</Text>
+        <If when={autostartSupported()}>
+          <Checkbox testID="settings-autostart" checked={autostart()}
+            label="Mở RustSale khi đăng nhập máy tính"
+            onChange={(v) => { void saveAutostart(v); }} />
+        </If>
+        <If when={!autostartSupported()}>
+          <Text testID="settings-autostart-unsupported" class="text-sm text-muted-foreground">
+            Chưa hỗ trợ trên hệ điều hành này.
+          </Text>
+        </If>
+      </View>
+
+      <View class="gap-3 rounded-(--radius) border border-border bg-card p-4">
         <Text class="text-base font-semibold text-foreground">Cập nhật</Text>
         <Text testID="settings-update-status" class="text-sm text-muted-foreground">{updateStatus()}</Text>
         <If when={update() !== null}>
@@ -366,6 +468,7 @@ function ZaloAccounts() {
   const qrStatus = signal("Đang kết nối Zalo…");
   const qrError = signal<string | null>(null);
   const starting = signal(false);
+  const reconnecting = signal<string | null>(null);
 
   const load = async () => {
     try {
@@ -387,6 +490,20 @@ function ZaloAccounts() {
       report(e, { refresh: () => { void load(); } });
     } finally {
       busy.set(false);
+    }
+    await load();
+  };
+
+  const reconnect = async (account: ZaloAccount) => {
+    if (reconnecting() !== null) return;
+    reconnecting.set(account.accountKey);
+    try {
+      await Zalo.reconnect(account.accountKey);
+      notify("Đã kết nối lại Zalo", "success");
+    } catch (e) {
+      report(e, { refresh: () => { void load(); } });
+    } finally {
+      reconnecting.set(null);
     }
     await load();
   };
@@ -493,6 +610,8 @@ function ZaloAccounts() {
                 <Text class="text-xs text-destructive">{a().authError ?? a().lastError ?? ""}</Text>
               </If>
               <View class="flex-row justify-end gap-2">
+                <Button testID={`settings-zalo-reconnect-${a().accountKey}`} size="sm" label="Kết nối lại"
+                  disabled={reconnecting() !== null} onPress={() => { void reconnect(a()); }} />
                 <Button testID={`settings-zalo-verify-${a().accountKey}`} size="sm" label="Kiểm tra"
                   disabled={busy()} onPress={() => { void verify(a()); }} />
                 <Button testID={`settings-zalo-del-${a().accountKey}`} size="sm" variant="destructive" label="Xoá"
@@ -770,6 +889,11 @@ function FacebookAccounts() {
   const formError = signal<string | null>(null);
   const saving = signal(false);
   const removing = signal<FacebookAccount | null>(null);
+  const discoverToken = signal("");
+  const discovering = signal(false);
+  const discovered = signal<DiscoveredFacebookPage[]>([]);
+  const selectedPages = signal<Set<string>>(new Set());
+  const savingPages = signal(false);
 
   const load = async () => {
     try {
@@ -785,6 +909,9 @@ function FacebookAccounts() {
     pageId.set("");
     pageName.set("");
     token.set("");
+    discoverToken.set("");
+    discovered.set([]);
+    selectedPages.set(new Set());
     formError.set(null);
     formOpen.set(true);
   };
@@ -809,6 +936,62 @@ function FacebookAccounts() {
       if (f.action === "fix") formError.set(f.message);
     } finally {
       saving.set(false);
+    }
+  };
+
+  const discover = async () => {
+    if (discovering()) return;
+    const userToken = facebookTokenFromInput(discoverToken());
+    if (userToken === null) {
+      formError.set("Cần nhập access token hoặc URL chuyển hướng của Facebook.");
+      return;
+    }
+    formError.set(null);
+    discovering.set(true);
+    try {
+      const pages = (await Facebook.discoverPages(userToken, null)) as DiscoveredFacebookPage[];
+      discovered.set(pages);
+      selectedPages.set(new Set(pages.map((p) => p.id)));
+      if (pages.length === 0) formError.set("Token không trả về trang nào.");
+    } catch (e) {
+      discovered.set([]);
+      const f = report(e, { retry: () => { void discover(); } });
+      if (f.action === "fix") formError.set(f.message);
+    } finally {
+      discovering.set(false);
+    }
+  };
+
+  const togglePage = (id: string) => {
+    const next = new Set(selectedPages());
+    if (next.has(id)) next.delete(id); else next.add(id);
+    selectedPages.set(next);
+  };
+
+  const saveDiscovered = async () => {
+    if (savingPages()) return;
+    const chosen = discovered().filter((p) => selectedPages().has(p.id));
+    if (chosen.length === 0) { formError.set("Chọn ít nhất một trang để lưu."); return; }
+    formError.set(null);
+    savingPages.set(true);
+    try {
+      for (const page of chosen) {
+        await Facebook.saveAccount({
+          pageId: page.id,
+          pageName: page.name,
+          avatarUrl: page.avatarUrl,
+          accessToken: page.accessToken,
+          grantedScopes: page.permissions,
+        });
+      }
+      formOpen.set(false);
+      notify("Đã lưu trang Facebook", "success");
+      await load();
+    } catch (e) {
+      const f = report(e, { retry: () => { void saveDiscovered(); } });
+      if (f.action === "fix") formError.set(f.message);
+    } finally {
+      savingPages.set(false);
     }
   };
 
@@ -868,8 +1051,38 @@ function FacebookAccounts() {
         </Each>
       </View>
 
-      <Modal open={formOpen()} title="Thêm trang Facebook" onClose={() => formOpen.set(false)}>
+      <Modal open={formOpen()} title="Thêm trang Facebook" onClose={() => formOpen.set(false)}
+        class="m-auto w-[620px] max-w-full rounded-(--radius) border border-border bg-popover p-5">
         <View class="gap-3">
+          <View class="gap-2 rounded-(--radius) border border-border p-3">
+            <Text class="text-sm font-medium text-foreground">Tìm trang từ token</Text>
+            <Text class="text-xs text-muted-foreground">
+              Dán access token của người dùng hoặc URL chuyển hướng sau khi đăng nhập Meta.
+            </Text>
+            <BaseInput testID="settings-fb-discover-token" masked value={discoverToken()}
+              placeholder="Access token hoặc URL chuyển hướng"
+              onChange={({ value }) => discoverToken.set(value)}
+              class="h-9 rounded-(--radius) border border-input bg-background px-3 text-sm text-foreground placeholder:text-muted-foreground focus:border-ring" />
+            <View class="flex-row justify-end">
+              <Button testID="settings-fb-discover" size="sm" label="Tìm trang" disabled={discovering()}
+                onPress={() => { void discover(); }} />
+            </View>
+            <If when={discovered().length > 0}>
+              <View class="gap-1">
+                <Each of={discovered()} key={(p) => p.id}>
+                  {(p) => (
+                    <Checkbox testID={`settings-fb-page-${p().id}`} checked={selectedPages().has(p().id)}
+                      label={`${p().name} · ${p().id}`} onChange={() => togglePage(p().id)} />
+                  )}
+                </Each>
+              </View>
+              <View class="flex-row justify-end">
+                <Button testID="settings-fb-save-pages" variant="primary" size="sm" label="Lưu trang đã chọn"
+                  disabled={savingPages()} onPress={() => { void saveDiscovered(); }} />
+              </View>
+            </If>
+          </View>
+          <Text class="text-xs text-muted-foreground">Hoặc thêm thủ công:</Text>
           <Input testID="settings-fb-page" value={pageId()} placeholder="Page ID" onValue={(v) => pageId.set(v)} />
           <Input testID="settings-fb-name" value={pageName()} placeholder="Tên trang (không bắt buộc)"
             onValue={(v) => pageName.set(v)} />
@@ -909,6 +1122,7 @@ function WhatsAppAccounts() {
   const qrOpen = signal(false);
   const qrStarting = signal(false);
   const qrRaw = signal<string | null>(null);
+  const qrImage = signal<string | null>(null);
   const qrSequence = signal(0);
   const qrSeconds = signal(0);
   const qrError = signal<string | null>(null);
@@ -932,6 +1146,7 @@ function WhatsAppAccounts() {
     attemptId.set(attempt);
     qrOpen.set(true);
     qrRaw.set(null);
+    qrImage.set(null);
     qrSequence.set(0);
     qrSeconds.set(0);
     qrError.set(null);
@@ -952,6 +1167,7 @@ function WhatsAppAccounts() {
     qrOpen.set(false);
     attemptId.set(null);
     qrRaw.set(null);
+    qrImage.set(null);
     if (attempt) void ConversationNetwork.cancelWhatsappQr(attempt).catch(() => undefined);
   };
 
@@ -975,6 +1191,16 @@ function WhatsAppAccounts() {
       const p = payload as { attempt_id?: string; qr_raw?: string; expires_in_sec?: number; sequence?: number };
       if (p.attempt_id && p.attempt_id !== attempt) return;
       qrRaw.set(p.qr_raw ?? null);
+      if (p.qr_raw) {
+        // The core sends the code's content; the native module draws it so TSX carries no QR encoder.
+        try {
+          qrImage.set(ConversationNetwork.whatsappQrImage(p.qr_raw) as string);
+        } catch {
+          qrImage.set(null);
+        }
+      } else {
+        qrImage.set(null);
+      }
       qrSeconds.set(p.expires_in_sec ?? 0);
       qrSequence.set(p.sequence ?? 0);
       qrStatus.set("Mở WhatsApp → Thiết bị liên kết → Liên kết thiết bị, rồi quét mã.");
@@ -1040,12 +1266,18 @@ function WhatsAppAccounts() {
           <If when={qrError() !== null}>
             <Text testID="settings-wa-qr-error" class="text-sm text-destructive">{qrError() ?? ""}</Text>
           </If>
-          <If when={qrRaw() !== null}>
+          <If when={qrImage() !== null}>
+            <Image testID="settings-wa-qr-image" src={qrImage() ?? ""}
+              class="h-56 w-56 rounded-(--radius) border border-border bg-background p-2" />
+          </If>
+          <If when={qrImage() === null && qrRaw() !== null}>
             <View class="w-[360px] gap-1 rounded-(--radius) border border-border bg-background p-3">
               <Text class="text-xs font-medium text-foreground">Nội dung mã QR</Text>
               <Text testID="settings-wa-qr-raw" class="text-xs font-mono text-muted-foreground">{qrRaw() ?? ""}</Text>
-              <Text class="text-xs text-muted-foreground">{`Mã #${qrSequence()} · còn ${qrSeconds()} giây`}</Text>
             </View>
+          </If>
+          <If when={qrRaw() !== null}>
+            <Text class="text-xs text-muted-foreground">{`Mã #${qrSequence()} · còn ${qrSeconds()} giây`}</Text>
           </If>
           <Text class="text-sm text-muted-foreground">{qrStatus()}</Text>
           <View class="flex-row justify-end">

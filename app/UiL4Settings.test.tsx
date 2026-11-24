@@ -2,11 +2,12 @@
 // The file name sorts it after the screens that prepare the shared demo folder (see screen-port-plan §5).
 import { expect, open, test } from "nsh/test";
 import { eventually } from "./testing";
-import { Host, Settings, Templates } from "rustsale/native";
+import { ConversationNetwork, Demo, Host, Settings, Templates, Zalo } from "rustsale/native";
 
 const dir = `/tmp/rustsale-v3-ui-l4-${Date.now()}`;
 
 async function openSettings() {
+  await Demo.prepare(dir);
   await Host.start(dir);
   const app = await open("./App.tsx");
   await app.setViewport(1280, 800);
@@ -102,4 +103,58 @@ test("each account tab reads its channel list from the core", async () => {
   await app.waitUntil(() => has(app, "Trang Facebook"));
   await app.press("id:settings-tab-whatsapp");
   await app.waitUntil(() => has(app, "Tài khoản WhatsApp"));
+});
+
+test("the language choice is saved through the core and read back", async () => {
+  await Host.start(dir);
+  const app = await openSettings();
+  await app.waitFor("id:settings-lang-vi");
+  expect(((await Settings.language()) as { language: string }).language).toBe("vi");
+
+  await app.press("id:settings-lang-en");
+  await eventually(async () => ((await Settings.language()) as { language: string }).language === "en");
+  await app.press("id:settings-lang-vi");
+  await eventually(async () => ((await Settings.language()) as { language: string }).language === "vi");
+});
+
+test("the autostart switch shows what the native module reports", async () => {
+  await Host.start(dir);
+  const app = await openSettings();
+  const state = (await Settings.autostart()) as { enabled: boolean; supported: boolean };
+  if (state.supported) {
+    await app.waitFor("id:settings-autostart");
+  } else {
+    await app.waitFor("id:settings-autostart-unsupported");
+  }
+});
+
+test("a Zalo account offers reconnect, and a missing account is refused", async () => {
+  await Host.start(dir);
+  await Demo.seedZaloAccount();
+  const app = await openSettings();
+  await app.press("id:settings-tab-accounts");
+  await app.waitFor("id:settings-zalo-demo-zalo-uid");
+  await app.waitFor("id:settings-zalo-reconnect-demo-zalo-uid");
+  await expect(Zalo.reconnect("missing-imei")).rejects.toMatchObject({ code: "not_found" });
+});
+
+test("the Facebook dialog reads the token from a redirect URL before asking Meta", async () => {
+  await Host.start(dir);
+  const app = await openSettings();
+  await app.press("id:settings-tab-accounts");
+  await app.press("id:settings-tab-facebook");
+  await app.waitFor("id:settings-fb-add");
+  await app.press("id:settings-fb-add");
+  await app.waitFor("id:settings-fb-discover-token");
+  await app.type("id:settings-fb-discover-token", "https://example.test/cb?state=only");
+  await app.press("id:settings-fb-discover");
+  await app.waitFor("id:settings-fb-error");
+  expect(has(app, "Cần nhập access token")).toBe(true);
+});
+
+test("the native module draws a WhatsApp QR code as a PNG image", async () => {
+  await Host.start(dir);
+  const url = ConversationNetwork.whatsappQrImage("2@qr-test-content") as string;
+  expect(url.startsWith("data:image/png;base64,")).toBe(true);
+  expect(() => ConversationNetwork.whatsappQrImage("   ")).toThrow();
 });
