@@ -3,7 +3,9 @@ import { Button as Base, Select } from "nsh/base";
 import { Leads, LeadsMore } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Modal, Skeleton } from "../ui";
 import { LeadDetail, STATUSES, money, tone, type Activity, type Lead } from "../components/LeadDetail";
+import { LeadImportDialog } from "../components/LeadImportDialog";
 import { startCore, type Page } from "../stores/core";
+import { fetchAllLeads, saveLeadsCsv } from "../stores/leadCsv";
 import { pager } from "../stores/paged";
 import { notify, report } from "../stores/toast";
 
@@ -85,23 +87,28 @@ export function LeadsScreen() {
   const newCompany = signal("");
   const formError = signal<string | null>(null);
   const failed = signal(false);
+  const importOpen = signal(false);
+  const exporting = signal(false);
+
+  const query = () => {
+    const range = VALUE_RANGES.find((r) => r.key === valueKey());
+    return {
+      search: search().trim() || undefined,
+      status: status() || undefined,
+      owner: owner() || undefined,
+      minValue: range?.min,
+      maxValue: range?.max,
+      zalo: zalo() || undefined,
+      zaloReached: outreach() === "" ? undefined : outreach() === "reached",
+      sort: sort(),
+      descending: desc(),
+    };
+  };
 
   const list = pager<Lead>(
     async (cursor) => {
       await startCore();
-      const range = VALUE_RANGES.find((r) => r.key === valueKey());
-      const query = {
-        search: search().trim() || undefined,
-        status: status() || undefined,
-        owner: owner() || undefined,
-        minValue: range?.min,
-        maxValue: range?.max,
-        zalo: zalo() || undefined,
-        zaloReached: outreach() === "" ? undefined : outreach() === "reached",
-        sort: sort(),
-        descending: desc(),
-      };
-      return (await Leads.page(query, cursor, 50)) as Page<Lead>;
+      return (await Leads.page(query(), cursor, 50)) as Page<Lead>;
     },
     (e, retry) => { failed.set(true); report(e, { retry }); },
   );
@@ -172,6 +179,23 @@ export function LeadsScreen() {
       if (f.action === "fix") formError.set(f.message);
     }
   };
+  const exportCsv = async () => {
+    if (exporting()) return;
+    exporting.set(true);
+    try {
+      const rows = await fetchAllLeads(query());
+      if (rows.length === 0) {
+        notify("Không có khách nào để xuất", "warning");
+        return;
+      }
+      const saved = await saveLeadsCsv(rows);
+      if (saved !== null) notify(`Đã lưu ${rows.length} khách`, "success");
+    } catch (e) {
+      report(e, { retry: () => { void exportCsv(); } });
+    } finally {
+      exporting.set(false);
+    }
+  };
 
   reload();
   loadOwners();
@@ -183,6 +207,8 @@ export function LeadsScreen() {
           <Text class="text-xl font-semibold text-foreground">Khách hàng</Text>
           <View class="flex-row items-center gap-3">
             <Text testID="lead-caption" class="text-sm text-muted-foreground">{list.ready() ? `${list.items().length} / ${list.total()} khách` : (failed() ? "Chưa tải được" : "Đang mở dữ liệu…")}</Text>
+            <Button testID="lead-import-open" label="Nhập tệp" size="sm" onPress={() => importOpen.set(true)} />
+            <Button testID="lead-export" label="Xuất CSV" size="sm" onPress={() => { void exportCsv(); }} />
             <Button testID="lead-add" label="Thêm khách" variant="primary" size="sm" onPress={() => { formError.set(null); adding.set(true); }} />
           </View>
         </View>
@@ -279,6 +305,7 @@ export function LeadsScreen() {
           </View>
         </View>
       </Modal>
+      <LeadImportDialog open={importOpen()} onClose={() => importOpen.set(false)} onImported={reload} />
     </View>
   );
 }

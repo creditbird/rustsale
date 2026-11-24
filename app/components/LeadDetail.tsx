@@ -15,6 +15,9 @@ export interface Lead {
   about: string | null;
   address: string | null;
   last_activity: string | null;
+  has_zalo?: number | null;
+  zalo_status?: string | null;
+  zalo_uid?: string | null;
 }
 
 export interface Activity {
