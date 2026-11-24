@@ -1,0 +1,91 @@
+// Headless: the Chiến dịch screen against the real native module (no message is sent: the scheduler is not run).
+import { expect, open, test } from "nsh/test";
+import { Campaigns, Host, LeadsMore } from "rustsale/native";
+import { buildPayload, moveStep, newStep, validateCampaign } from "./stores/campaigns";
+
+const dir = `/tmp/rustsale-v3-ui-campaign-${Date.now()}`;
+const has = (app: Awaited<ReturnType<typeof openCampaigns>>, s: string) => app.texts().some((t) => t.includes(s));
+
+async function openCampaigns() {
+  await Host.start(dir);
+  const app = await open("./App.tsx");
+  await app.setViewport(1280, 800);
+  await app.press("id:nav-campaign_center");
+  await app.waitFor("id:cc-new");
+  return app;
+}
+
+const list = async () => (await Campaigns.unifiedCampaigns()) as { id: number; name: string; status: string }[];
+
+test("the draft is checked before the core is asked", () => {
+  const one = [newStep(1)];
+  expect(validateCampaign("", one)).not.toBeNull();
+  expect(validateCampaign("A", [])).not.toBeNull();
+  expect(validateCampaign("A", one)).toContain("Bước 1");
+  const filled = [{ ...one[0], template_content: "Chào" }];
+  expect(validateCampaign("A", filled)).toBeNull();
+  const two = moveStep([{ ...filled[0] }, { ...newStep(2), template_content: "Hai" }], 1, -1);
+  expect(two.map((s) => s.template_content)).toEqual(["Hai", "Chào"]);
+  expect(two.map((s) => s.step_order)).toEqual([1, 2]);
+  expect(buildPayload(" A ", "", filled).campaign.description).toBeNull();
+});
+
+test("a two-step campaign is created, started, paused, enrolled and reported", async () => {
+  const stamp = Date.now();
+  const title = `CC ${stamp}`;
+  await Host.start(dir);
+  const leadId = ((await LeadsMore.list()) as { id: number }[])[0].id;
+
+  const app = await openCampaigns();
+  await app.press("id:cc-new");
+  await app.waitFor("id:cc-name");
+  await app.type("id:cc-name", title);
+  await app.type("id:cc-step-1-content", "Chào [name] bước một");
+  await app.press("id:cc-add-step");
+  await app.waitFor("id:cc-step-2-content");
+  await app.press("id:cc-step-2-ch-email");
+  await app.type("id:cc-step-2-content", "Nhắc lại bước hai");
+  await app.press("id:cc-save");
+  await app.waitUntil(() => has(app, title));
+
+  const created = (await list()).find((c) => c.name === title);
+  expect(created?.status).toBe("DRAFT");
+  const id = created!.id;
+
+  await app.press(`id:cc-toggle-${id}`);
+  await app.waitUntil(() => has(app, "Đang chạy"));
+  expect((await list()).find((c) => c.id === id)?.status).toBe("ACTIVE");
+  await app.press(`id:cc-toggle-${id}`);
+  await app.waitUntil(() => has(app, "Tạm dừng"));
+  expect((await list()).find((c) => c.id === id)?.status).toBe("PAUSED");
+
+  await app.press(`id:cc-enrol-${id}`);
+  await app.waitFor(`id:cc-enrol-lead-${leadId}`);
+  await app.press(`id:cc-enrol-lead-${leadId}`);
+  await app.waitUntil(() => has(app, "Đã chọn 1 khách"));
+  await app.press("id:cc-enrol-confirm");
+  await app.waitUntil(() => has(app, "Đã ghi danh 1 khách"));
+
+  await app.press(`id:cc-analytics-${id}`);
+  await app.waitFor("id:cc-an-enrolled");
+  await app.waitUntil(() => has(app, "Bước 1 (zalo)") && has(app, "Bước 2 (email)"));
+  const a = (await Campaigns.unifiedCampaignAnalytics(id)) as { total_enrolled: number; total_steps: number };
+  expect(a.total_enrolled).toBe(1);
+  expect(a.total_steps).toBe(2);
+  await app.press("id:cc-an-close");
+
+  await app.press(`id:cc-delete-${id}`);
+  await app.press("id:cc-delete-confirm");
+  await app.waitUntil(() => !has(app, title));
+  expect((await list()).some((c) => c.id === id)).toBe(false);
+});
+
+test("an empty name is refused with a sentence, nothing is saved", async () => {
+  const before = (await list()).length;
+  const app = await openCampaigns();
+  await app.press("id:cc-new");
+  await app.waitFor("id:cc-save");
+  await app.press("id:cc-save");
+  await app.waitUntil(() => has(app, "Cần nhập tên chiến dịch."));
+  expect((await list()).length).toBe(before);
+});

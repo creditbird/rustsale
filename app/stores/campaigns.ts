@@ -1,0 +1,163 @@
+/** Pure parts of the Chiến dịch (campaign_center) tab, kept out of the screen so a test can check them. */
+
+export interface UnifiedCampaign {
+  id: number;
+  name: string;
+  description: string | null;
+  channel_type: string;
+  status: string;
+  audience_filter_json: string | null;
+  schedule_config_json: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StepDraft {
+  step_order: number;
+  channel: string;
+  delay_minutes: number;
+  condition_type: string;
+  template_content: string;
+  ai_prompt_override: string | null;
+  template_id: number | null;
+}
+
+export interface StepAnalytics {
+  step_id: number;
+  step_order: number;
+  channel: string;
+  pending: number;
+  sent: number;
+  delivered: number;
+  replied: number;
+  failed: number;
+  skipped: number;
+}
+
+export interface CampaignAnalytics {
+  campaign_id: number;
+  campaign_name: string;
+  campaign_status: string;
+  total_enrolled: number;
+  total_steps: number;
+  total_executions: number;
+  pending_count: number;
+  sent_count: number;
+  delivered_count: number;
+  replied_count: number;
+  failed_count: number;
+  skipped_count: number;
+  converted_count: number;
+  response_rate: number;
+  conversion_rate: number;
+  step_breakdown: StepAnalytics[];
+}
+
+export const CHANNELS = [
+  { id: "zalo", label: "Zalo" },
+  { id: "whatsapp", label: "WhatsApp" },
+  { id: "email", label: "Email" },
+  { id: "facebook", label: "Facebook" },
+];
+
+export const CONDITIONS = [
+  { id: "ALWAYS", label: "Luôn gửi" },
+  { id: "IF_NOT_REPLIED", label: "Nếu chưa phản hồi" },
+  { id: "IF_DEAL_STAGE_IS", label: "Theo giai đoạn deal" },
+  { id: "IF_INTENT_IS", label: "Theo ý định AI" },
+];
+
+export const DELAYS = [
+  { label: "Ngay", minutes: 0 },
+  { label: "15 phút", minutes: 15 },
+  { label: "1 giờ", minutes: 60 },
+  { label: "4 giờ", minutes: 240 },
+  { label: "1 ngày", minutes: 1440 },
+  { label: "2 ngày", minutes: 2880 },
+  { label: "3 ngày", minutes: 4320 },
+  { label: "5 ngày", minutes: 7200 },
+];
+
+export const PLACEHOLDERS = ["{{name}}", "{{phone}}", "{{company}}", "{{email}}", "{{value}}"];
+
+export function statusLabel(status: string): string {
+  if (status === "ACTIVE") return "Đang chạy";
+  if (status === "PAUSED") return "Tạm dừng";
+  return "Bản nháp";
+}
+
+/** The step a new campaign starts with, or the one added after `previous`. */
+export function newStep(order: number, previous?: StepDraft): StepDraft {
+  return {
+    step_order: order,
+    channel: previous?.channel ?? "zalo",
+    delay_minutes: order === 1 ? 0 : 1440,
+    condition_type: order === 1 ? "ALWAYS" : "IF_NOT_REPLIED",
+    template_content: "",
+    ai_prompt_override: null,
+    template_id: null,
+  };
+}
+
+export function renumber(steps: StepDraft[]): StepDraft[] {
+  return steps.map((s, i) => ({ ...s, step_order: i + 1 }));
+}
+
+export function moveStep(steps: StepDraft[], index: number, by: -1 | 1): StepDraft[] {
+  const to = index + by;
+  if (index < 0 || to < 0 || to >= steps.length) return steps;
+  const next = [...steps];
+  [next[index], next[to]] = [next[to], next[index]];
+  return renumber(next);
+}
+
+export function delayLabel(minutes: number): string {
+  const preset = DELAYS.find((d) => d.minutes === minutes);
+  if (preset) return preset.label;
+  if (minutes % 1440 === 0) return `${minutes / 1440} ngày`;
+  if (minutes % 60 === 0) return `${minutes / 60} giờ`;
+  return `${minutes} phút`;
+}
+
+/** The sentence to show when the draft cannot be saved, or null when it can. */
+export function validateCampaign(name: string, steps: StepDraft[]): string | null {
+  if (name.trim() === "") return "Cần nhập tên chiến dịch.";
+  if (steps.length === 0) return "Cần ít nhất 1 bước trong kịch bản.";
+  const empty = steps.findIndex((s) => s.template_content.trim() === "");
+  if (empty >= 0) return `Bước ${empty + 1} chưa có nội dung.`;
+  return null;
+}
+
+/** What `Campaigns.saveUnifiedCampaign` takes for a new campaign (the core assigns the ids). */
+export function buildPayload(name: string, description: string, steps: StepDraft[]) {
+  const stamp = new Date().toISOString();
+  return {
+    campaign: {
+      id: null,
+      name: name.trim(),
+      description: description.trim() === "" ? null : description.trim(),
+      channel_type: "omnichannel",
+      status: "DRAFT",
+      audience_filter_json: null,
+      schedule_config_json: null,
+      created_at: stamp,
+      updated_at: stamp,
+    },
+    steps: steps.map((s) => ({
+      id: null,
+      campaign_id: 0,
+      step_order: s.step_order,
+      channel: s.channel,
+      delay_minutes: s.delay_minutes,
+      condition_type: s.condition_type,
+      template_content: s.template_content.trim(),
+      ai_prompt_override: s.ai_prompt_override,
+      created_at: stamp,
+      template_id: s.template_id,
+    })),
+  };
+}
+
+export function percent(rate: number): string {
+  return `${(Number.isFinite(rate) ? rate : 0).toFixed(1)}%`;
+}
