@@ -29,6 +29,16 @@ async-trait = "0.1"
 # lockfile that nsh generates under .nsh/ resolves anew).
 zip = { version = "=2.4.2", default-features = false }
 
+# Pins for `nsh run --target gpui` (#55). nsh-platform-gpui 0.6.1 asks for `gpui-fast ^0.1.16`, and gpui-fast
+# 0.1.19 (what a fresh resolution picks) no longer has lyon's `FillOptions::even_odd`, which nsh-platform-gpui
+# 0.6.1 calls at render.rs:466 (E0599). nsh resolves the GPUI host's lockfile anew from the app's requirements
+# (it does not read this crate's Cargo.lock), and an optional dependency does not count there, so the exact
+# requirement sits under `cfg(any())`: it is in every resolution but false on every target, so nothing here
+# compiles or links it. Remove this table once nsh-platform-gpui is released with a fix for gpui-fast 0.1.19.
+[target.'cfg(any())'.dependencies]
+gpui-fast = "=0.1.17"
+gpui-fast-platform = "=0.1.17"
+
 [dev-dependencies]
 nsh-core = { version = "0.6.1", features = ["declarations"] }
 tempfile = "3"

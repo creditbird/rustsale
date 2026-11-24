@@ -169,7 +169,7 @@ impl QuickTemplateRepository {
             Some((active, usage, last_used, created)) => (active == 1, usage, last_used, created),
             None => {
                 return Err(ConversationError::new(
-                    ConversationErrorCode::InvalidRequest,
+                    ConversationErrorCode::NotFound,
                     "Template not found",
                 ));
             }
@@ -249,7 +249,7 @@ impl QuickTemplateRepository {
         )?;
         if deleted == 0 {
             Err(ConversationError::new(
-                ConversationErrorCode::InvalidRequest,
+                ConversationErrorCode::NotFound,
                 "Template not found",
             ))
         } else {
@@ -269,7 +269,7 @@ impl QuickTemplateRepository {
 
         if exists != Some(1) {
             return Err(ConversationError::new(
-                ConversationErrorCode::InvalidRequest,
+                ConversationErrorCode::NotFound,
                 "Template not found",
             ));
         }

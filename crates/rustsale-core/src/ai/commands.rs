@@ -351,6 +351,11 @@ pub fn review_ai_proposal_internal(
         ));
     }
 
+    let current = crate::db::get_ai_action_proposal(conn, proposal_id)
+        .map_err(|e| format!("Failed to read proposal: {}", e))?
+        .ok_or_else(|| format!("AI proposal {proposal_id} not found"))?;
+    check_proposal_transition(proposal_id, &current.status, &status_upper)?;
+
     crate::db::update_ai_action_proposal_status(
         conn,
         proposal_id,
@@ -358,6 +363,38 @@ pub fn review_ai_proposal_internal(
         Some(reviewer.trim()),
     )
     .map_err(|e| crate::commands::db_write_error(e, "AI proposal", proposal_id))
+}
+
+/// The statuses a proposal may move to from `from`:
+/// `PENDING` -> `APPROVED` | `REJECTED`; `APPROVED` -> `APPLIED` | `REJECTED` | `PENDING` (approval
+/// taken back); `REJECTED` -> `PENDING` (reopened for review, never straight to `APPROVED`);
+/// `APPLIED` is final because its content was already acted on.
+fn proposal_transitions(from: &str) -> &'static [&'static str] {
+    match from {
+        "PENDING" => &["APPROVED", "REJECTED"],
+        "APPROVED" => &["APPLIED", "REJECTED", "PENDING"],
+        "REJECTED" => &["PENDING"],
+        _ => &[],
+    }
+}
+
+/// Refuses a status change the review flow does not allow. The text says "already" so the API
+/// layer answers `conflict`.
+fn check_proposal_transition(proposal_id: i64, from: &str, to: &str) -> Result<(), String> {
+    if proposal_transitions(from).contains(&to) {
+        return Ok(());
+    }
+    let allowed = proposal_transitions(from);
+    if allowed.is_empty() {
+        Err(format!(
+            "AI proposal {proposal_id} is already {from}; its status cannot change to {to}"
+        ))
+    } else {
+        Err(format!(
+            "AI proposal {proposal_id} is already {from}; its status cannot change to {to} (allowed: {})",
+            allowed.join(", ")
+        ))
+    }
 }
 
 pub fn get_lead_evidence_context_internal(

@@ -977,6 +977,13 @@ pub fn delete_lead(id: i32, state: State<DbState>) -> Result<(), String> {
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
+    delete_lead_internal(&mut conn, id)
+}
+
+/// Deletes a lead with its activities and deals in one transaction. A lead that is not there
+/// (never was, or deleted already) is "lead <id> not found", as for every other delete, and the
+/// transaction is dropped, so nothing is deleted.
+pub fn delete_lead_internal(conn: &mut Connection, id: i32) -> Result<(), String> {
     let tx = conn
         .transaction()
         .map_err(|e| format!("Database transaction error: {}", e))?;
@@ -987,8 +994,10 @@ pub fn delete_lead(id: i32, state: State<DbState>) -> Result<(), String> {
     tx.execute("DELETE FROM deals WHERE lead_id = ?1", [id])
         .map_err(|e| format!("Database query error: {}", e))?;
 
-    tx.execute("DELETE FROM leads WHERE id = ?1", [id])
+    let deleted = tx
+        .execute("DELETE FROM leads WHERE id = ?1", [id])
         .map_err(|e| format!("Database query error: {}", e))?;
+    require_changed(deleted, "lead", i64::from(id))?;
 
     tx.commit()
         .map_err(|e| format!("Database transaction commit error: {}", e))?;

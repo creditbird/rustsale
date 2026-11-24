@@ -24,7 +24,7 @@ impl Desktop {
     /// notified twice. `seq` orders updates: an update older than the backend sequence is
     /// rejected. Resolves `{ accepted, backend_seq }`.
     pub async fn set_active_conversation_focus(
-        active_conversation_id: Option<f64>,
+        active_conversation_id: Option<JsonValue>,
         is_focused: bool,
         seq: Option<f64>,
     ) -> Result<JsonValue, JsError> {

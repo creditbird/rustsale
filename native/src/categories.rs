@@ -23,7 +23,7 @@ impl Categories {
     }
 
     /// The categories lead `leadId` belongs to.
-    pub async fn for_lead(lead_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn for_lead(lead_id: JsonValue) -> Result<JsonValue, JsError> {
         let lead = id32(lead_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -42,7 +42,7 @@ impl Categories {
     }
 
     /// Deletes category `id`; its leads stay.
-    pub async fn delete(id: f64) -> Result<JsonValue, JsError> {
+    pub async fn delete(id: JsonValue) -> Result<JsonValue, JsError> {
         let id = id32(id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
@@ -52,7 +52,10 @@ impl Categories {
     }
 
     /// Adds leads `leadIds` to category `categoryId` in one transaction; an empty list does nothing.
-    pub async fn add_leads(lead_ids: Vec<f64>, category_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn add_leads(
+        lead_ids: Vec<JsonValue>,
+        category_id: JsonValue,
+    ) -> Result<JsonValue, JsError> {
         let leads = lead_ids
             .into_iter()
             .map(id32)
@@ -66,7 +69,10 @@ impl Categories {
     }
 
     /// Removes leads `leadIds` from category `categoryId` in one transaction; an empty list does nothing.
-    pub async fn remove_leads(lead_ids: Vec<f64>, category_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn remove_leads(
+        lead_ids: Vec<JsonValue>,
+        category_id: JsonValue,
+    ) -> Result<JsonValue, JsError> {
         let leads = lead_ids
             .into_iter()
             .map(id32)
@@ -82,7 +88,7 @@ impl Categories {
     }
 
     /// All leads of category `categoryId`.
-    pub async fn leads(category_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn leads(category_id: JsonValue) -> Result<JsonValue, JsError> {
         let category = id32(category_id)?;
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;

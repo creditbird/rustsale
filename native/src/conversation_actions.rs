@@ -64,7 +64,7 @@ impl ConversationActions {
     /// The timeline of lead `leadId` over `channels` (`["zalo", "whatsapp", "messenger", "email"]`;
     /// absent means none, hence an empty page). `before` is the previous `nextCursor`.
     pub async fn contact_timeline(
-        lead_id: f64,
+        lead_id: JsonValue,
         channels: Option<JsonValue>,
         before: Option<JsonValue>,
         limit_: Option<f64>,
@@ -84,7 +84,7 @@ impl ConversationActions {
 
     /// The timeline of linked identity `identityId`; `before` is the previous `nextCursor`.
     pub async fn identity_timeline(
-        identity_id: f64,
+        identity_id: JsonValue,
         before: Option<JsonValue>,
         limit_: Option<f64>,
     ) -> Result<JsonValue, JsError> {
@@ -337,7 +337,7 @@ impl ConversationActions {
     }
 
     /// The pinned messages of conversation `conversationId`, newest first.
-    pub async fn pinned_messages(conversation_id: f64) -> Result<JsonValue, JsError> {
+    pub async fn pinned_messages(conversation_id: JsonValue) -> Result<JsonValue, JsError> {
         let conversation = id64(conversation_id)?;
         on_blocking(move |h| {
             let state = state_of::<ConversationState>(&h)?;

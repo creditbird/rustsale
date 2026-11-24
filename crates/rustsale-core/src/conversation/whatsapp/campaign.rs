@@ -259,7 +259,7 @@ pub fn create_campaign(
         return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "At least one WhatsApp account must be assigned",
+                "Invalid campaign: at least one WhatsApp account is required; connect an account and assign it to the campaign",
             ),
         )));
     }
