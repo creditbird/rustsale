@@ -94,6 +94,10 @@ pub struct GoogleMapsScraper {
     ready_delay_ms: u64,
     /// Extra readiness polls granted to a non-empty page that is not ready yet (slow render).
     slow_render_extra_attempts: usize,
+    /// Short settle window granted when a `/maps/place/` page initially reports
+    /// `PlaceUnavailable`, so a slow real place can finish hydrating its `<h1>`
+    /// without stalling 20 s on every withdrawn listing.
+    place_unavailable_attempts: usize,
     max_scroll_attempts: usize,
     scroll_delay_ms: u64,
 }
@@ -108,6 +112,7 @@ impl GoogleMapsScraper {
             ready_attempts: 20,
             ready_delay_ms: 500,
             slow_render_extra_attempts: 20,
+            place_unavailable_attempts: 4,
             max_scroll_attempts: 30,
             scroll_delay_ms: 800,
         }
@@ -122,6 +127,7 @@ impl GoogleMapsScraper {
             ready_attempts: 1,
             ready_delay_ms: 0,
             slow_render_extra_attempts: 0,
+            place_unavailable_attempts: 1,
             max_scroll_attempts: 5,
             scroll_delay_ms: 5,
         }
@@ -289,35 +295,47 @@ impl GoogleMapsScraper {
 
     async fn wait_for_page_health(&self) -> Result<GoogleMapsPageHealth, ScrapeJobError> {
         let blank_limit = self.ready_attempts.max(1);
+        let place_unavailable_limit = self.place_unavailable_attempts.max(1);
         // A blank page is retried by the runner after `blank_limit` polls. A non-empty page
         // that still shows no known selector may just be rendering slowly, so it gets a
-        // longer window before it is reported as `SelectorChanged`.
+        // longer window before it is reported as `SelectorChanged`. A `/maps/place/` page
+        // reporting `PlaceUnavailable` gets only a short settle window so slow real places
+        // can hydrate `<h1>` without polling 20 s per dead listing.
         let total_attempts = blank_limit.saturating_add(self.slow_render_extra_attempts);
+        let mut place_unavailable_seen = 0usize;
         for attempt in 0..total_attempts {
             let health = self.session.health_snapshot().await?;
-            if !matches!(
-                health.state,
-                GoogleMapsPageState::BlankPage | GoogleMapsPageState::SelectorChanged
-            ) {
-                return Ok(health);
-            }
-            let limit = match health.state {
-                GoogleMapsPageState::BlankPage => blank_limit,
-                _ => total_attempts,
-            };
-            if attempt + 1 >= limit {
-                return Err(match health.state {
-                    GoogleMapsPageState::BlankPage => scrape_error(
-                        ScrapeErrorKind::TransientNetwork,
-                        "Google Maps rendered a blank page after navigation",
-                        true,
-                    ),
-                    _ => scrape_error(
-                        ScrapeErrorKind::SelectorChanged,
-                        "Google Maps page did not expose a known result or place selector",
-                        false,
-                    ),
-                });
+            match health.state {
+                GoogleMapsPageState::PlaceUnavailable => {
+                    place_unavailable_seen += 1;
+                    if place_unavailable_seen >= place_unavailable_limit
+                        || attempt + 1 >= total_attempts
+                    {
+                        return Ok(health);
+                    }
+                }
+                GoogleMapsPageState::BlankPage | GoogleMapsPageState::SelectorChanged => {
+                    place_unavailable_seen = 0;
+                    let limit = match health.state {
+                        GoogleMapsPageState::BlankPage => blank_limit,
+                        _ => total_attempts,
+                    };
+                    if attempt + 1 >= limit {
+                        return Err(match health.state {
+                            GoogleMapsPageState::BlankPage => scrape_error(
+                                ScrapeErrorKind::TransientNetwork,
+                                "Google Maps rendered a blank page after navigation",
+                                true,
+                            ),
+                            _ => scrape_error(
+                                ScrapeErrorKind::SelectorChanged,
+                                "Google Maps page did not expose a known result or place selector",
+                                false,
+                            ),
+                        });
+                    }
+                }
+                _ => return Ok(health),
             }
             tokio::time::sleep(Duration::from_millis(self.ready_delay_ms)).await;
         }
@@ -495,7 +513,7 @@ fn terminal_listing_state(
 ) -> Result<Option<SearchListing>, ScrapeJobError> {
     let blocked_reason = match state {
         GoogleMapsPageState::Ready => return Ok(None),
-        GoogleMapsPageState::EmptyResults => {
+        GoogleMapsPageState::EmptyResults | GoogleMapsPageState::PlaceUnavailable => {
             return Ok(Some(SearchListing {
                 raw_listing_count: 0,
                 reached_end: true,
@@ -531,9 +549,9 @@ fn terminal_listing_state(
 
 /// Classifies a non-ready *place detail* state.
 ///
-/// A place that reports `EmptyResults` has simply not rendered its panel; that
-/// is transient and retryable, and it must never be reported as the search
-/// having no results.
+/// A place that reports `PlaceUnavailable` or `EmptyResults` was withdrawn or
+/// never existed: it is a non-retryable place-scoped fault and must never be
+/// folded into the search-level empty result or count as selector drift.
 fn place_state_error(state: GoogleMapsPageState, place_url: &str) -> ScrapeJobError {
     match state {
         GoogleMapsPageState::Captcha => scrape_error(
@@ -561,7 +579,12 @@ fn place_state_error(state: GoogleMapsPageState, place_url: &str) -> ScrapeJobEr
             format!("Google Maps place detail selectors changed on {place_url}"),
             false,
         ),
-        GoogleMapsPageState::EmptyResults | GoogleMapsPageState::Ready => scrape_error(
+        GoogleMapsPageState::EmptyResults | GoogleMapsPageState::PlaceUnavailable => scrape_error(
+            ScrapeErrorKind::PlaceUnavailable,
+            format!("Google Maps place no longer exists on {place_url}"),
+            false,
+        ),
+        GoogleMapsPageState::Ready => scrape_error(
             ScrapeErrorKind::InvalidResponse,
             format!("Google Maps place detail page {place_url} did not render a place panel"),
             true,
@@ -1547,12 +1570,342 @@ mod typed_tests {
             .await
             .unwrap_err();
 
-        assert_eq!(error.kind, ScrapeErrorKind::InvalidResponse);
+        assert_eq!(error.kind, ScrapeErrorKind::PlaceUnavailable);
         assert!(
-            error.retryable,
-            "an unrendered place page is transient, not a layout change"
+            !error.retryable,
+            "a place reporting empty results does not exist and must not retry"
         );
         automation.assert_exhausted();
+    }
+
+    /// C10: a slow real place may briefly expose an empty `<h1>` while hydrating.
+    /// The short settle window must let it become `Ready` before failing.
+    #[tokio::test]
+    async fn slow_real_place_hydrating_past_place_unavailable_succeeds() {
+        let place_url = "https://www.google.com/maps/place/Cafe+Sam/@10.77,106.69,17z";
+        let (mut scraper, automation) = scripted_scraper(vec![
+            Step::Navigate(Ok(())),
+            Step::Health(Ok(GoogleMapsPageState::PlaceUnavailable)),
+            Step::Health(Ok(GoogleMapsPageState::PlaceUnavailable)),
+            Step::Health(Ok(GoogleMapsPageState::Ready)),
+            Step::Evaluate(Ok(json!({
+                "placeId": "place-sam",
+                "canonicalUrl": place_url,
+                "name": "Cafe Sam",
+                "phone": "0901234567",
+                "address": "1 Le Loi",
+                "website": null,
+                "facebook": null,
+                "zalo": null,
+                "latitude": 10.77,
+                "longitude": 106.69
+            }))),
+        ])
+        .await;
+        scraper.ready_attempts = 20;
+        scraper.slow_render_extra_attempts = 20;
+        scraper.place_unavailable_attempts = 4;
+
+        let place = scraper.scrape_place(place_url).await.unwrap();
+
+        assert_eq!(place.name, "Cafe Sam");
+        automation.assert_exhausted();
+    }
+
+    /// C10 end-to-end through the real sidecar JSON-lines wire contract and
+    /// `ScrapeJobRunner`: three dead `/maps/place/` pages with
+    /// `max_consecutive_failures = 2` must settle briefly (4 polls, not 40),
+    /// map to non-retryable `PlaceUnavailable`, and finish 3/3 instead of
+    /// aborting the job at 2/3.
+    #[tokio::test]
+    async fn dead_places_over_sidecar_protocol_finish_all_units_without_long_polling() {
+        use crate::google_maps_jobs::events::ScrapeEventPublisher;
+        use crate::google_maps_jobs::repository::ScrapeJobRepository;
+        use crate::google_maps_jobs::runner::{
+            FailureTolerance, RetryPolicy, ScrapeJobRunner, ScrapeUnitProcessor, UnitExecution,
+        };
+        use crate::google_maps_jobs::types::{
+            ScrapeJob, ScrapeJobStatus, ScrapeMode, ScrapeStage, ScrapeUnit, ScrapeUnitStatus,
+        };
+        use crate::scrapers::browser::{BrowserSupervisor, ProcessControl, SupervisorTimeouts};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::sync::Notify;
+
+        struct NoopProcessControl {
+            exited: AtomicBool,
+            notify: Notify,
+        }
+
+        #[async_trait]
+        impl ProcessControl for NoopProcessControl {
+            fn pid(&self) -> Option<u32> {
+                Some(9001)
+            }
+            async fn wait(&self) -> std::io::Result<()> {
+                while !self.exited.load(Ordering::SeqCst) {
+                    self.notify.notified().await;
+                }
+                Ok(())
+            }
+            async fn terminate(&self) -> std::io::Result<()> {
+                self.exited.store(true, Ordering::SeqCst);
+                self.notify.notify_waiters();
+                Ok(())
+            }
+            async fn kill(&self) -> std::io::Result<()> {
+                self.terminate().await
+            }
+        }
+
+        let (client_io, sidecar_io) = tokio::io::duplex(32 * 1024);
+        let (client_reader, client_writer) = tokio::io::split(client_io);
+        let (sidecar_reader, mut sidecar_writer) = tokio::io::split(sidecar_io);
+        let control = Arc::new(NoopProcessControl {
+            exited: AtomicBool::new(false),
+            notify: Notify::new(),
+        });
+        let supervisor = Arc::new(BrowserSupervisor::from_io(
+            BufReader::new(client_reader),
+            client_writer,
+            control,
+            SupervisorTimeouts {
+                request: Duration::from_secs(5),
+                shutdown: Duration::from_millis(200),
+                exit_grace: Duration::from_millis(200),
+            },
+        ));
+        let health_calls = Arc::new(AtomicUsize::new(0));
+        let health_calls_sidecar = health_calls.clone();
+        let evaluate_calls = Arc::new(AtomicUsize::new(0));
+        let evaluate_calls_sidecar = evaluate_calls.clone();
+
+        let sidecar_task = tokio::spawn(async move {
+            let mut reader = BufReader::new(sidecar_reader);
+            let mut current_url = String::new();
+            let mut line = String::new();
+            loop {
+                line.clear();
+                let read = reader.read_line(&mut line).await.unwrap_or(0);
+                if read == 0 {
+                    break;
+                }
+                let request: Value = serde_json::from_str(&line).unwrap();
+                let id = request["id"].clone();
+                let command = request["command"].as_str().unwrap_or("");
+                let result = match command {
+                    "runtime_status" | "ensure_runtime" => json!({ "installed": true }),
+                    "launch" => json!({ "launched": true }),
+                    "navigate" => {
+                        current_url = request["payload"]["url"]
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string();
+                        json!({ "url": current_url, "title": "Google Maps" })
+                    }
+                    "health_check" => {
+                        health_calls_sidecar.fetch_add(1, Ordering::SeqCst);
+                        // First two places return the explicit sidecar
+                        // `place_unavailable` state (empty <h1> / can't find on
+                        // `/maps/place/`); the third exercises the defensive
+                        // `empty_results` fallback mapping.
+                        let state = if current_url.contains("ChIJgone3") {
+                            "empty_results"
+                        } else {
+                            "place_unavailable"
+                        };
+                        json!({
+                            "state": state,
+                            "url": current_url,
+                            "title": "Google Maps"
+                        })
+                    }
+                    "evaluate" => {
+                        evaluate_calls_sidecar.fetch_add(1, Ordering::SeqCst);
+                        json!({ "value": null })
+                    }
+                    "shutdown" => json!({ "stopped": true }),
+                    other => panic!("unexpected sidecar command: {other}"),
+                };
+                let response = json!({ "id": id, "ok": true, "result": result });
+                sidecar_writer
+                    .write_all(format!("{response}\n").as_bytes())
+                    .await
+                    .unwrap();
+                sidecar_writer.flush().await.unwrap();
+                if command == "shutdown" {
+                    break;
+                }
+            }
+        });
+
+        struct SidecarPlaceProcessor {
+            manager: Arc<BrowserManager>,
+            visited: Mutex<Vec<String>>,
+        }
+
+        #[async_trait]
+        impl ScrapeUnitProcessor for SidecarPlaceProcessor {
+            async fn execute(
+                &self,
+                _job: &ScrapeJob,
+                unit: &ScrapeUnit,
+            ) -> Result<UnitExecution, ScrapeJobError> {
+                self.visited.lock().unwrap().push(unit.unit_key.clone());
+                let session = self.manager.acquire().await?;
+                let mut scraper = GoogleMapsScraper::new(session);
+                scraper.min_delay_ms = 0;
+                scraper.max_delay_ms = 0;
+                scraper.ready_delay_ms = 0;
+                let place_url = unit
+                    .payload
+                    .get("place_url")
+                    .and_then(Value::as_str)
+                    .expect("place_url payload");
+                let _ = scraper.scrape_place(place_url).await?;
+                Ok(UnitExecution::default())
+            }
+
+            async fn action_health(
+                &self,
+                _job: &ScrapeJob,
+            ) -> Result<GoogleMapsPageHealth, ScrapeJobError> {
+                Ok(GoogleMapsPageHealth {
+                    state: GoogleMapsPageState::Ready,
+                    url: String::new(),
+                    title: String::new(),
+                })
+            }
+
+            async fn relaunch_for_action(&self, _job: &ScrapeJob) -> Result<(), ScrapeJobError> {
+                Ok(())
+            }
+
+            async fn shutdown(&self) -> Result<(), ScrapeJobError> {
+                Ok(())
+            }
+        }
+
+        let manager = Arc::new(BrowserManager::with_automation(1, supervisor));
+        manager.start(true).await.unwrap();
+        let processor = Arc::new(SidecarPlaceProcessor {
+            manager: manager.clone(),
+            visited: Mutex::new(Vec::new()),
+        });
+
+        let db_path = std::env::temp_dir().join(format!(
+            "rustsale-c10-sidecar-{}-{}.db",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        let repo =
+            Arc::new(ScrapeJobRepository::new(db_path.to_string_lossy().to_string()).unwrap());
+        let now = chrono::Utc::now().to_rfc3339();
+        let job = ScrapeJob {
+            id: "c10-dead-places".to_string(),
+            mode: ScrapeMode::Keyword,
+            keyword: "cafe".to_string(),
+            location: Some("District 1".to_string()),
+            bbox: None,
+            step_km: None,
+            headless: true,
+            profile_dir: "/tmp/rustsale-c10-test-profile".to_string(),
+            blocked_url: None,
+            status: ScrapeJobStatus::Queued,
+            stage: ScrapeStage::Scraping,
+            total_units: 3,
+            processed_units: 0,
+            failed_units: 0,
+            businesses_discovered: 0,
+            businesses_qualified: 0,
+            leads_created: 0,
+            last_error_kind: None,
+            last_error_message: None,
+            action_required: None,
+            event_sequence: 0,
+            version: 0,
+            run_generation: 0,
+            created_at: now.clone(),
+            started_at: None,
+            updated_at: now.clone(),
+            completed_at: None,
+            coverage_truncated: false,
+        };
+        let units = ["ChIJgone1", "ChIJgone2", "ChIJgone3"]
+            .into_iter()
+            .enumerate()
+            .map(|(index, place_id)| ScrapeUnit {
+                id: format!("u{}", index + 1),
+                job_id: job.id.clone(),
+                unit_key: format!("p{}", index + 1),
+                unit_type: "place".to_string(),
+                payload: json!({
+                    "place_url": format!("https://www.google.com/maps/place/?q=place_id:{place_id}")
+                }),
+                status: ScrapeUnitStatus::Pending,
+                depth: 0,
+                attempt_count: 0,
+                next_retry_at: None,
+                last_error_kind: None,
+                last_error_message: None,
+                created_at: now.clone(),
+                updated_at: now.clone(),
+                completed_at: None,
+            })
+            .collect();
+        repo.create_job_with_units(job.clone(), units)
+            .await
+            .unwrap();
+
+        let runner = Arc::new(ScrapeJobRunner::new(
+            repo.clone(),
+            processor.clone(),
+            Arc::new(ScrapeEventPublisher::new(64)),
+            RetryPolicy {
+                max_retries: 3,
+                base_delay: Duration::from_millis(2),
+                failure_tolerance: FailureTolerance {
+                    max_consecutive_failures: 2,
+                    ..FailureTolerance::default()
+                },
+            },
+        ));
+
+        runner.start(&job.id).await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
+
+        assert_eq!(
+            processor.visited.lock().unwrap().as_slice(),
+            ["p1", "p2", "p3"],
+            "all 3 dead places must be visited even with max_consecutive_failures=2"
+        );
+        let stored_job = repo.get_job(&job.id).await.unwrap().unwrap();
+        assert_eq!(stored_job.status, ScrapeJobStatus::Partial);
+        assert_eq!(stored_job.processed_units, 3);
+        assert_eq!(stored_job.failed_units, 3);
+        for stored_unit in repo.list_units(&job.id).await.unwrap() {
+            assert_eq!(stored_unit.status, ScrapeUnitStatus::Failed);
+            assert_eq!(
+                stored_unit.attempt_count, 1,
+                "PlaceUnavailable must not retry"
+            );
+            assert_eq!(
+                stored_unit.last_error_kind,
+                Some(ScrapeErrorKind::PlaceUnavailable)
+            );
+        }
+        // 4 settle polls for each `place_unavailable` place + 1 immediate poll
+        // for `empty_results` = 9 polls total (vs 80+ polls under 20 s SelectorChanged).
+        assert_eq!(health_calls.load(Ordering::SeqCst), 9);
+        assert_eq!(
+            evaluate_calls.load(Ordering::SeqCst),
+            0,
+            "extract script must not run on an unavailable place"
+        );
+
+        let _ = manager.close().await;
+        let _ = sidecar_task.await;
+        let _ = std::fs::remove_file(&db_path);
     }
 
     /// A block on one place must surface as that block, so the runner can pause
@@ -1874,6 +2227,53 @@ mod tests {
             Some("https://facebook.com/cafeone".to_string())
         );
         assert_eq!(first.zalo, Some("https://zalo.me/cafeone".to_string()));
+
+        let _ = manager.close().await;
+    }
+
+    #[tokio::test]
+    #[ignore = "needs real cloak-runtime sidecar; run with --include-ignored"]
+    async fn real_sidecar_dead_place_empty_h1_reports_place_unavailable() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    break;
+                };
+                tokio::spawn(async move {
+                    let mut buf = [0; 4096];
+                    if let Ok(n) = socket.read(&mut buf).await {
+                        let request = String::from_utf8_lossy(&buf[..n]);
+                        let body = if request.contains("ChIJnotfoundtext") {
+                            r#"<!doctype html><html><body><div role="main"><h1 class="sr-only"> </h1><button aria-label="Zoom in">+</button><p>Google Maps can't find ChIJnotfoundtext</p></div></body></html>"#
+                        } else {
+                            r#"<!doctype html><html><body><div role="main"><h1 class="sr-only"> </h1><button aria-label="Zoom in">+</button></div></body></html>"#
+                        };
+                        let response = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                            body.len(),
+                            body
+                        );
+                        let _ = socket.write_all(response.as_bytes()).await;
+                    }
+                });
+            }
+        });
+
+        let manager = BrowserManager::new(1);
+        manager.start(true).await.expect("Failed to start browser");
+        let session = manager.acquire().await.expect("Failed to acquire session");
+        let mut scraper = GoogleMapsScraper::new(session);
+        scraper.min_delay_ms = 0;
+        scraper.max_delay_ms = 0;
+
+        for place_id in ["ChIJdoesnotexist", "ChIJnotfoundtext"] {
+            let url = format!("http://127.0.0.1:{port}/maps/place/?q=place_id:{place_id}");
+            let error = scraper.scrape_place(&url).await.unwrap_err();
+            assert_eq!(error.kind, ScrapeErrorKind::PlaceUnavailable, "{error:?}");
+            assert!(!error.retryable, "{error:?}");
+        }
 
         let _ = manager.close().await;
     }

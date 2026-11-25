@@ -3,6 +3,7 @@ import type { Page } from 'playwright-core';
 export type GoogleMapsPageState =
   | 'ready'
   | 'empty_results'
+  | 'place_unavailable'
   | 'captcha'
   | 'consent_required'
   | 'rate_limited'
@@ -15,6 +16,7 @@ export interface GoogleMapsPageSnapshot {
   bodyText?: string;
   hasFeed?: boolean;
   hasPlaceHeading?: boolean;
+  hasEmptyPlaceHeading?: boolean;
   hasConsentDialog?: boolean;
   hasCaptchaChallenge?: boolean;
 }
@@ -24,6 +26,7 @@ export function classifyGoogleMapsPageState(
 ): GoogleMapsPageState {
   const url = snapshot.url.toLowerCase();
   const body = (snapshot.bodyText ?? '').toLowerCase();
+  const isPlaceUrl = url.includes('/maps/place/');
 
   // Structural signals are checked before body text, and body text is only
   // consulted once the structural signals are absent. Listing and review text
@@ -102,7 +105,15 @@ export function classifyGoogleMapsPageState(
     body.includes('make sure your search is spelled correctly') ||
     body.includes('đảm bảo rằng tất cả các từ đều đúng chính tả')
   ) {
-    return 'empty_results';
+    return isPlaceUrl ? 'place_unavailable' : 'empty_results';
+  }
+
+  // 5. A withdrawn or non-existent /maps/place/ URL renders an empty (hidden)
+  // [role="main"] h1 alongside ordinary map chrome buttons instead of a place
+  // heading. Report it explicitly so the Rust scraper can apply a short settle
+  // window and classify it as PlaceUnavailable without 20 s SelectorChanged polling.
+  if (isPlaceUrl && snapshot.hasEmptyPlaceHeading) {
+    return 'place_unavailable';
   }
 
   if (body.trim().length === 0) {
@@ -129,28 +140,33 @@ export async function inspectGoogleMapsPage(page: Page): Promise<{
   url: string;
   title: string;
 }> {
-  const snapshot = await page.evaluate(() => ({
-    url: window.location.href,
-    title: document.title,
-    bodyText: document.body?.innerText.slice(0, 20_000) ?? '',
-    hasFeed: Boolean(document.querySelector('div[role="feed"]')),
-    // A place that no longer exists renders an empty (hidden) h1 next to the
-    // ordinary map buttons, so the heading only counts when it carries text.
-    hasPlaceHeading:
-      Array.from(document.querySelectorAll('[role="main"] h1')).some(
-        (heading) => (heading.textContent ?? '').trim().length > 0,
-      ) && Boolean(document.querySelector('[data-item-id], [role="main"] button')),
-    hasConsentDialog: Boolean(
-      document.querySelector(
-        'form[action*="consent"], [role="dialog"] [aria-label*="consent" i], [role="dialog"] [aria-label*="Đồng ý" i], [role="dialog"] [aria-label*="Chấp nhận" i]',
+  const snapshot = await page.evaluate(() => {
+    const mainHeadings = Array.from(document.querySelectorAll('[role="main"] h1'));
+    const hasMapChrome = Boolean(document.querySelector('[data-item-id], [role="main"] button'));
+    const hasNonEmptyHeading = mainHeadings.some(
+      (heading) => (heading.textContent ?? '').trim().length > 0,
+    );
+    return {
+      url: window.location.href,
+      title: document.title,
+      bodyText: document.body?.innerText.slice(0, 20_000) ?? '',
+      hasFeed: Boolean(document.querySelector('div[role="feed"]')),
+      // A place that no longer exists renders an empty (hidden) h1 next to the
+      // ordinary map buttons, so the heading only counts when it carries text.
+      hasPlaceHeading: hasNonEmptyHeading && hasMapChrome,
+      hasEmptyPlaceHeading: mainHeadings.length > 0 && !hasNonEmptyHeading && hasMapChrome,
+      hasConsentDialog: Boolean(
+        document.querySelector(
+          'form[action*="consent"], [role="dialog"] [aria-label*="consent" i], [role="dialog"] [aria-label*="Đồng ý" i], [role="dialog"] [aria-label*="Chấp nhận" i]',
+        ),
       ),
-    ),
-    hasCaptchaChallenge: Boolean(
-      document.querySelector(
-        'iframe[src*="recaptcha"], form#captcha-form, .g-recaptcha, [id*="recaptcha"]',
+      hasCaptchaChallenge: Boolean(
+        document.querySelector(
+          'iframe[src*="recaptcha"], form#captcha-form, .g-recaptcha, [id*="recaptcha"]',
+        ),
       ),
-    ),
-  }));
+    };
+  });
   return {
     state: classifyGoogleMapsPageState(snapshot),
     url: snapshot.url,
