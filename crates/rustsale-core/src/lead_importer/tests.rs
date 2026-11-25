@@ -1509,3 +1509,443 @@ fn test_inserted_lead_repeated_updates_clean_up_aliases() {
 
     let _ = std::fs::remove_file(&path);
 }
+
+fn excel_col_name(mut col_1based: usize) -> String {
+    let mut chars = Vec::new();
+    while col_1based > 0 {
+        let rem = (col_1based - 1) % 26;
+        chars.push((b'A' + rem as u8) as char);
+        col_1based = (col_1based - 1) / 26;
+    }
+    chars.reverse();
+    chars.into_iter().collect()
+}
+
+fn write_test_xlsx(
+    dir: &std::path::Path,
+    filename: &str,
+    sheet_name: &str,
+    sheet_xml: &str,
+    compression: zip::CompressionMethod,
+) -> std::path::PathBuf {
+    let path = dir.join(filename);
+    let file = std::fs::File::create(&path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default()
+        .compression_method(compression)
+        .unix_permissions(0o644);
+
+    zip.start_file("[Content_Types].xml", options).unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>"#,
+    )
+    .unwrap();
+
+    zip.start_file("_rels/.rels", options).unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>"#,
+    )
+    .unwrap();
+
+    zip.start_file("xl/_rels/workbook.xml.rels", options)
+        .unwrap();
+    zip.write_all(
+        br#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>"#,
+    )
+    .unwrap();
+
+    zip.start_file("xl/workbook.xml", options).unwrap();
+    let workbook_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets>
+    <sheet name="{}" sheetId="1" r:id="rId1"/>
+  </sheets>
+</workbook>"#,
+        sheet_name
+    );
+    zip.write_all(workbook_xml.as_bytes()).unwrap();
+
+    zip.start_file("xl/worksheets/sheet1.xml", options).unwrap();
+    zip.write_all(sheet_xml.as_bytes()).unwrap();
+    zip.finish().unwrap();
+
+    path
+}
+
+fn default_name_phone_email_options(path: &std::path::Path) -> LeadImportOptions {
+    LeadImportOptions {
+        file_path: path.to_string_lossy().to_string(),
+        sheet_name: None,
+        has_header: true,
+        header_row_index: 0,
+        mapping: ColumnMapping {
+            name_col: Some(0),
+            phone_col: Some(1),
+            email_col: Some(2),
+            company_col: None,
+            value_col: None,
+            address_col: None,
+            about_col: None,
+            status_col: None,
+            owner_col: None,
+        },
+        conflict_strategy: ConflictStrategy::Skip,
+        default_category_id: None,
+        default_status: None,
+        default_owner: None,
+        default_currency: Some("VND".to_string()),
+        normalize_phone: true,
+    }
+}
+
+#[test]
+fn test_xlsx_far_out_cell_xfd1048576_rejected_quickly() {
+    let dir = tempfile::tempdir().unwrap();
+    let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:XFD1048576"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Name</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Phone</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Email</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Nguyen Van A</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>0912345678</t></is></c>
+      <c r="C2" t="inlineStr"><is><t>a@example.com</t></is></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="inlineStr"><is><t>Tran Thi B</t></is></c>
+      <c r="B3" t="inlineStr"><is><t>0987654321</t></is></c>
+      <c r="C3" t="inlineStr"><is><t>b@example.com</t></is></c>
+    </row>
+    <row r="1048576">
+      <c r="XFD1048576" t="inlineStr"><is><t>stray</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>"#;
+
+    let path = write_test_xlsx(
+        dir.path(),
+        "xfd_bomb.xlsx",
+        "Leads",
+        sheet_xml,
+        zip::CompressionMethod::Deflated,
+    );
+
+    let inspect_err = inspect_lead_file(&path, None)
+        .expect_err("Inspect must reject sheet with stray cell at XFD1048576");
+    assert!(
+        inspect_err.contains("Trang tính") && inspect_err.contains("quá lớn"),
+        "Unexpected inspect error: {}",
+        inspect_err
+    );
+
+    let mut conn = create_test_db();
+    let options = default_name_phone_email_options(&path);
+    let import_err = execute_lead_import(&mut conn, &options, |_| {})
+        .expect_err("Import must reject sheet with stray cell at XFD1048576");
+    assert!(
+        import_err.contains("Trang tính") && import_err.contains("quá lớn"),
+        "Unexpected import error: {}",
+        import_err
+    );
+
+    let lead_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM leads", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(lead_count, 0);
+}
+
+#[test]
+fn test_xlsx_far_out_cell_without_or_lying_dimension_rejected() {
+    use super::importer::parse_import_rows;
+
+    let dir = tempfile::tempdir().unwrap();
+    let body = r#"  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Name</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Phone</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Email</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Nguyen Van A</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>0912345678</t></is></c>
+      <c r="C2" t="inlineStr"><is><t>a@example.com</t></is></c>
+    </row>
+    <row r="1048576">
+      <c r="XFD1048576" t="inlineStr"><is><t>stray</t></is></c>
+    </row>
+  </sheetData>"#;
+
+    let cases = [
+        (
+            "no_dim.xlsx",
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+{}
+</worksheet>"#,
+                body
+            ),
+        ),
+        (
+            "lying_dim.xlsx",
+            format!(
+                r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:C3"/>
+{}
+</worksheet>"#,
+                body
+            ),
+        ),
+    ];
+
+    for (filename, xml) in cases {
+        let path = write_test_xlsx(
+            dir.path(),
+            filename,
+            "Leads",
+            &xml,
+            zip::CompressionMethod::Deflated,
+        );
+        let inspect_err = inspect_lead_file(&path, None)
+            .expect_err("Inspect must reject XFD1048576 regardless of dimension tag");
+        assert!(
+            inspect_err.contains("quá lớn"),
+            "{}: {}",
+            filename,
+            inspect_err
+        );
+
+        let options = default_name_phone_email_options(&path);
+        let parse_err = parse_import_rows(&options)
+            .expect_err("Import parse must reject XFD1048576 regardless of dimension tag");
+        assert!(parse_err.contains("quá lớn"), "{}: {}", filename, parse_err);
+    }
+}
+
+#[test]
+fn test_xlsx_row_and_col_limit_boundaries() {
+    use super::importer::{parse_import_rows, MAX_IMPORT_COLS, MAX_IMPORT_ROWS};
+
+    let dir = tempfile::tempdir().unwrap();
+
+    // 1. Row span = MAX_IMPORT_ROWS + 1 (within col limit)
+    let over_row = MAX_IMPORT_ROWS + 1;
+    let over_row_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>Name</t></is></c></row>
+    <row r="{0}"><c r="A{0}" t="inlineStr"><is><t>Too far</t></is></c></row>
+  </sheetData>
+</worksheet>"#,
+        over_row
+    );
+    let over_row_path = write_test_xlsx(
+        dir.path(),
+        "over_rows.xlsx",
+        "Leads",
+        &over_row_xml,
+        zip::CompressionMethod::Stored,
+    );
+    assert!(inspect_lead_file(&over_row_path, None)
+        .unwrap_err()
+        .contains("quá lớn"));
+    assert!(
+        parse_import_rows(&default_name_phone_email_options(&over_row_path))
+            .unwrap_err()
+            .contains("quá lớn")
+    );
+
+    // 2. Column span = MAX_IMPORT_COLS + 1 (within row limit)
+    let over_col_letters = excel_col_name(MAX_IMPORT_COLS + 1);
+    let over_col_xml = format!(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Name</t></is></c>
+      <c r="{0}1" t="inlineStr"><is><t>OverCol</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>"#,
+        over_col_letters
+    );
+    let over_col_path = write_test_xlsx(
+        dir.path(),
+        "over_cols.xlsx",
+        "Leads",
+        &over_col_xml,
+        zip::CompressionMethod::Stored,
+    );
+    assert!(inspect_lead_file(&over_col_path, None)
+        .unwrap_err()
+        .contains("quá lớn"));
+    assert!(
+        parse_import_rows(&default_name_phone_email_options(&over_col_path))
+            .unwrap_err()
+            .contains("quá lớn")
+    );
+
+    // 3. Empty formatted cell at XFD1048576 (no value) must be skipped, not fail
+    let empty_stray_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <dimension ref="A1:XFD1048576"/>
+  <sheetData>
+    <row r="1">
+      <c r="A1" t="inlineStr"><is><t>Name</t></is></c>
+      <c r="B1" t="inlineStr"><is><t>Phone</t></is></c>
+      <c r="C1" t="inlineStr"><is><t>Email</t></is></c>
+    </row>
+    <row r="2">
+      <c r="A2" t="inlineStr"><is><t>Nguyen Van A</t></is></c>
+      <c r="B2" t="inlineStr"><is><t>0912345678</t></is></c>
+      <c r="C2" t="inlineStr"><is><t>a@example.com</t></is></c>
+    </row>
+    <row r="3">
+      <c r="A3" t="inlineStr"><is><t>Tran Thi B</t></is></c>
+      <c r="B3" t="inlineStr"><is><t>0987654321</t></is></c>
+      <c r="C3" t="inlineStr"><is><t>b@example.com</t></is></c>
+    </row>
+    <row r="1048576">
+      <c r="XFD1048576"></c>
+    </row>
+  </sheetData>
+</worksheet>"#;
+    let empty_stray_path = write_test_xlsx(
+        dir.path(),
+        "empty_stray.xlsx",
+        "Leads",
+        empty_stray_xml,
+        zip::CompressionMethod::Deflated,
+    );
+    let inspection = inspect_lead_file(&empty_stray_path, None)
+        .expect("Empty cell at XFD1048576 must be ignored");
+    assert_eq!(inspection.headers, vec!["Name", "Phone", "Email"]);
+    assert_eq!(inspection.total_rows_estimate, 2);
+
+    let mut conn = create_test_db();
+    let summary = execute_lead_import(
+        &mut conn,
+        &default_name_phone_email_options(&empty_stray_path),
+        |_| {},
+    )
+    .expect("Import must succeed when stray XFD1048576 cell is empty");
+    assert_eq!(summary.inserted, 2);
+    assert_eq!(summary.failed, 0);
+}
+
+#[test]
+fn test_xlsx_sparse_offset_origin_and_blank_row() {
+    let dir = tempfile::tempdir().unwrap();
+    // Sheet starts at B2 (row 2, col B), row 4 is blank, row 5 has invalid phone.
+    let sheet_xml = r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="2">
+      <c r="B2" t="inlineStr"><is><t>Name</t></is></c>
+      <c r="C2" t="inlineStr"><is><t>Phone</t></is></c>
+      <c r="D2" t="inlineStr"><is><t>Email</t></is></c>
+    </row>
+    <row r="3">
+      <c r="B3" t="inlineStr"><is><t>Valid Lead</t></is></c>
+      <c r="C3" t="inlineStr"><is><t>0912345678</t></is></c>
+      <c r="D3" t="inlineStr"><is><t>valid@example.com</t></is></c>
+    </row>
+    <row r="5">
+      <c r="B5" t="inlineStr"><is><t>Bad Phone</t></is></c>
+      <c r="C5" t="inlineStr"><is><t>12345</t></is></c>
+    </row>
+  </sheetData>
+</worksheet>"#;
+
+    let path = write_test_xlsx(
+        dir.path(),
+        "offset_origin.xlsx",
+        "Leads",
+        sheet_xml,
+        zip::CompressionMethod::Deflated,
+    );
+
+    let inspection = inspect_lead_file(&path, None).expect("Offset origin inspect should succeed");
+    assert_eq!(inspection.headers, vec!["Name", "Phone", "Email"]);
+    assert_eq!(inspection.total_rows_estimate, 3);
+    assert_eq!(inspection.sample_rows.len(), 3);
+    assert_eq!(inspection.sample_rows[1], vec!["", "", ""]);
+
+    let mut conn = create_test_db();
+    let summary =
+        execute_lead_import(&mut conn, &default_name_phone_email_options(&path), |_| {}).unwrap();
+    assert_eq!(summary.inserted, 1);
+    assert_eq!(summary.failed, 1);
+    assert_eq!(summary.error_rows.len(), 1);
+    assert_eq!(summary.error_rows[0].row_number, 5);
+}
+
+#[test]
+fn test_xlsx_100k_rows_inspect_and_parse_succeed() {
+    use super::importer::parse_import_rows;
+    use std::fmt::Write as _;
+
+    const DATA_ROWS: usize = 100_000;
+
+    let dir = tempfile::tempdir().unwrap();
+    let mut sheet_xml = String::with_capacity(DATA_ROWS * 115 + 512);
+    sheet_xml.push_str(
+        r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetData>
+    <row r="1"><c r="A1" t="inlineStr"><is><t>Name</t></is></c><c r="B1" t="inlineStr"><is><t>Phone</t></is></c></row>
+"#,
+    );
+    for i in 1..=DATA_ROWS {
+        let row_num = i + 1;
+        let _ = writeln!(
+            sheet_xml,
+            r#"    <row r="{r}"><c r="A{r}" t="inlineStr"><is><t>Lead {i}</t></is></c><c r="B{r}" t="inlineStr"><is><t>0912345678</t></is></c></row>"#,
+            r = row_num,
+            i = i
+        );
+    }
+    sheet_xml.push_str("  </sheetData>\n</worksheet>");
+
+    let path = write_test_xlsx(
+        dir.path(),
+        "leads_100k.xlsx",
+        "Leads",
+        &sheet_xml,
+        zip::CompressionMethod::Stored,
+    );
+
+    let inspection = inspect_lead_file(&path, None).expect("100k-row inspect must succeed");
+    assert_eq!(inspection.headers, vec!["Name", "Phone"]);
+    assert_eq!(inspection.sample_rows.len(), 10);
+    assert_eq!(inspection.total_rows_estimate, DATA_ROWS);
+
+    let options = default_name_phone_email_options(&path);
+    let rows = parse_import_rows(&options).expect("100k-row parse must succeed");
+    assert_eq!(rows.len(), DATA_ROWS + 1);
+    assert_eq!(rows[0].source_row_number, 1);
+    assert_eq!(rows[DATA_ROWS].source_row_number, DATA_ROWS + 1);
+    assert_eq!(
+        rows[DATA_ROWS].cells,
+        vec!["Lead 100000".to_string(), "0912345678".to_string()]
+    );
+}

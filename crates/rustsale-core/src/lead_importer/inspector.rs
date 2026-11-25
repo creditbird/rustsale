@@ -1,6 +1,7 @@
-use calamine::{open_workbook_auto, Data, Reader, Sheets};
+use calamine::Data;
 use std::path::Path;
 
+use crate::lead_importer::sheet_reader::inspect_excel_sheet;
 use crate::lead_importer::types::ImportInspection;
 
 pub fn inspect_lead_file(
@@ -71,59 +72,7 @@ fn inspect_excel(
     file_path: &Path,
     requested_sheet: Option<&str>,
 ) -> Result<ImportInspection, String> {
-    let mut workbook: Sheets<_> = open_workbook_auto(file_path)
-        .map_err(|e| format!("Không thể mở bảng tính Excel: {}", e))?;
-
-    let sheet_names = workbook.sheet_names().to_vec();
-    if sheet_names.is_empty() {
-        return Err("Tệp Excel không chứa trang tính (sheet) nào".to_string());
-    }
-
-    let selected_sheet = requested_sheet
-        .map(String::from)
-        .or_else(|| sheet_names.first().cloned())
-        .ok_or_else(|| "Không tìm thấy sheet hợp lệ".to_string())?;
-
-    let range = workbook
-        .worksheet_range(&selected_sheet)
-        .map_err(|e| format!("Lỗi đọc sheet '{}': {}", selected_sheet, e))?;
-
-    let total_rows = range.height();
-    let total_cols = range.width();
-
-    if total_rows == 0 || total_cols == 0 {
-        return Err(format!("Trang tính '{}' không có dữ liệu", selected_sheet));
-    }
-
-    let mut rows_sample: Vec<Vec<String>> = Vec::new();
-    for row in range.rows().take(11) {
-        let mut row_vec = Vec::with_capacity(total_cols);
-        for cell in row {
-            row_vec.push(cell_to_string(cell));
-        }
-        rows_sample.push(row_vec);
-    }
-
-    let headers = if !rows_sample.is_empty() {
-        rows_sample[0].clone()
-    } else {
-        Vec::new()
-    };
-
-    let sample_rows = if rows_sample.len() > 1 {
-        rows_sample[1..].to_vec()
-    } else {
-        Vec::new()
-    };
-
-    Ok(ImportInspection {
-        file_type: "excel".to_string(),
-        sheets: sheet_names,
-        selected_sheet: Some(selected_sheet),
-        headers,
-        sample_rows,
-        total_rows_estimate: total_rows.saturating_sub(1),
-    })
+    inspect_excel_sheet(file_path, requested_sheet)
 }
 
 pub fn cell_to_string(cell: &Data) -> String {
