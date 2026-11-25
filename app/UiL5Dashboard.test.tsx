@@ -93,3 +93,16 @@ test("refresh picks up a deal created elsewhere", async () => {
   const openDeals = deals.filter((deal) => deal.stage !== "Won" && deal.stage !== "Lost");
   await app.waitUntil(() => app.texts().includes(displayMoney(total(openDeals, currency), currency.base_currency)));
 });
+
+test("the caption counts every open deal, not just the five listed", async () => {
+  const stamp = Date.now();
+  await Host.start(dir);
+  const lead = ((await LeadsMore.list()) as LeadRow[])[0];
+  for (let i = 0; i < 7; i += 1) {
+    await Deals.create({ leadId: lead.id, title: `Mở ${stamp} ${i}`, value: 1000 + i, stage: "Proposal", currency: "VND" });
+  }
+  const open_ = ((await Deals.list()) as DealRow[]).filter((d) => d.stage !== "Won" && d.stage !== "Lost").length;
+  expect(open_ > 5).toBe(true);
+  const app = await openDashboard();
+  await app.waitUntil(() => has(app, `${open_} deal đang mở`));
+});

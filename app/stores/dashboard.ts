@@ -31,6 +31,8 @@ export interface DashboardSummary {
   wonCount: number;
   activeLeads: number;
   pipelineValue: number;
+  /** How many deals are open in all; `deals` below is only the first few of them. */
+  openCount: number;
   /** The open deals worth showing, dearest first (already converted to the base currency). */
   deals: DashboardDeal[];
 }
@@ -69,6 +71,7 @@ export function summarize(
     wonCount: won.length,
     activeLeads: leads.filter((lead) => lead.status !== "Converted" && lead.status !== "Lost").length,
     pipelineValue: sum(open),
+    openCount: open.length,
     deals: open.slice(0, 5),
   };
 }
