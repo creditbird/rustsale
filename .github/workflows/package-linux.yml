@@ -1,0 +1,56 @@
+name: Package Linux (.deb)
+run-name: "DEMO, not a release: Package Linux (.deb) @ ${{ github.sha }}"
+
+# Release gate #59 for #49/#57: builds the GTK 4 .deb inside Debian 13 and Ubuntu 24.04 containers with
+# scripts/package-linux.sh (the same script as on a developer machine), so the heavy build stays off the dev box.
+# No secrets: without VITE_SUPABASE_* this is a dev build (Supabase sync off). Never set RUSTSALE_DEMO.
+on:
+  workflow_dispatch:
+  push:
+    branches: [chore/nsh-v3-linux-package]
+    paths: ['.github/workflows/package-linux.yml', 'scripts/package-linux.sh', 'packaging/linux/**']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: package-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deb:
+    name: .deb (${{ matrix.base }})
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        base: ['debian:13', 'ubuntu:24.04']
+    steps:
+      - uses: actions/checkout@v4
+      - name: Stub the cloak-runtime sidecar (empty, never committed or packaged)
+        # src-tauri is a workspace member and tauri-build fails when the externalBin file is missing, so any
+        # host-side cargo clippy/build step needs this placeholder. The .deb itself is built from `git archive HEAD`
+        # inside the container, so this empty file never reaches the package. The real runner is not shipped by this gate.
+        run: |
+          mkdir -p src-tauri/binaries
+          : > src-tauri/binaries/cloak-runtime-x86_64-unknown-linux-gnu
+          chmod +x src-tauri/binaries/cloak-runtime-x86_64-unknown-linux-gnu
+          git status --porcelain --untracked-files=all | grep -q . && { echo "stub must stay untracked-ignored"; git status --short; exit 1; } || true
+      - name: Install nsh 0.6.1
+        run: |
+          curl -fsSL https://nsh.dev/install.sh | NSH_VERSION=v0.6.1 sh
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/nsh" --version
+      - name: Build the .deb in ${{ matrix.base }}
+        run: scripts/package-linux.sh "${{ matrix.base }}" "$PWD/dist/out"
+      - name: Checksums
+        run: cd dist/out && { echo "# DEMO build, not a release. source commit ${{ github.sha }} base ${{ matrix.base }}"; sha256sum rustsale_*.deb; } | tee SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DEMO-not-a-release-rustsale-deb-${{ matrix.base == 'debian:13' && 'debian13' || 'ubuntu2404' }}-${{ github.sha }}
+          path: |
+            dist/out/rustsale_*.deb
+            dist/out/SHA256SUMS
+          retention-days: 7
+          if-no-files-found: error

@@ -112,6 +112,22 @@ Cuộn bảng p95 đạt mục tiêu (< 16,7 ms) trên cả hai host, và p95 GT
 - Máy vẫn tải 5 đến 25 trong lúc đo, chưa phải điều kiện "load < 4" mà Nakroth yêu cầu để đo lại cột GTK4 chính thức.
 - Ảnh GTK4 đã cuộn: sẽ chụp lại bằng dữ liệu giả (ảnh cũ đã gỡ vì chứa dữ liệu thật).
 
+## 4c. Bản đóng gói `.deb` (24/11, #59)
+
+Gói dựng bằng GitHub Actions ([run 45431490560](https://github.com/creditbird/rustsale/actions/runs/45431490560), nhánh `chore/nsh-v3-linux-package` @87d54b9, nguồn `feat/nsh-v3` @fdbe8fa). Bản dev, không có khóa Supabase. Debian 13: 41.152.680 B, sha256 `acfd0ee9...8273c`; Ubuntu 24.04: 41.113.188 B, sha256 `184112b7...9a8e`. AppImage: `nsh package` không có target này.
+
+Cài thật lên máy chính (CachyOS, X11/XFCE) bằng giải nén `.deb` vào `/` (không có dpkg), chạy `/usr/bin/rustsale`. Mốc: từ lúc chạy đến khi có cửa sổ X của tiến trình (chưa phải lúc bảng khách có dữ liệu; bản đóng gói chỉ in `rs-marker app-eval`).
+
+| Lần | Wall (ms) | CPU (ms) |
+|---|---|---|
+| 0 (cache lạnh, bỏ ra) | 6.628 | 620 |
+| 1 đến 5 | 3.788, 1.363, 565, 1.078, 1.158 | 510, 380, 320, 380, 430 |
+| **median 5 lần** | **1.158** | **380** |
+
+Load average 45 đến 52 lúc đo (máy không rảnh), nên wall chưa kết luận được so với mục tiêu 1 s; CPU median 380 ms tới lúc cửa sổ hiện.
+
+Chưa đo trên bản đóng gói: cuộn bảng khách >= 1.500 dòng và cột Pipeline (cần bản dựng `RUSTSALE_DEMO=1`, không được phát hành), tải inbox khi máy rảnh, thời gian tới khi bảng có dữ liệu, dòng `Exec=` của autostart `.desktop` (cần bật công tắc trong app; phiên XFCE đang bật screensaver). Bằng chứng tĩnh: runner dùng backend XDG autostart có `X-GNOME-Autostart-enabled=true` và `current_exe`.
+
 ## 5. Giới hạn của phép đo (nói thẳng)
 
 - Chỉ có chi phí commit phía app, không có fps thật (gpui không có `--fps`, GTK cần `webkitgtk-6.0`). xdotool ~130 ms mỗi cú cuộn, chậm hơn người dùng thật.
