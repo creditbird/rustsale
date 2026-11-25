@@ -283,6 +283,12 @@ export async function answerCoreUpdaterRequest(id: number, op: string): Promise<
       Host.answerUpdater(id, null, `unknown updater step ${op}`);
     }
   } catch (err) {
-    Host.answerUpdater(id, null, errorText(err, "updater step failed"));
+    const message = errorText(err, "updater step failed");
+    // A failed core-driven download must not leave the UI stuck in "downloading"
+    // (it disables Settings buttons and blocks closing the modal).
+    updaterState.update((s) =>
+      s.status === "downloading" ? { ...s, status: "error", errorMessage: message } : s,
+    );
+    Host.answerUpdater(id, null, message);
   }
 }

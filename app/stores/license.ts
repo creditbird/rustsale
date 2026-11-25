@@ -485,6 +485,9 @@ export async function loadSubscriptionPlans(): Promise<SubscriptionPlan[]> {
 }
 
 function applyVerificationOutcome(result: DeviceVerificationResult): void {
+  // A transient failure (network/server) must not lock out a device that was already
+  // verified this session: keep the last good verification and only show the error.
+  if (result.reason === "error" && licenseVerified()) return;
   licenseVerification.set(result);
   if (result.allowed) {
     licenseVerified.set(true);
