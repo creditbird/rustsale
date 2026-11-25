@@ -242,7 +242,7 @@ impl WhatsAppCampaignEngine {
 }
 
 fn has_valid_assigned_account(account_ids: &[i64]) -> bool {
-    account_ids.iter().any(|&id| id > 0)
+    !account_ids.is_empty() && account_ids.iter().all(|&id| id > 0)
 }
 
 /// Creates a new WhatsApp outreach campaign in 'draft' status.

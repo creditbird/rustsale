@@ -318,6 +318,56 @@ mod tests {
     }
 
     #[test]
+    fn whatsapp_campaign_mixed_zero_account_id_is_invalid_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use rustsale_core::conversation::whatsapp::campaign::{
+            CreateCampaignRequest, create_campaign, resume_campaign, start_campaign,
+        };
+        let conn = rustsale_core::db::init_db(":memory:")?;
+        let req = CreateCampaignRequest {
+            name: "Mixed Accounts".to_string(),
+            template_id: None,
+            assigned_account_ids: vec![1, 0],
+            rate_limit_min_delay_secs: None,
+            rate_limit_max_delay_secs: None,
+            burst_limit_per_batch: None,
+            burst_pause_secs: None,
+            quiet_hours_enabled: None,
+            quiet_hours_start: None,
+            quiet_hours_end: None,
+            timezone: None,
+        };
+        let create_err = match create_campaign(&conn, &req) {
+            Ok(id) => return Err(format!("expected [1, 0] to be rejected, got id {id}").into()),
+            Err(err) => err.to_string(),
+        };
+        assert_eq!(CoreApiError::from(create_err).code, "invalid_request");
+
+        for (status, is_resume) in [("draft", false), ("paused", true)] {
+            conn.execute(
+                "INSERT INTO whatsapp_outreach_campaigns (
+                    name, status, assigned_account_ids_json, created_at, updated_at
+                 ) VALUES ('Legacy Mixed', ?1, '[1, 0]', '2026-11-25T00:00:00Z', '2026-11-25T00:00:00Z')",
+                [status],
+            )?;
+            let campaign_id = conn.last_insert_rowid();
+            let err = if is_resume {
+                resume_campaign(&conn, campaign_id)
+            } else {
+                start_campaign(&conn, campaign_id)
+            };
+            let msg = match err {
+                Ok(()) => {
+                    return Err(format!("expected [1, 0] {status} campaign to be rejected").into());
+                }
+                Err(e) => e.to_string(),
+            };
+            assert_eq!(CoreApiError::from(msg).code, "invalid_request");
+        }
+        Ok(())
+    }
+
+    #[test]
     fn js_error_carries_code_and_message() {
         let js: JsError = CoreApiError::new("not_found", "no lead 9").into();
         assert_eq!(js.code(), Some("not_found"));

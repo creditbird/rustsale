@@ -313,7 +313,7 @@ fn test_create_campaign_rejects_blank_name_and_invalid_accounts() {
         "expected invalid_request error for blank name, got: {blank_err}"
     );
 
-    for bad_accounts in [vec![], vec![0], vec![-1, 0]] {
+    for bad_accounts in [vec![], vec![0], vec![-1, 0], vec![1, 0], vec![1, -1]] {
         let req = CreateCampaignRequest {
             name: "No Accounts".to_string(),
             template_id: None,
@@ -340,7 +340,13 @@ fn test_start_and_resume_reject_campaign_without_valid_account() {
     let conn = setup_test_db();
 
     // Seed draft/paused campaigns with no valid assigned account (e.g. legacy rows).
-    for (status, accounts_json) in [("draft", "[]"), ("draft", "[0]"), ("paused", "[]")] {
+    for (status, accounts_json) in [
+        ("draft", "[]"),
+        ("draft", "[0]"),
+        ("draft", "[1, 0]"),
+        ("paused", "[]"),
+        ("paused", "[1, 0]"),
+    ] {
         conn.execute(
             "INSERT INTO whatsapp_outreach_campaigns (
                 name, status, assigned_account_ids_json, created_at, updated_at
