@@ -158,6 +158,12 @@ export function LeadDetail(props: LeadDetailProps) {
     emailTemplates().find((template) => template.id === emailTemplateId())?.name ?? "mẫu email";
 
   const openZalo = async () => {
+    const lead = props.lead();
+    // The core skips a lead with no phone or Zalo id and still answers Ok, so refuse here instead of reporting a send.
+    if ((lead.phone ?? "").trim() === "" && !lead.has_zalo) {
+      notify("Khách chưa có số điện thoại hoặc Zalo.", "warning");
+      return;
+    }
     zaloOpen.set(true);
     zaloError.set(null);
     zaloAccounts.set([]);
@@ -196,14 +202,19 @@ export function LeadDetail(props: LeadDetailProps) {
     zaloError.set(null);
     try {
       await Campaigns.startZaloOutreach([zaloAccount()], zaloTemplate(), [lead.id]);
-      await LeadsMore.addActivity({
-        leadId: lead.id,
-        activityType: "Zalo",
-        content: `Đã gửi Zalo: ${zaloTemplateName()}`,
-        performedBy: "Self",
-      });
+      // The send is queued from here on: a failed log must never offer a retry that sends it twice.
+      try {
+        await LeadsMore.addActivity({
+          leadId: lead.id,
+          activityType: "Zalo",
+          content: `Đã gửi Zalo: ${zaloTemplateName()}`,
+          performedBy: "Self",
+        });
+      } catch {
+        notify("Tin Zalo đã vào hàng gửi nhưng chưa ghi được hoạt động.", "warning");
+      }
       zaloOpen.set(false);
-      notify(`Đã gửi Zalo cho ${lead.name}`, "success");
+      notify(`Đã xếp hàng gửi Zalo cho ${lead.name}`, "success");
       props.onSent?.();
     } catch (e) {
       const f = report(e, { retry: () => { void sendZalo(); } });
@@ -256,14 +267,19 @@ export function LeadDetail(props: LeadDetailProps) {
     emailError.set(null);
     try {
       await Campaigns.sendEmailOutreach(smtpId()!, emailTemplateId()!, [lead.id]);
-      await LeadsMore.addActivity({
-        leadId: lead.id,
-        activityType: "Email",
-        content: `Đã gửi email: ${emailTemplateName()}`,
-        performedBy: "Self",
-      });
+      // The core only queues the email (it answers before SMTP runs); a failed log must not offer a second send.
+      try {
+        await LeadsMore.addActivity({
+          leadId: lead.id,
+          activityType: "Email",
+          content: `Đã gửi email: ${emailTemplateName()}`,
+          performedBy: "Self",
+        });
+      } catch {
+        notify("Email đã vào hàng gửi nhưng chưa ghi được hoạt động.", "warning");
+      }
       emailOpen.set(false);
-      notify(`Đã gửi email cho ${lead.name}`, "success");
+      notify(`Đã xếp hàng gửi email cho ${lead.name}`, "success");
       props.onSent?.();
     } catch (e) {
       const f = report(e, { retry: () => { void sendEmail(); } });
