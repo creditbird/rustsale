@@ -52,8 +52,7 @@ test("background update check shows sidebar badge and opens UpdateModal with rel
   expect(has(app, "Sửa lỗi đồng bộ Zalo")).toBe(true);
 });
 
-test("download locks closing while in progress, then prompts to restart and calls installAndRestart", async () => {
-  const pending: { finish: (() => void) | null } = { finish: null };
+test("download finishes into downloaded state, keeps sidebar badge ready, and calls installAndRestart", async () => {
   let downloadCalls = 0;
   let restartCalls = 0;
 
@@ -65,9 +64,6 @@ test("download locks closing while in progress, then prompts to restart and call
     }),
     downloadUpdate: () => {
       downloadCalls += 1;
-      return new Promise<void>((resolve) => {
-        pending.finish = resolve;
-      });
     },
     installAndRestart: () => {
       restartCalls += 1;
@@ -80,24 +76,20 @@ test("download locks closing while in progress, then prompts to restart and call
   await app.waitFor("id:update-now");
 
   await app.press("id:update-now");
-  await app.waitFor("id:update-progress-box");
-  await app.waitFor("id:update-downloading");
-  expect(downloadCalls).toBe(1);
-  expect(app.shows("id:update-later")).toBe(false);
-
-  // Closing with Escape is blocked while a download is in flight.
-  await app.keyboard.press("Escape");
-  await app.wait(50);
-  expect(app.shows("id:update-progress-box")).toBe(true);
-
-  // Finish download -> downloaded banner + restart CTA.
-  if (!pending.finish) throw new Error("expected downloadUpdate stub to be active");
-  pending.finish();
-
   await app.waitFor("id:update-downloaded-banner");
   await app.waitFor("id:update-restart");
+  expect(downloadCalls).toBe(1);
   expect(has(app, "Tải bản cập nhật thành công!")).toBe(true);
 
+  // Deferring restart closes the modal while keeping the sidebar badge in "Cài lại" state.
+  await app.press("id:update-later");
+  await app.waitUntil(() => !app.shows("id:update-downloaded-banner"));
+  expect(app.shows("id:sidebar-update-badge")).toBe(true);
+  expect(has(app, "Cài lại")).toBe(true);
+
+  // Reopen from sidebar badge and trigger installAndRestart.
+  await app.press("id:sidebar-update-badge");
+  await app.waitFor("id:update-restart");
   await app.press("id:update-restart");
   await app.waitUntil(() => restartCalls === 1);
   expect(restartCalls).toBe(1);
