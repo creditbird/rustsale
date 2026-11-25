@@ -92,6 +92,8 @@ export function ScraperScreen() {
   const planNote = signal<string | null>(null);
   const picking = signal(false);
   const retrying = signal<string | null>(null);
+  /** The job a pause/resume/cancel/delete is in flight for: a second press waits (a repeat would fail in the core). */
+  const controlling = signal<string | null>(null);
   let autoLabel = "";
   let planGeneration = 0;
   const jobs = signal<Job[]>([]);
@@ -227,6 +229,8 @@ export function ScraperScreen() {
     }
   };
   const control = async (job: Job, action: "pause" | "resume" | "cancel" | "delete") => {
+    if (controlling() !== null) return;
+    controlling.set(job.id);
     try {
       if (action === "pause") await GoogleMaps.pauseJob(job.id);
       else if (action === "resume") await GoogleMaps.resumeJob(job.id);
@@ -236,9 +240,11 @@ export function ScraperScreen() {
         if (selected()?.id === job.id) selected.set(null);
       }
     } catch (e) {
+      controlling.set(null);
       report(e, { refresh: () => { void refresh(); }, retry: () => { void control(job, action); } });
       return;
     }
+    controlling.set(null);
     await refresh();
   };
   const show = (job: Job) => { selected.set(job); void places.reload(); };
@@ -311,10 +317,10 @@ export function ScraperScreen() {
                 </If>
                 <View class="flex-row flex-wrap items-center gap-2">
                   <If when={active(j().status)}>
-                    <Button testID={`pause-${j().id}`} size="sm" label="Tạm dừng" onPress={() => { void control(j(), "pause"); }} />
+                    <Button testID={`pause-${j().id}`} size="sm" label="Tạm dừng" disabled={controlling() !== null} onPress={() => { void control(j(), "pause"); }} />
                   </If>
                   <If when={canResume(j().status)}>
-                    <Button testID={`resume-${j().id}`} size="sm" label="Tiếp tục" onPress={() => { void control(j(), "resume"); }} />
+                    <Button testID={`resume-${j().id}`} size="sm" label="Tiếp tục" disabled={controlling() !== null} onPress={() => { void control(j(), "resume"); }} />
                   </If>
                   <If when={canRetryUnits(j().status, j().failed_units)}>
                     <Button testID={`retry-units-${j().id}`} size="sm" label={`Thử lại ${j().failed_units} ô lỗi`} disabled={retrying() !== null} onPress={() => { void retry(j(), "units"); }} />
@@ -323,10 +329,10 @@ export function ScraperScreen() {
                     <Button testID={`retry-email-${j().id}`} size="sm" label="Thử lại tìm email" disabled={retrying() !== null} onPress={() => { void retry(j(), "email"); }} />
                   </If>
                   <If when={canCancel(j().status)}>
-                    <Button testID={`cancel-${j().id}`} size="sm" variant="ghost" label="Huỷ" onPress={() => { void control(j(), "cancel"); }} />
+                    <Button testID={`cancel-${j().id}`} size="sm" variant="ghost" label="Huỷ" disabled={controlling() !== null} onPress={() => { void control(j(), "cancel"); }} />
                   </If>
                   <If when={canDelete(j().status)}>
-                    <Button testID={`delete-${j().id}`} size="sm" variant="ghost" label="Xoá" onPress={() => { void control(j(), "delete"); }} />
+                    <Button testID={`delete-${j().id}`} size="sm" variant="ghost" label="Xoá" disabled={controlling() !== null} onPress={() => { void control(j(), "delete"); }} />
                   </If>
                 </View>
               </View>
