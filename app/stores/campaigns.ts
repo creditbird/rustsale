@@ -28,6 +28,7 @@ export interface StepAnalytics {
   step_id: number;
   step_order: number;
   channel: string;
+  retired?: boolean;
   pending: number;
   sent: number;
   delivered: number;
@@ -211,6 +212,12 @@ export function describeRemoved(impact: RemovedStepImpact[]): string[] {
 
 export function percent(rate: number): string {
   return `${(Number.isFinite(rate) ? rate : 0).toFixed(1)}%`;
+}
+
+/** One line in the per-step analytics breakdown; retired steps keep their history and are tagged "đã xoá". */
+export function formatStepAnalytics(step: StepAnalytics): string {
+  const tag = step.retired ? `${step.channel}, đã xoá` : step.channel;
+  return `Bước ${step.step_order} (${tag}): chờ ${step.pending} · gửi ${step.sent} · tới ${step.delivered} · phản hồi ${step.replied} · lỗi ${step.failed} · bỏ ${step.skipped}`;
 }
 
 // ---- templates (UI-35): the picker and the "save as template" form

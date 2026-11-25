@@ -114,7 +114,7 @@ Conventions to keep when exporting to TSX:
 | `start_unified_campaign` | n | `campaign_id: i64` | `Result<(), String>` |
 | `pause_unified_campaign` | n | `campaign_id: i64` | `Result<(), String>` |
 | `enroll_leads_into_campaign` | n | `campaign_id: i64`, `lead_ids: Vec<i32>` | `Result<usize, String>` |
-| `get_unified_campaign_analytics` | n | `campaign_id: i64` | `Result<CampaignAnalytics, String>` |
+| `get_unified_campaign_analytics` | n | `campaign_id: i64` | `Result<CampaignAnalytics, String>` (v3: `step_breakdown` includes retired steps with execution history, marked `retired: true`, so per-step totals match campaign totals) |
 | `get_unified_campaign_steps` | n | `campaign_id: i64` | `Result<Vec<CampaignStep>, String>` (v3-only; `Err` if the campaign does not exist) |
 | `get_unified_campaign_save_impact` | n | `campaign_id: i64`, `steps: Vec<CampaignStep>` | `Result<Vec<RemovedStepImpact>, String>` (v3-only, read-only; the steps the edit removes that still have `PENDING` customers, with `pending_leads`; `Err` if the campaign does not exist or a step id is not its own) |
 | `get_all_unified_campaigns` | n | — | `Result<Vec<Campaign>, String>` |

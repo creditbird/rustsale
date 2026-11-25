@@ -9,6 +9,8 @@ pub struct StepAnalytics {
     pub step_id: i64,
     pub step_order: i32,
     pub channel: String,
+    #[serde(default)]
+    pub retired: bool,
     pub pending: i64,
     pub sent: i64,
     pub delivered: i64,
@@ -274,8 +276,9 @@ pub fn get_unified_campaign_analytics_internal(
         .map_err(|e| format!("DB error: {}", e))?
         .ok_or_else(|| format!("Campaign {} not found", campaign_id))?;
 
-    let steps =
-        crate::db::get_campaign_steps(conn, campaign_id).map_err(|e| format!("DB error: {}", e))?;
+    let steps = crate::db::get_campaign_steps_for_analytics(conn, campaign_id)
+        .map_err(|e| format!("DB error: {}", e))?;
+    let live_steps = steps.iter().filter(|(_, retired)| !*retired).count() as i64;
 
     let total_enrolled: i64 = conn
         .query_row(
@@ -351,56 +354,47 @@ pub fn get_unified_campaign_analytics_internal(
         )
         .unwrap_or(0);
 
-    let mut step_breakdown = Vec::new();
-    for step in &steps {
+    let mut step_counts_stmt = conn
+        .prepare(
+            "SELECT status, COUNT(*) FROM campaign_executions
+             WHERE step_id = ?1
+             GROUP BY status",
+        )
+        .map_err(|e| format!("DB error: {}", e))?;
+
+    let mut step_breakdown = Vec::with_capacity(steps.len());
+    for (step, retired) in &steps {
         if let Some(step_id) = step.id {
-            let s_pending: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM campaign_executions WHERE step_id = ?1 AND status = 'PENDING'",
-                    [step_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            let s_sent: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM campaign_executions WHERE step_id = ?1 AND status = 'SENT'",
-                    [step_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            let s_delivered: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM campaign_executions WHERE step_id = ?1 AND status = 'DELIVERED'",
-                    [step_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            let s_replied: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM campaign_executions WHERE step_id = ?1 AND status = 'REPLIED'",
-                    [step_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            let s_failed: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM campaign_executions WHERE step_id = ?1 AND status = 'FAILED'",
-                    [step_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
-            let s_skipped: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM campaign_executions WHERE step_id = ?1 AND status = 'SKIPPED'",
-                    [step_id],
-                    |row| row.get(0),
-                )
-                .unwrap_or(0);
+            let mut s_pending = 0i64;
+            let mut s_sent = 0i64;
+            let mut s_delivered = 0i64;
+            let mut s_replied = 0i64;
+            let mut s_failed = 0i64;
+            let mut s_skipped = 0i64;
+
+            let rows = step_counts_stmt
+                .query_map([step_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+                })
+                .map_err(|e| format!("DB error: {}", e))?;
+            for row in rows {
+                let (status, count) = row.map_err(|e| format!("DB error: {}", e))?;
+                match status.as_str() {
+                    "PENDING" => s_pending = count,
+                    "SENT" => s_sent = count,
+                    "DELIVERED" => s_delivered = count,
+                    "REPLIED" => s_replied = count,
+                    "FAILED" => s_failed = count,
+                    "SKIPPED" => s_skipped = count,
+                    _ => {}
+                }
+            }
 
             step_breakdown.push(StepAnalytics {
                 step_id,
                 step_order: step.step_order,
                 channel: step.channel.clone(),
+                retired: *retired,
                 pending: s_pending,
                 sent: s_sent,
                 delivered: s_delivered,
@@ -429,7 +423,7 @@ pub fn get_unified_campaign_analytics_internal(
         campaign_name: campaign.name,
         campaign_status: campaign.status,
         total_enrolled,
-        total_steps: steps.len() as i64,
+        total_steps: live_steps,
         total_executions,
         pending_count,
         sent_count,

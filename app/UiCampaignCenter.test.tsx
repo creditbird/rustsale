@@ -2,7 +2,7 @@
 import { expect, open, test } from "nsh/test";
 import { Campaigns, Host, LeadsMore, Templates } from "rustsale/native";
 import {
-  buildPayload, describeRemoved, filterTemplates, moveStep, newStep, parseTags, previewSpintax, stepsToDrafts, stringifyTags, validateCampaign,
+  buildPayload, describeRemoved, filterTemplates, formatStepAnalytics, moveStep, newStep, parseTags, previewSpintax, stepsToDrafts, stringifyTags, validateCampaign,
   type TemplateRecord,
 } from "./stores/campaigns";
 
@@ -166,6 +166,14 @@ test("stored steps become ordered drafts and an edit keeps the campaign's own fi
   expect(describeRemoved([{ step_id: 9, step_order: 2, channel: "zalo", pending_leads: 3 }])).toEqual([
     "Sẽ bỏ 3 khách đang ở bước 2",
   ]);
+  expect(formatStepAnalytics({
+    step_id: 1, step_order: 1, channel: "zalo", retired: false,
+    pending: 1, sent: 2, delivered: 0, replied: 0, failed: 0, skipped: 0,
+  })).toBe("Bước 1 (zalo): chờ 1 · gửi 2 · tới 0 · phản hồi 0 · lỗi 0 · bỏ 0");
+  expect(formatStepAnalytics({
+    step_id: 2, step_order: 2, channel: "zalo", retired: true,
+    pending: 0, sent: 1, delivered: 1, replied: 1, failed: 1, skipped: 0,
+  })).toBe("Bước 2 (zalo, đã xoá): chờ 0 · gửi 1 · tới 1 · phản hồi 1 · lỗi 1 · bỏ 0");
 });
 
 const stepsOf = async (id: number) =>
@@ -291,10 +299,25 @@ test("removing a step with customers waiting asks first, and saving keeps the hi
     const after = await stepsOf(id);
     expect(after.map((x) => x.template_content)).toEqual(["Hai"]);
     expect(after[0].id).toBe(before[1].id);
-    // The customer's row is still there (cancelled, not deleted), so the history is intact.
-    const a = (await Campaigns.unifiedCampaignAnalytics(id)) as { total_executions: number; pending_count: number };
+    // The customer's row is still there (cancelled, not deleted), and the retired step stays in the breakdown.
+    const a = (await Campaigns.unifiedCampaignAnalytics(id)) as {
+      total_executions: number;
+      pending_count: number;
+      total_steps: number;
+      step_breakdown: { step_id: number; step_order: number; retired: boolean }[];
+    };
     expect(a.total_executions).toBe(1);
     expect(a.pending_count).toBe(0);
+    expect(a.total_steps).toBe(1);
+    expect(a.step_breakdown.length).toBe(2);
+    expect(a.step_breakdown.some((s) => s.step_id === before[0].id && s.retired)).toBe(true);
+    expect(a.step_breakdown.some((s) => s.step_id === before[1].id && !s.retired)).toBe(true);
+
+    // The analytics dialog renders the retired step with the "đã xoá" tag alongside the live step.
+    await app.press(`id:cc-analytics-${id}`);
+    await app.waitFor("id:cc-an-enrolled");
+    await app.waitUntil(() => has(app, "Bước 1 (zalo, đã xoá)") && has(app, "Bước 1 (zalo):"));
+    await app.press("id:cc-an-close");
   } finally {
     await Campaigns.deleteUnifiedCampaign(id);
   }

@@ -780,6 +780,11 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         )?;
         tx.execute(
+            "CREATE INDEX IF NOT EXISTS idx_campaign_executions_step_status
+             ON campaign_executions(step_id, status)",
+            [],
+        )?;
+        tx.execute(
             "CREATE INDEX IF NOT EXISTS idx_lead_journey_lead
              ON lead_journey_states(lead_id)",
             [],
@@ -1619,6 +1624,52 @@ pub fn get_campaign_steps(
             created_at: row.get(8)?,
             template_id: row.get(9)?,
         })
+    })?;
+    let mut steps = Vec::new();
+    for r in rows {
+        steps.push(r?);
+    }
+    Ok(steps)
+}
+
+/// Live steps of `campaign_id` plus any retired step that still has execution history.
+///
+/// Returns `(step, retired)` with live steps first (`step_order ASC, id ASC`), followed by
+/// retired steps (`step_order ASC, id ASC`), so analytics breakdowns stay consistent with
+/// campaign totals after a step is removed.
+pub fn get_campaign_steps_for_analytics(
+    conn: &Connection,
+    campaign_id: i64,
+) -> Result<Vec<(crate::models::CampaignStep, bool)>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type,
+                template_content, ai_prompt_override, created_at, template_id,
+                (retired_at IS NOT NULL) AS is_retired
+         FROM campaign_steps cs
+         WHERE cs.campaign_id = ?1
+           AND (
+               cs.retired_at IS NULL
+               OR EXISTS (
+                   SELECT 1 FROM campaign_executions ce WHERE ce.step_id = cs.id
+               )
+           )
+         ORDER BY (cs.retired_at IS NOT NULL) ASC, cs.step_order ASC, cs.id ASC",
+    )?;
+    let rows = stmt.query_map([campaign_id], |row| {
+        let step = crate::models::CampaignStep {
+            id: Some(row.get(0)?),
+            campaign_id: row.get(1)?,
+            step_order: row.get(2)?,
+            channel: row.get(3)?,
+            delay_minutes: row.get(4)?,
+            condition_type: row.get(5)?,
+            template_content: row.get(6)?,
+            ai_prompt_override: row.get(7)?,
+            created_at: row.get(8)?,
+            template_id: row.get(9)?,
+        };
+        let retired: bool = row.get(10)?;
+        Ok((step, retired))
     })?;
     let mut steps = Vec::new();
     for r in rows {

@@ -2530,3 +2530,168 @@ fn test_scheduler_cancels_execution_for_retired_or_missing_step_without_dispatch
     assert_eq!(second.total_due_found, 0);
     assert_eq!(second.sent_count, 0);
 }
+
+#[test]
+fn test_analytics_step_breakdown_keeps_retired_step_and_matches_campaign_totals() {
+    let mut conn = setup_test_db();
+    let l1 = insert_test_lead(&conn, "Lead 1", "Co", "0904000001", "b1@co.vn");
+    let l2 = insert_test_lead(&conn, "Lead 2", "Co", "0904000002", "b2@co.vn");
+    let l3 = insert_test_lead(&conn, "Lead 3", "Co", "0904000003", "b3@co.vn");
+    let l4 = insert_test_lead(&conn, "Lead 4", "Co", "0904000004", "b4@co.vn");
+    let l5 = insert_test_lead(&conn, "Lead 5", "Co", "0904000005", "b5@co.vn");
+    let l6 = insert_test_lead(&conn, "Lead 6", "Co", "0904000006", "b6@co.vn");
+
+    // 3-step campaign with 5 completed/historical messages across steps plus 1 pending lead at step 2.
+    let (id, steps) = running_campaign_with_steps(&mut conn, 3);
+    let s1 = steps[0].id.expect("s1");
+    let s2 = steps[1].id.expect("s2");
+    let s3 = steps[2].id.expect("s3");
+
+    put_at_step(&conn, id, s1, l1, "SENT");
+    put_at_step(&conn, id, s2, l2, "SENT");
+    put_at_step(&conn, id, s2, l3, "DELIVERED");
+    put_at_step(&conn, id, s2, l4, "REPLIED");
+    put_at_step(&conn, id, s2, l5, "FAILED");
+    put_at_step(&conn, id, s2, l6, "PENDING");
+
+    // Remove step 2 with confirmation (renumber remaining steps to 1 and 2 like the editor does).
+    let mut kept_s3 = steps[2].clone();
+    kept_s3.step_order = 2;
+    let edited = vec![steps[0].clone(), kept_s3];
+    let campaign = crate::db::get_campaign(&conn, id)
+        .expect("get campaign")
+        .expect("campaign exists");
+    save_unified_campaign_internal(&mut conn, campaign, edited, true)
+        .expect("confirmed removal succeeds");
+
+    let analytics = get_unified_campaign_analytics_internal(&conn, id).expect("analytics");
+    // Only 2 live steps remain, but step_breakdown retains the retired step 2 with its history.
+    assert_eq!(analytics.total_steps, 2);
+    assert_eq!(analytics.step_breakdown.len(), 3);
+
+    let b1 = analytics
+        .step_breakdown
+        .iter()
+        .find(|s| s.step_id == s1)
+        .expect("step 1 present");
+    let b2 = analytics
+        .step_breakdown
+        .iter()
+        .find(|s| s.step_id == s2)
+        .expect("retired step 2 present");
+    let b3 = analytics
+        .step_breakdown
+        .iter()
+        .find(|s| s.step_id == s3)
+        .expect("step 3 present");
+
+    assert!(!b1.retired);
+    assert!(b2.retired);
+    assert!(!b3.retired);
+
+    assert_eq!(b1.sent, 1);
+    assert_eq!(b2.sent, 1);
+    assert_eq!(b2.delivered, 1);
+    assert_eq!(b2.replied, 1);
+    assert_eq!(b2.failed, 1);
+    assert_eq!(b2.pending, 0);
+
+    // Per-step sums must match campaign-level totals across every status bucket (5 historical messages total).
+    let sum_pending: i64 = analytics.step_breakdown.iter().map(|s| s.pending).sum();
+    let sum_sent: i64 = analytics.step_breakdown.iter().map(|s| s.sent).sum();
+    let sum_delivered: i64 = analytics.step_breakdown.iter().map(|s| s.delivered).sum();
+    let sum_replied: i64 = analytics.step_breakdown.iter().map(|s| s.replied).sum();
+    let sum_failed: i64 = analytics.step_breakdown.iter().map(|s| s.failed).sum();
+    let sum_skipped: i64 = analytics.step_breakdown.iter().map(|s| s.skipped).sum();
+
+    assert_eq!(sum_pending, analytics.pending_count);
+    assert_eq!(sum_sent, analytics.sent_count);
+    assert_eq!(sum_delivered, analytics.delivered_count);
+    assert_eq!(sum_replied, analytics.replied_count);
+    assert_eq!(sum_failed, analytics.failed_count);
+    assert_eq!(sum_skipped, analytics.skipped_count);
+
+    let step_total = sum_sent + sum_delivered + sum_replied + sum_failed + sum_skipped;
+    let campaign_total = analytics.sent_count
+        + analytics.delivered_count
+        + analytics.replied_count
+        + analytics.failed_count
+        + analytics.skipped_count;
+    assert_eq!(step_total, 5);
+    assert_eq!(step_total, campaign_total);
+
+    // JSON wire shape exposes `retired` and remains backwards-compatible on deserialize.
+    let json = serde_json::to_value(b2).expect("serialize StepAnalytics");
+    assert_eq!(json.get("retired").and_then(|v| v.as_bool()), Some(true));
+    let legacy: StepAnalytics = serde_json::from_str(
+        r#"{"step_id":1,"step_order":1,"channel":"ZALO","pending":0,"sent":1,"delivered":0,"replied":0,"failed":0,"skipped":0}"#,
+    )
+    .expect("legacy StepAnalytics without retired field deserializes");
+    assert!(!legacy.retired);
+}
+
+#[test]
+fn test_init_db_creates_campaign_executions_step_status_index_and_uses_it() {
+    let unique = format!(
+        "rustsale-test-step-idx-{}-{}.db",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    );
+    let db_path = std::env::temp_dir().join(unique);
+    let db_str = db_path.to_string_lossy().to_string();
+
+    // First init creates the index; second init must remain idempotent.
+    let conn1 = crate::db::init_db(&db_str).expect("first init_db");
+    drop(conn1);
+    let conn = crate::db::init_db(&db_str).expect("second init_db is idempotent");
+
+    let cols: Vec<String> = {
+        let mut stmt = conn
+            .prepare("PRAGMA index_info('idx_campaign_executions_step_status')")
+            .expect("prepare index_info");
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(2))
+            .expect("query index_info");
+        rows.map(|r| r.expect("col name")).collect()
+    };
+    assert_eq!(cols, vec!["step_id".to_string(), "status".to_string()]);
+
+    let plan_details = |sql: &str| -> Vec<String> {
+        let mut stmt = conn
+            .prepare(&format!("EXPLAIN QUERY PLAN {}", sql))
+            .expect("prepare explain");
+        let rows = stmt
+            .query_map([1i64], |row| row.get::<_, String>(3))
+            .expect("query explain");
+        rows.map(|r| r.expect("detail")).collect()
+    };
+
+    let pending_plan = plan_details(
+        "SELECT COUNT(DISTINCT lead_id) FROM campaign_executions WHERE step_id = ?1 AND status = 'PENDING'",
+    );
+    assert!(
+        pending_plan
+            .iter()
+            .any(|d| d.contains("idx_campaign_executions_step_status")),
+        "expected pending_leads_at_step to use idx_campaign_executions_step_status, got: {:?}",
+        pending_plan
+    );
+
+    let exists_plan =
+        plan_details("SELECT EXISTS(SELECT 1 FROM campaign_executions WHERE step_id = ?1)");
+    assert!(
+        exists_plan
+            .iter()
+            .any(|d| d.contains("idx_campaign_executions_step_status")),
+        "expected EXISTS by step_id to use idx_campaign_executions_step_status, got: {:?}",
+        exists_plan
+    );
+
+    drop(conn);
+    let _ = std::fs::remove_file(&db_path);
+    let _ = std::fs::remove_file(format!("{}-wal", db_str));
+    let _ = std::fs::remove_file(format!("{}-shm", db_str));
+}
