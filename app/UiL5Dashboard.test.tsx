@@ -103,6 +103,13 @@ test("the caption counts every open deal, not just the five listed", async () =>
   }
   const open_ = ((await Deals.list()) as DealRow[]).filter((d) => d.stage !== "Won" && d.stage !== "Lost").length;
   expect(open_ > 5).toBe(true);
-  const app = await openDashboard();
-  await app.waitUntil(() => has(app, `${open_} deal đang mở`));
+  try {
+    const app = await openDashboard();
+    await app.waitUntil(() => has(app, `${open_} deal đang mở`));
+  } finally {
+    // The core is shared with other test files: leave no deals behind.
+    for (const d of (await Deals.list()) as DealRow[]) {
+      if (d.title.startsWith(`Mở ${stamp} `)) await Deals.delete(d.id);
+    }
+  }
 });

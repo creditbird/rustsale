@@ -4,7 +4,7 @@ import { eventually } from "./testing";
 import { Deals, Host, Leads } from "rustsale/native";
 
 const dir = `/tmp/rustsale-v3-ui-pipeline-${Date.now()}`;
-interface DealRow { id: number; title: string; stage: string; value: number | null; currency: string | null }
+interface DealRow { id: number; lead_id?: number; title: string; stage: string; value: number | null; currency: string | null }
 
 async function openPipeline(clock = false) {
   await Host.start(dir);
@@ -53,11 +53,14 @@ test("a deal is created and deleted", async () => {
   await app.press("id:deal-save");
   let created: DealRow | undefined;
   await eventually(async () => {
-    created = ((await Deals.list()) as DealRow[]).find((d) => d.title.includes("Công ty tạo"));
+    created = ((await Deals.list()) as DealRow[]).find((d) => d.lead_id === leads.items[0].id);
     return created !== undefined;
   });
   if (!created) throw new Error("the created deal is not in the core");
   if (created.stage !== "Proposal") throw new Error(`stage is ${created.stage}`);
+  // Other test files leave deals in the shared core and the Proposal column can hold more cards than fit, so a new card
+  // may sit below the visible area. Narrow the board to this test's lead (its name carries the stamp).
+  await app.type("id:pipe-search", String(stamp));
   await app.waitFor(`id:deal-${created.id}`);
   await app.press(`id:deal-del-${created.id}`);
   await app.press("id:deal-confirm-del");
