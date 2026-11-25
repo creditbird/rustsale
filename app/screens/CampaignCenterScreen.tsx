@@ -6,7 +6,7 @@ import { startCore, type Page } from "../stores/core";
 import { notify, report } from "../stores/toast";
 import {
   CHANNELS, CONDITIONS, DELAYS, PLACEHOLDERS, TEMPLATE_CHANNELS, TEMPLATE_STAGES,
-  buildPayload, delayLabel, describeRemoved, filterTemplates, moveStep, newStep, parseTags, percent, previewSpintax, renumber,
+  buildPayload, delayLabel, describeRemoved, filterTemplates, formatStepAnalytics, moveStep, newStep, parseTags, percent, previewSpintax, renumber,
   statusLabel, stepsToDrafts, stringifyTags, validateCampaign, validateTemplateDraft,
   type CampaignAnalytics, type RemovedStepImpact, type StepDraft, type StepRecord, type TemplateFolder, type TemplateRecord, type UnifiedCampaign,
 } from "../stores/campaigns";
@@ -716,8 +716,11 @@ export function CampaignCenterScreen() {
                 </If>
                 <Each of={a().step_breakdown} key={(s) => String(s.step_id)}>
                   {(s) => (
-                    <Text testID={`cc-an-step-${s().step_order}`} class="text-sm text-foreground">
-                      {`Bước ${s().step_order} (${s().channel}): chờ ${s().pending} · gửi ${s().sent} · tới ${s().delivered} · phản hồi ${s().replied} · lỗi ${s().failed} · bỏ ${s().skipped}`}
+                    <Text
+                      testID={s().retired ? `cc-an-step-retired-${s().step_id}` : `cc-an-step-${s().step_order}`}
+                      class={s().retired ? "text-sm text-muted-foreground" : "text-sm text-foreground"}
+                    >
+                      {formatStepAnalytics(s())}
                     </Text>
                   )}
                 </Each>
