@@ -4643,7 +4643,7 @@ impl ConversationRepository {
         let mut stmt = conn.prepare(
             "SELECT id, channel, display_name, connection_status
              FROM channel_accounts
-             WHERE channel IN ('zalo', 'whatsapp')
+             WHERE channel IN ('zalo', 'whatsapp') AND enabled = 1
              ORDER BY id",
         )?;
         let rows = stmt.query_map([], |row| {
