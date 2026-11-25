@@ -1756,6 +1756,66 @@ mod tests {
     }
 
     #[test]
+    fn template_unfiled_filter_separates_filed_and_loose_templates() {
+        let conn = db::init_db(":memory:").expect("Failed to init db");
+        let folder_id = db::create_template_folder(&conn, "Nhóm A", None).expect("folder");
+
+        let mut ids = Vec::new();
+        for (name, folder) in [
+            ("Filed one", Some(folder_id)),
+            ("Filed two", Some(folder_id)),
+            ("Loose", None),
+        ] {
+            ids.push(
+                db::create_template(
+                    &conn,
+                    &crate::models::CreateTemplateInput {
+                        folder_id: folder,
+                        name: name.to_string(),
+                        channel: "zalo".to_string(),
+                        stage: None,
+                        subject: None,
+                        content: "Nội dung".to_string(),
+                        media_url: None,
+                        ai_prompt: None,
+                        tags_json: None,
+                    },
+                )
+                .expect("create template"),
+            );
+        }
+
+        let unfiled = db::get_templates(
+            &conn,
+            Some(&crate::models::TemplateFilter {
+                unfiled: Some(true),
+                ..Default::default()
+            }),
+        )
+        .expect("unfiled filter");
+        assert_eq!(unfiled.len(), 1);
+        assert_eq!(unfiled[0].id, ids[2]);
+        assert_eq!(unfiled[0].folder_id, None);
+
+        let filed = db::get_templates(
+            &conn,
+            Some(&crate::models::TemplateFilter {
+                unfiled: Some(false),
+                ..Default::default()
+            }),
+        )
+        .expect("filed filter");
+        assert_eq!(filed.len(), 2);
+        assert!(filed
+            .iter()
+            .all(|template| template.folder_id == Some(folder_id)));
+
+        let all = db::get_templates(&conn, Some(&crate::models::TemplateFilter::default()))
+            .expect("no filter");
+        assert_eq!(all.len(), 3);
+    }
+
+    #[test]
     fn test_template_migration_idempotency() {
         let conn = db::init_db(":memory:").expect("Failed to init db");
 
