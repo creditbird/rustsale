@@ -144,7 +144,7 @@ test("a lead without a phone or Zalo is refused before any Zalo call", async () 
   expect(app.shows("id:send-zalo-confirm")).toBe(false);
 });
 
-test("Zalo send is blocked with an error when no account has valid auth_status", async () => {
+test("Zalo send is disabled with an error when no account has valid auth_status", async () => {
   const stamp = Date.now();
   const name = `Gui Zalo het han ${stamp}`;
   const id = (await Leads.add({ name, status: "New", phone: "0901234567" })) as number;
@@ -157,7 +157,33 @@ test("Zalo send is blocked with an error when no account has valid auth_status",
   await app.waitFor("id:send-zalo-error");
   await app.waitUntil(() => has(app, "Chưa có tài khoản Zalo hợp lệ"));
   expect(has(app, "Zalo Hết hạn")).toBe(false);
-  await app.press("id:send-zalo-confirm");
+  await expect(app.press("id:send-zalo-confirm")).rejects.toMatchObject({
+    code: "ERR_NSH_TEST_DISABLED",
+  });
   expect(state.zalo.length).toBe(0);
   expect(app.shows("id:send-zalo-confirm")).toBe(true);
+});
+
+test("Zalo send preselects the valid account when an expired account comes first", async () => {
+  const stamp = Date.now();
+  const name = `Gui Zalo hop le ${stamp}`;
+  const id = (await Leads.add({ name, status: "New", phone: "0901234567" })) as number;
+  const state: Calls = { zalo: [], email: [] };
+  const app = await openLead(state, name, id, [
+    { account_key: "acc-expired", display_name: "Zalo Hết hạn", auth_status: "expired" },
+    { account_key: "acc-valid", display_name: "Zalo Hợp lệ", auth_status: "valid" },
+  ]);
+
+  await app.press("id:lead-send-zalo");
+  await app.waitFor("id:send-zalo-account-trigger");
+  await app.waitUntil(() => has(app, "Zalo Hợp lệ"));
+  expect(has(app, "Zalo Hết hạn")).toBe(false);
+  expect(app.shows("id:send-zalo-error")).toBe(false);
+  await app.press("id:send-zalo-confirm");
+  await eventually(async () => state.zalo.length === 1);
+  await app.waitFor("id:send-zalo-confirm", { state: "gone" });
+
+  expect(state.zalo[0][0]).toEqual(["acc-valid"]);
+  expect(state.zalo[0][1]).toBe(7);
+  expect(state.zalo[0][2]).toEqual([id]);
 });

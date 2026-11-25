@@ -153,6 +153,8 @@ export function LeadDetail(props: LeadDetailProps) {
   const emailError = signal<string | null>(null);
 
   const zaloLabel = (account: ZaloAccount) => account.display_name || account.account_key;
+  const hasValidZaloAccount = () =>
+    zaloAccounts().some((account) => account.auth_status === "valid");
   const zaloTemplateName = () =>
     zaloTemplates().find((template) => template.id === zaloTemplate())?.name ?? "mẫu Zalo";
   const emailTemplateName = () =>
@@ -473,7 +475,7 @@ export function LeadDetail(props: LeadDetailProps) {
           <View class="flex-row justify-end gap-2">
             <Button label="Huỷ" disabled={zaloBusy()} onPress={closeZalo} />
             <Button testID="send-zalo-confirm" variant="primary"
-              label={zaloBusy() ? "Đang gửi…" : "Gửi"} disabled={zaloBusy()}
+              label={zaloBusy() ? "Đang gửi…" : "Gửi"} disabled={zaloBusy() || !hasValidZaloAccount()}
               onPress={() => { void sendZalo(); }} />
           </View>
         </View>

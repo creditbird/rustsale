@@ -180,6 +180,28 @@ mod tests {
     }
 
     #[test]
+    fn whatsapp_campaign_account_errors_are_invalid_request() {
+        assert_eq!(
+            CoreApiError::from(
+                "Invalid campaign: at least one valid WhatsApp account is required to start the campaign"
+            )
+            .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            CoreApiError::from(
+                "Invalid campaign: at least one WhatsApp account is required; connect an account and assign it to the campaign"
+            )
+            .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            CoreApiError::from("Invalid campaign: name must not be empty").code,
+            "invalid_request"
+        );
+    }
+
+    #[test]
     fn missing_rows_and_files_are_not_found() {
         assert_eq!(
             CoreApiError::from("Query returned no rows").code,

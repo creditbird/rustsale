@@ -50,6 +50,7 @@ test("a period keeps only the leads inside it", () => {
   const blank = lead("New", "");
   expect(leadInPeriod(recent, "", now)).toBe(true);
   expect(leadInPeriod(blank, "", now)).toBe(true);
+  expect(leadInPeriod({ last_activity: null }, "", now)).toBe(true);
   expect(leadInPeriod(recent, "30", now)).toBe(true);
   expect(leadInPeriod(older, "30", now)).toBe(false);
   expect(leadInPeriod(older, "90", now)).toBe(true);
@@ -57,7 +58,7 @@ test("a period keeps only the leads inside it", () => {
   expect(leadInPeriod(lastYear, "year", now)).toBe(false);
   expect(leadInPeriod(older, "year", now)).toBe(true);
   expect(leadInPeriod(blank, "30", now)).toBe(false);
-  expect(leadInPeriod({ created_at: "2026-11-20T00:00:00Z", last_activity: "2025-01-01T00:00:00Z" }, "30", now)).toBe(true);
+  expect(leadInPeriod({ last_activity: null }, "30", now)).toBe(false);
 });
 
 test("stage breakdown counts and values every pipeline stage", () => {

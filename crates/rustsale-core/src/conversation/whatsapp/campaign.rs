@@ -241,6 +241,10 @@ impl WhatsAppCampaignEngine {
     }
 }
 
+fn has_valid_assigned_account(account_ids: &[i64]) -> bool {
+    account_ids.iter().any(|&id| id > 0)
+}
+
 /// Creates a new WhatsApp outreach campaign in 'draft' status.
 pub fn create_campaign(
     conn: &rusqlite::Connection,
@@ -251,11 +255,11 @@ pub fn create_campaign(
         return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
-                "Campaign name cannot be empty",
+                "Invalid campaign: name must not be empty",
             ),
         )));
     }
-    if req.assigned_account_ids.is_empty() {
+    if !has_valid_assigned_account(&req.assigned_account_ids) {
         return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
             std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -546,6 +550,15 @@ pub fn refresh_campaign_counters(
 
 /// Starts a campaign, moving it from draft or paused to queued status.
 pub fn start_campaign(conn: &rusqlite::Connection, campaign_id: i64) -> rusqlite::Result<()> {
+    let campaign = get_campaign(conn, campaign_id)?;
+    if !has_valid_assigned_account(&campaign.assigned_account_ids) {
+        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid campaign: at least one valid WhatsApp account is required to start the campaign",
+            ),
+        )));
+    }
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE whatsapp_outreach_campaigns 
@@ -570,6 +583,15 @@ pub fn pause_campaign(conn: &rusqlite::Connection, campaign_id: i64) -> rusqlite
 
 /// Resumes a paused campaign.
 pub fn resume_campaign(conn: &rusqlite::Connection, campaign_id: i64) -> rusqlite::Result<()> {
+    let campaign = get_campaign(conn, campaign_id)?;
+    if !has_valid_assigned_account(&campaign.assigned_account_ids) {
+        return Err(rusqlite::Error::ToSqlConversionFailure(Box::new(
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "Invalid campaign: at least one valid WhatsApp account is required to start the campaign",
+            ),
+        )));
+    }
     let now = chrono::Utc::now().to_rfc3339();
     conn.execute(
         "UPDATE whatsapp_outreach_campaigns 

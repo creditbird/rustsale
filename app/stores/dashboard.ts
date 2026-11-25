@@ -2,9 +2,8 @@
 
 export interface DashboardLead {
   status: string;
-  /** Last activity time; moves on every activity, so a period filter means 'active in period'. */
+  /** last activity time; moves on every activity, so a period filter means 'active in period'. */
   last_activity?: string | null;
-  created_at?: string | null;
 }
 
 export interface DashboardDeal {
@@ -126,13 +125,13 @@ export function dealInPeriod(
   return dateInPeriod(deal.created_at, period, now);
 }
 
-/** Whether a lead falls inside `period` (prefers `created_at` if present, otherwise `last_activity`). */
+/** Whether a lead was active inside `period` (filters on `last_activity`). */
 export function leadInPeriod(
-  lead: { created_at?: string | null; last_activity?: string | null },
+  lead: { last_activity?: string | null },
   period: Period,
   now: Date = new Date(),
 ): boolean {
-  return dateInPeriod(lead.created_at || lead.last_activity, period, now);
+  return dateInPeriod(lead.last_activity, period, now);
 }
 
 /** The pipeline stages the distribution shows, in the order the v2 dashboard used. */
