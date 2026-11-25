@@ -95,7 +95,8 @@ impl Campaigns {
     }
 
     /// Starts a batched Zalo outreach from `imeis` with template `templateId` to `leadIds`,
-    /// optionally throttled by a burst limit and inter-message delay; progress arrives as events.
+    /// optionally throttled by a burst limit and inter-message delay; resolves
+    /// `{ queued, skipped, skipped_leads }` and reports progress as events.
     pub async fn start_zalo_outreach(
         imeis: Vec<String>,
         template_id: JsonValue,

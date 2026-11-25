@@ -4,6 +4,7 @@ import { Campaigns, LeadsMore, Templates, Zalo } from "rustsale/native";
 import { Badge, Button, Input, Modal } from "../ui";
 import type { BadgeTone } from "../ui/Badge";
 import { notify, report } from "../stores/toast";
+import { hasValidZaloUid, isVnMobile, parseZaloOutreachResult } from "../stores/zaloTarget";
 
 export interface Lead {
   id: number;
@@ -159,10 +160,17 @@ export function LeadDetail(props: LeadDetailProps) {
 
   const openZalo = async () => {
     const lead = props.lead();
-    // The core skips a lead with no phone or Zalo id and still answers Ok, so refuse here instead of reporting a send.
-    if ((lead.phone ?? "").trim() === "" && !lead.has_zalo) {
-      notify("Khách chưa có số điện thoại hoặc Zalo.", "warning");
-      return;
+    // Match core `is_valid_zalo_lead_target`: require a valid Zalo UID or a Vietnamese mobile number.
+    if (!hasValidZaloUid(lead.zalo_uid)) {
+      const rawPhone = (lead.phone ?? "").trim();
+      if (rawPhone === "") {
+        notify("Khách chưa có số điện thoại hoặc Zalo.", "warning");
+        return;
+      }
+      if (!isVnMobile(rawPhone)) {
+        notify("SĐT không hợp lệ, không gửi.", "danger");
+        return;
+      }
     }
     zaloOpen.set(true);
     zaloError.set(null);
@@ -201,7 +209,15 @@ export function LeadDetail(props: LeadDetailProps) {
     zaloBusy.set(true);
     zaloError.set(null);
     try {
-      await Campaigns.startZaloOutreach([zaloAccount()], zaloTemplate(), [lead.id]);
+      const result = parseZaloOutreachResult(
+        await Campaigns.startZaloOutreach([zaloAccount()], zaloTemplate(), [lead.id]),
+      );
+      if (result.queued <= 0) {
+        const msg = "SĐT không hợp lệ, không gửi.";
+        zaloError.set(msg);
+        notify(msg, "danger");
+        return;
+      }
       // The send is queued from here on: a failed log must never offer a retry that sends it twice.
       try {
         await LeadsMore.addActivity({
@@ -214,7 +230,11 @@ export function LeadDetail(props: LeadDetailProps) {
         notify("Tin Zalo đã vào hàng gửi nhưng chưa ghi được hoạt động.", "warning");
       }
       zaloOpen.set(false);
-      notify(`Đã xếp hàng gửi Zalo cho ${lead.name}`, "success");
+      if (result.skipped > 0) {
+        notify(`Đã xếp ${result.queued}, bỏ ${result.skipped}`, "warning");
+      } else {
+        notify(`Đã xếp hàng gửi Zalo cho ${lead.name}`, "success");
+      }
       props.onSent?.();
     } catch (e) {
       const f = report(e, { retry: () => { void sendZalo(); } });
