@@ -64,7 +64,11 @@ impl From<String> for CoreApiError {
             eprintln!("[rustsale] database schema error: {message}");
             return Self::new("internal", "database error");
         }
-        let code = if lower.contains("not found")
+        // The importer's own Vietnamese rejection of an oversized sheet: the file is the problem.
+        let sheet_too_large = lower.contains("quá lớn") && lower.contains("giới hạn tối đa");
+        let code = if sheet_too_large {
+            "invalid_request"
+        } else if lower.contains("not found")
             || lower.contains("no such")
             || lower.contains("returned no rows")
             || lower.contains("does not exist")
@@ -177,6 +181,19 @@ mod tests {
         );
         assert_eq!(CoreApiError::from("duplicate phone").code, "conflict");
         assert_eq!(CoreApiError::from("disk exploded").code, "internal");
+    }
+
+    #[test]
+    fn an_oversized_sheet_is_invalid_request_with_its_message() {
+        let text = "Trang tính 'Sheet1' quá lớn: 1048576 dòng x 16384 cột (giới hạn tối đa 100000 dòng, 200 cột). Vui lòng xóa các ô thừa ở xa hoặc tách nhỏ tệp trước khi nhập.";
+        let error = CoreApiError::from(text);
+        assert_eq!(error.code, "invalid_request");
+        assert_eq!(error.message, text);
+        // A sheet named like a not-found message must not change the code.
+        assert_eq!(
+            CoreApiError::from("Trang tính 'not found' quá lớn: 9 dòng x 9 cột (giới hạn tối đa 5 dòng, 5 cột).").code,
+            "invalid_request"
+        );
     }
 
     #[test]

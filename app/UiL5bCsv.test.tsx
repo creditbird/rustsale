@@ -2,6 +2,8 @@
 // the native dialog calls are stubbed; the CSV itself, the mapping and the core query are real.
 import { expect, open, test } from "nsh/test";
 import { Host, Leads } from "rustsale/native";
+import { importSay } from "./components/LeadImportDialog";
+import { failure, MESSAGE_FOR_CODE } from "./stores/core";
 
 const dir = `/tmp/rustsale-v3-ui-l5b-csv-${Date.now()}`;
 
@@ -23,7 +25,10 @@ const inspection = {
   total_rows_estimate: 2,
 };
 
-async function openLeads(state: { executed: Options[]; exported: { filename: string; content: string } | null }) {
+async function openLeads(
+  state: { executed: Options[]; exported: { filename: string; content: string } | null },
+  stubs: Record<string, (...args: unknown[]) => unknown> = {},
+) {
   await Host.start(dir);
   const app = await open("./App.tsx", {
     modules: {
@@ -38,6 +43,7 @@ async function openLeads(state: { executed: Options[]; exported: { filename: str
           state.exported = { filename, content };
           return "/tmp/rustsale-ui-l5b-export.csv";
         },
+        ...stubs,
       },
     },
   });
@@ -86,6 +92,64 @@ test("a mapped column can be replaced before the import runs", async () => {
   await app.press("id:import-run");
   await app.waitFor("id:import-summary");
   expect(state.executed[0].mapping.email_col).toBe(2);
+});
+
+const coreError = (code: string, message: string) => Object.assign(new Error(message), { code });
+const tooLarge = "Trang tính 'Sheet2' quá lớn: 1048576 dòng x 16384 cột (giới hạn tối đa 100000 dòng, 200 cột). Vui lòng xóa các ô thừa ở xa hoặc tách nhỏ tệp trước khi nhập.";
+
+// A stubbed native call cannot carry a code (the host stamps every thrown error ERR_NSH_HOST_ERROR),
+// so the code-to-sentence step is checked as a pure function and the screen tests check the state a
+// failure leaves behind.
+test("the importer's own sentence shows for invalid_request only, never for other codes", () => {
+  const rejected = coreError("invalid_request", tooLarge);
+  expect(importSay(rejected)).toEqual({ invalid_request: tooLarge });
+  const f = failure(rejected, importSay(rejected));
+  expect(f.action).toBe("fix");
+  expect(f.message).toBe(tooLarge);
+  const other = coreError("internal", "disk exploded");
+  expect(importSay(other)).toEqual({});
+  expect(failure(other, importSay(other)).message).toBe(MESSAGE_FOR_CODE.internal);
+  expect(importSay(coreError("invalid_request", ""))).toEqual({});
+  expect(importSay(null)).toEqual({});
+});
+
+test("a failed re-inspect leaves nothing importable from the previous sheet", async () => {
+  const state = { executed: [] as Options[], exported: null as { filename: string; content: string } | null };
+  let calls = 0;
+  const app = await openLeads(state, {
+    "ImportLeads.inspectFile": () => {
+      calls += 1;
+      if (calls === 1) return { ...inspection, file_type: "xlsx", sheets: ["Sheet1", "Sheet2"], selected_sheet: "Sheet1" };
+      throw coreError("invalid_request", tooLarge);
+    },
+  });
+  await app.press("id:lead-import-open");
+  await app.press("id:import-pick");
+  await app.waitFor("id:import-estimate");
+  expect(app.shows("id:import-run")).toBe(true);
+
+  await app.press("id:import-sheet-trigger");
+  await app.press("id:import-sheet-item-Sheet2");
+  await app.waitUntil(() => has(app, MESSAGE_FOR_CODE.internal));
+  // The first sheet's headers and mapping are gone, so nothing stale can be imported.
+  expect(app.shows("id:import-estimate")).toBe(false);
+  expect(app.shows("id:import-map-name_col-trigger")).toBe(false);
+  expect(state.executed.length).toBe(0);
+});
+
+test("a failed import clears its progress", async () => {
+  const state = { executed: [] as Options[], exported: null as { filename: string; content: string } | null };
+  const app = await openLeads(state, {
+    "ImportLeads.execute": () => {
+      throw coreError("invalid_request", tooLarge);
+    },
+  });
+  await app.press("id:lead-import-open");
+  await app.press("id:import-pick");
+  await app.waitFor("id:import-estimate");
+  await app.press("id:import-run");
+  await app.waitUntil(() => has(app, MESSAGE_FOR_CODE.internal));
+  expect(app.shows("id:import-progress")).toBe(false);
 });
 
 test("export writes every matching lead as CSV with the lead's own fields", async () => {

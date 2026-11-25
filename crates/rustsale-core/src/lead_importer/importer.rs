@@ -1,13 +1,22 @@
-use calamine::{open_workbook_auto, Reader, Sheets};
 use rusqlite::{params, Connection, TransactionBehavior};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
-use crate::lead_importer::inspector::cell_to_string;
+use crate::lead_importer::sheet_reader::read_excel_sheet_rows;
 use crate::lead_importer::types::{
     ConflictStrategy, ImportErrorRow, ImportProgress, ImportSummaryResult, LeadImportOptions,
     SourceRow,
 };
+
+/// Maximum used row span accepted for spreadsheet inspection and lead import.
+/// Comfortably covers the 100k-row lead import benchmark while rejecting sheets
+/// with stray far-out cells (e.g. row 1,048,576) before allocating.
+pub const MAX_IMPORT_ROWS: usize = 250_000;
+
+/// Maximum used column span accepted for spreadsheet inspection and lead import.
+/// Covers wide CRM exports (up to 256 columns, matching XLS BIFF8's native width)
+/// while rejecting sheets with stray far-out columns (e.g. XFD = 16,384).
+pub const MAX_IMPORT_COLS: usize = 256;
 
 pub fn normalize_vn_mobile(value: &str) -> Option<String> {
     let raw_trimmed = value.trim();
@@ -989,28 +998,5 @@ fn read_all_excel_rows(
     file_path: &Path,
     requested_sheet: Option<&str>,
 ) -> Result<Vec<SourceRow>, String> {
-    let mut workbook: Sheets<_> = open_workbook_auto(file_path)
-        .map_err(|e| format!("Không thể mở bảng tính Excel: {}", e))?;
-
-    let sheet_names = workbook.sheet_names().to_vec();
-    let selected_sheet = requested_sheet
-        .map(String::from)
-        .or_else(|| sheet_names.first().cloned())
-        .ok_or_else(|| "Không tìm thấy sheet nào trong file Excel".to_string())?;
-
-    let range = workbook
-        .worksheet_range(&selected_sheet)
-        .map_err(|e| format!("Lỗi đọc sheet '{}': {}", selected_sheet, e))?;
-
-    let start_row_offset = range.start().map(|(r, _)| r as usize).unwrap_or(0);
-    let mut rows = Vec::with_capacity(range.height());
-    for (r_idx, row) in range.rows().enumerate() {
-        let source_row_number = start_row_offset + r_idx + 1;
-        let row_vec: Vec<String> = row.iter().map(cell_to_string).collect();
-        rows.push(SourceRow {
-            source_row_number,
-            cells: row_vec,
-        });
-    }
-    Ok(rows)
+    read_excel_sheet_rows(file_path, requested_sheet)
 }

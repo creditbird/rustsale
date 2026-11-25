@@ -25,6 +25,15 @@ export interface LeadImportDialogProps {
   onImported: () => void;
 }
 
+/**
+ * The importer's own sentence for a rejected file (a sheet over the row/column limit, an unreadable
+ * sheet) is Vietnamese and says what to fix, so an `invalid_request` shows it instead of the generic one.
+ */
+export function importSay(e: unknown): Partial<Record<string, string>> {
+  const { code, message } = (e ?? {}) as { code?: unknown; message?: unknown };
+  return code === "invalid_request" && typeof message === "string" && message !== "" ? { invalid_request: message } : {};
+}
+
 /** Choose a CSV/Excel file, map its columns, run the core's importer and show the summary. */
 export function LeadImportDialog(props: LeadImportDialogProps) {
   const path = signal<string | null>(null);
@@ -74,7 +83,10 @@ export function LeadImportDialog(props: LeadImportDialogProps) {
       inspection.set(found);
       mapping.set(autoMap(found.headers));
     } catch (e) {
-      const f = report(e, { retry: () => { void inspect(file, sheet); } });
+      // A failed inspect must not leave the previous file's headers and mapping importable.
+      inspection.set(null);
+      mapping.set(emptyMapping());
+      const f = report(e, { retry: () => { void inspect(file, sheet); }, say: importSay(e) });
       if (f.action === "fix") error.set(f.message);
     }
   };
@@ -134,7 +146,8 @@ export function LeadImportDialog(props: LeadImportDialogProps) {
       notify(`Đã nhập ${result.inserted} khách`, "success");
       props.onImported();
     } catch (e) {
-      const f = report(e, { retry: () => { void run(); } });
+      progress.set(null);
+      const f = report(e, { retry: () => { void run(); }, say: importSay(e) });
       if (f.action === "fix") error.set(f.message);
     } finally {
       running.set(false);
