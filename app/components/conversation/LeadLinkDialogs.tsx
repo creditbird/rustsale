@@ -4,6 +4,7 @@ import { Categories, ConversationActions, Leads } from "rustsale/native";
 import { Badge, Button, Input, Modal } from "../../ui";
 import type { Page } from "../../stores/core";
 import {
+  itemConversationIds,
   resolveIdentityId,
   resolveInitialPhone,
   validateNewLeadForm,
@@ -28,6 +29,7 @@ interface LeadCategory {
 export interface LeadLinkChange {
   leadId?: number;
   unlinkedIdentityId?: number | null;
+  conversationIds?: number[];
 }
 
 export interface LeadLinkActionsProps {
@@ -38,7 +40,7 @@ export interface LeadLinkActionsProps {
 /**
  * UI-47: Lead linking & creation in the Conversation workspace.
  * - Unknown contact: Create Lead & link, or Link to an existing lead.
- * - Linked customer: compact lead summary (status, company/phone, categories), Change Lead (relink), Unlink.
+ * - Linked customer: compact lead summary (status, name/company/phone, categories), Change Lead (relink), Unlink.
  */
 export function LeadLinkActions(props: LeadLinkActionsProps) {
   const leadDetail = signal<LeadOption | null>(null);
@@ -171,7 +173,7 @@ export function LeadLinkActions(props: LeadLinkActionsProps) {
       }
       dialog.set("none");
       notify("Đã tạo và liên kết khách hàng.", "success");
-      props.onChanged({ leadId });
+      props.onChanged({ leadId, conversationIds: itemConversationIds(it) });
     } catch (e) {
       const f = report(e, { retry: () => { void submitCreate(); } });
       createError.set(f.message);
@@ -208,7 +210,7 @@ export function LeadLinkActions(props: LeadLinkActionsProps) {
       }
       dialog.set("none");
       notify(isRelink ? "Đã đổi liên kết khách hàng." : "Đã liên kết khách hàng.", "success");
-      props.onChanged({ leadId: targetLeadId });
+      props.onChanged({ leadId: targetLeadId, conversationIds: itemConversationIds(it) });
     } catch (e) {
       const f = report(e, { retry: () => { void submitLink(); } });
       linkError.set(f.message);
@@ -232,7 +234,7 @@ export function LeadLinkActions(props: LeadLinkActionsProps) {
       }
       dialog.set("none");
       notify("Đã bỏ liên kết khách hàng.", "success");
-      props.onChanged({ unlinkedIdentityId: identityId });
+      props.onChanged({ unlinkedIdentityId: identityId, conversationIds: itemConversationIds(it) });
     } catch (e) {
       report(e, { retry: () => { void submitUnlink(); } });
     } finally {
@@ -250,6 +252,11 @@ export function LeadLinkActions(props: LeadLinkActionsProps) {
         <View testID="linked-lead-summary" class="flex-row flex-wrap items-center gap-1.5">
           <If when={leadDetail() !== null}>
             <Badge label={leadDetail()?.status ?? "Lead"} tone="success" />
+          </If>
+          <If when={leadDetail() !== null && (leadDetail()?.name ?? "").trim() !== "" && leadDetail()?.name !== props.item().title}>
+            <Text testID="linked-lead-name" class="text-xs font-medium text-foreground">
+              {leadDetail()?.name ?? ""}
+            </Text>
           </If>
           <If when={leadDetail() !== null && ((leadDetail()?.company ?? "") !== "" || (leadDetail()?.phone ?? "") !== "")}>
             <Text class="text-xs text-muted-foreground">

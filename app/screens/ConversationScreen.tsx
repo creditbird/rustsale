@@ -34,7 +34,7 @@ import {
   PinnedMessageBanner,
 } from "../components/conversation/ThreadPanels";
 import { QuickTemplateManagerModal, QuickTemplatesPicker } from "../components/conversation/QuickTemplatesPanel";
-import { notify, report } from "../stores/toast";
+import { dismiss, notify, report } from "../stores/toast";
 
 type Message = TimelineMessage;
 interface TimelinePage { items: Message[]; nextCursor?: unknown | null; nextBefore?: unknown | null }
@@ -283,6 +283,7 @@ export function ConversationScreen() {
   const choose = (c: InboxItem) => {
     const prevKey = current()?.key ?? null;
     if (prevKey !== c.key) {
+      dismiss();
       clearStagedAttachments();
       threadSearchOpen.set(false);
       threadSearchQuery.set("");
@@ -323,6 +324,10 @@ export function ConversationScreen() {
       if (typeof change.leadId === "number") return r.leadId === change.leadId || r.key === `lead:${change.leadId}`;
       if (typeof change.unlinkedIdentityId === "number") {
         return r.identityId === change.unlinkedIdentityId || r.key === `identity:${change.unlinkedIdentityId}`;
+      }
+      if (change.conversationIds && change.conversationIds.length > 0) {
+        const ids = itemConversationIds(r);
+        return change.conversationIds.some((id) => ids.includes(id));
       }
       return false;
     });
@@ -706,7 +711,10 @@ export function ConversationScreen() {
                 lastInboundAt={facebookLastInbound}
                 nowMs={fbNow}
                 selectedTag={fbSelectedTag}
-                onSelectTag={(tag) => fbSelectedTag.set(tag)}
+                onSelectTag={(tag) => {
+                  fbSelectedTag.set(tag);
+                  dismiss();
+                }}
               />
 
               {/* UI-48: Staged Attachment Preview Queue & Path Staging Bar */}
