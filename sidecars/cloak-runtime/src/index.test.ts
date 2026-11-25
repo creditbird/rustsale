@@ -463,18 +463,36 @@ describe('Google Maps block detection', () => {
     expect(consent.state).toBe('consent_required');
   }, 30_000);
 
-  test('classify_place_with_empty_h1_is_not_ready', async () => {
+  test('classify_place_with_empty_h1_is_place_unavailable', async () => {
     const gone = await inspectFixture(
       '<div role="main"><h1 class="sr-only"> </h1><button aria-label="Zoom in">+</button></div>',
       'https://www.google.com/maps/place/?q=place_id:ChIJdoesnotexist',
     );
-    expect(gone.state).not.toBe('ready');
+    expect(gone.state).toBe('place_unavailable');
+
+    const goneWithMessage = await inspectFixture(
+      '<div role="main"><h1 class="sr-only"> </h1><button aria-label="Zoom in">+</button><p>Google Maps can\'t find ChIJdoesnotexist</p></div>',
+      'https://www.google.com/maps/place/?q=place_id:ChIJdoesnotexist',
+    );
+    expect(goneWithMessage.state).toBe('place_unavailable');
+
+    const goneIconOnly = await inspectFixture(
+      '<div role="main"><h1 class="sr-only"> </h1><button aria-label="Zoom in"></button></div>',
+      'https://www.google.com/maps/place/?q=place_id:ChIJdoesnotexist',
+    );
+    expect(goneIconOnly.state).toBe('place_unavailable');
 
     const real = await inspectFixture(
       '<div role="main"><h1>Cafe Sam</h1><button data-item-id="address">1 Le Loi</button></div>',
       'https://www.google.com/maps/place/Cafe+Sam',
     );
     expect(real.state).toBe('ready');
+
+    const emptySearch = await inspectFixture(
+      '<div role="main"><p>Google Maps can\'t find ChIJdoesnotexist</p></div>',
+      'https://www.google.com/maps/search/ChIJdoesnotexist',
+    );
+    expect(emptySearch.state).toBe('empty_results');
   });
 
   test('classify_error_page_with_h1_is_not_ready', () => {

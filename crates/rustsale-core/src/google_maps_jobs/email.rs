@@ -349,7 +349,7 @@ impl SafeHttpClient {
     }
 
     async fn resolve_and_pin(&self, url: &Url) -> Result<SocketAddr, ScrapeJobError> {
-        let host = url.host_str().ok_or_else(|| {
+        let host = url.host().ok_or_else(|| {
             enrichment_error(
                 ScrapeErrorKind::InvalidInput,
                 "enrichment URL omitted hostname",
@@ -363,10 +363,10 @@ impl SafeHttpClient {
                 false,
             )
         })?;
-        let addresses = if let Ok(address) = host.parse::<IpAddr>() {
-            vec![SocketAddr::new(address, port)]
-        } else {
-            self.resolver.resolve(host, port).await?
+        let addresses = match host {
+            url::Host::Ipv4(ip) => vec![SocketAddr::new(IpAddr::V4(ip), port)],
+            url::Host::Ipv6(ip) => vec![SocketAddr::new(IpAddr::V6(ip), port)],
+            url::Host::Domain(domain) => self.resolver.resolve(domain, port).await?,
         };
         if addresses.is_empty() {
             return Err(enrichment_error(
@@ -1209,6 +1209,65 @@ mod tests {
             .await
             .is_err());
         assert_eq!(transport.requested_urls().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn rejects_ipv6_loopback_literal_as_non_retryable_invalid_input_without_dns() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        struct CountingFailingResolver {
+            calls: AtomicUsize,
+        }
+
+        #[async_trait]
+        impl DnsResolver for CountingFailingResolver {
+            async fn resolve(
+                &self,
+                host: &str,
+                _port: u16,
+            ) -> Result<Vec<SocketAddr>, ScrapeJobError> {
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                Err(enrichment_error(
+                    ScrapeErrorKind::TransientNetwork,
+                    format!("unexpected DNS lookup for {host}"),
+                    true,
+                ))
+            }
+        }
+
+        let resolver = Arc::new(CountingFailingResolver {
+            calls: AtomicUsize::new(0),
+        });
+        let transport = Arc::new(FakeTransport::new());
+        let client = client(resolver.clone(), transport.clone());
+
+        for disallowed in [
+            "http://[::1]/",
+            "http://[fc00::1]/",
+            "http://[::ffff:127.0.0.1]/",
+        ] {
+            let error = client.fetch_html(url(disallowed)).await.unwrap_err();
+            assert_eq!(
+                error.kind,
+                ScrapeErrorKind::InvalidInput,
+                "{disallowed} -> {error:?}"
+            );
+            assert!(!error.retryable, "{disallowed} -> {error:?}");
+        }
+        assert_eq!(
+            resolver.calls.load(Ordering::SeqCst),
+            0,
+            "IPv6 literals must be parsed from url::Host without invoking DNS"
+        );
+        assert!(transport.requested_urls().is_empty());
+
+        // Also verify default `SystemDnsResolver` path returns non-retryable InvalidInput.
+        let default_error = SafeHttpClient::new()
+            .fetch_html(url("http://[::1]/"))
+            .await
+            .unwrap_err();
+        assert_eq!(default_error.kind, ScrapeErrorKind::InvalidInput);
+        assert!(!default_error.retryable);
     }
 
     #[tokio::test]

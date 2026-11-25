@@ -289,7 +289,9 @@ impl ScrapeJobRunner {
         };
         if !matches!(
             health.state,
-            GoogleMapsPageState::Ready | GoogleMapsPageState::EmptyResults
+            GoogleMapsPageState::Ready
+                | GoogleMapsPageState::EmptyResults
+                | GoogleMapsPageState::PlaceUnavailable
         ) {
             return Ok(current);
         }
@@ -418,6 +420,7 @@ impl ScrapeJobRunner {
     }
 
     pub async fn retry_email_enrichment(self: &Arc<Self>, job_id: &str) -> Result<ScrapeJob> {
+        self.wait_for_startup_recovery().await?;
         let mut active = self.active.lock().await;
         if let Some(active_job) = active.as_ref() {
             if !active_job.handle.is_finished() {
@@ -428,7 +431,6 @@ impl ScrapeJobRunner {
             }
             active.take();
         }
-        self.wait_for_startup_recovery().await?;
         let running = self
             .repository
             .reopen_for_email_retry(job_id, &self.instance_id)
@@ -3302,6 +3304,80 @@ mod tests {
         let done = repository.get_job("race-job").await.unwrap().unwrap();
         assert_eq!(done.status, ScrapeJobStatus::Completed);
         assert_eq!(done.processed_units, 1);
+    }
+
+    /// Waiting for startup recovery inside `retry_email_enrichment` must happen
+    /// *before* acquiring `self.active`, so concurrent callers such as
+    /// `active_job_id()` do not block while recovery is still pending.
+    #[tokio::test]
+    async fn retry_email_enrichment_does_not_hold_active_lock_during_startup_recovery() {
+        let repository = repository();
+        let mut partial_job = job("retry-email-recovery", ScrapeMode::Keyword);
+        partial_job.status = ScrapeJobStatus::Partial;
+        partial_job.total_units = 1;
+        partial_job.processed_units = 1;
+        let mut completed_unit = unit("retry-email-recovery", "u1", "k1", "keyword");
+        completed_unit.status = ScrapeUnitStatus::Completed;
+        repository
+            .create_job_with_units(partial_job, vec![completed_unit])
+            .await
+            .unwrap();
+
+        let now = chrono::Utc::now().to_rfc3339();
+        let failed_enrichment = ScrapeResult {
+            id: "retry-email-res".to_string(),
+            job_id: "retry-email-recovery".to_string(),
+            source_unit_id: "u1".to_string(),
+            place_id: Some("place-retry-1".to_string()),
+            canonical_url: Some("https://www.google.com/maps/place/place-retry-1".to_string()),
+            dedup_key: "place:place-retry-1".to_string(),
+            name: "Retry Email Cafe".to_string(),
+            phone: Some("0901234567".to_string()),
+            normalized_phone: Some("0901234567".to_string()),
+            email: None,
+            normalized_email: None,
+            address: None,
+            website: Some("https://retry.example".to_string()),
+            facebook: None,
+            zalo: None,
+            latitude: None,
+            longitude: None,
+            inside_requested_area: Some(true),
+            detail_status: "completed".to_string(),
+            enrichment_status: "retry_wait".to_string(),
+            import_status: "pending".to_string(),
+            last_error_kind: Some(ScrapeErrorKind::TransientNetwork),
+            last_error_message: Some("timed out".to_string()),
+            first_seen_at: now.clone(),
+            last_seen_at: now,
+        };
+        repository
+            .upsert_results("retry-email-recovery", vec![failed_enrichment])
+            .await
+            .unwrap();
+
+        let processor = Arc::new(FakeProcessor::new(Vec::new()));
+        let runner = runner(repository.clone(), processor);
+        runner.expect_startup_recovery();
+
+        let retry_runner = runner.clone();
+        let retry_task = tokio::spawn(async move {
+            retry_runner
+                .retry_email_enrichment("retry-email-recovery")
+                .await
+        });
+
+        // Give the spawned task a chance to suspend on `wait_for_startup_recovery()`.
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        let active_id = tokio::time::timeout(Duration::from_millis(200), runner.active_job_id())
+            .await
+            .expect("active_job_id must not block while retry_email_enrichment awaits recovery");
+        assert!(active_id.is_none());
+
+        runner.recover_startup().await.unwrap();
+        let reopened = retry_task.await.unwrap().unwrap();
+        assert_eq!(reopened.status, ScrapeJobStatus::Running);
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
     }
 
     #[tokio::test]

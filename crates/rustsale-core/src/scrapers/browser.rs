@@ -34,6 +34,7 @@ type BoxWriter = Pin<Box<dyn AsyncWrite + Send>>;
 pub enum GoogleMapsPageState {
     Ready,
     EmptyResults,
+    PlaceUnavailable,
     Captcha,
     ConsentRequired,
     RateLimited,
