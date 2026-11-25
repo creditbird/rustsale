@@ -46,6 +46,23 @@ function tone(status: string): BadgeTone {
 }
 const active = (s: string) => s === "running" || s === "queued";
 
+/** Statuses the core starts again (runner.start / resume_job maps PausedRequiresAction to confirm_action). */
+const RESUMABLE = ["paused", "paused_requires_action", "paused_limit_reached", "interrupted"];
+/** Statuses the core cancels: is_valid_transition to Cancelled from UserAction. */
+const CANCELLABLE = ["queued", "running", "paused", "paused_requires_action", "paused_limit_reached", "interrupted"];
+/** Statuses the core deletes: only terminal jobs. */
+const DELETABLE = ["completed", "partial", "failed", "cancelled"];
+
+export function canResume(status: string): boolean {
+  return RESUMABLE.includes(status);
+}
+export function canCancel(status: string): boolean {
+  return CANCELLABLE.includes(status);
+}
+export function canDelete(status: string): boolean {
+  return DELETABLE.includes(status);
+}
+
 /** "3/10 ô · 2 ô lỗi · 14 địa điểm · đang quét": what the job has done, and which step it is on while it runs. */
 export function progressLine(j: Pick<Job, "status" | "stage" | "processed_units" | "total_units" | "failed_units" | "businesses_discovered">): string {
   const parts = [`${j.processed_units}/${j.total_units} ô`];
@@ -296,7 +313,7 @@ export function ScraperScreen() {
                   <If when={active(j().status)}>
                     <Button testID={`pause-${j().id}`} size="sm" label="Tạm dừng" onPress={() => { void control(j(), "pause"); }} />
                   </If>
-                  <If when={j().status === "paused"}>
+                  <If when={canResume(j().status)}>
                     <Button testID={`resume-${j().id}`} size="sm" label="Tiếp tục" onPress={() => { void control(j(), "resume"); }} />
                   </If>
                   <If when={canRetryUnits(j().status, j().failed_units)}>
@@ -305,10 +322,10 @@ export function ScraperScreen() {
                   <If when={canRetryEmail(j().status)}>
                     <Button testID={`retry-email-${j().id}`} size="sm" label="Thử lại tìm email" disabled={retrying() !== null} onPress={() => { void retry(j(), "email"); }} />
                   </If>
-                  <If when={active(j().status) || j().status === "paused"}>
+                  <If when={canCancel(j().status)}>
                     <Button testID={`cancel-${j().id}`} size="sm" variant="ghost" label="Huỷ" onPress={() => { void control(j(), "cancel"); }} />
                   </If>
-                  <If when={!active(j().status)}>
+                  <If when={canDelete(j().status)}>
                     <Button testID={`delete-${j().id}`} size="sm" variant="ghost" label="Xoá" onPress={() => { void control(j(), "delete"); }} />
                   </If>
                 </View>
