@@ -44,6 +44,10 @@ fn add_column_if_missing(
 ///
 /// Bundled SQLite `lower()` only folds ASCII, so queries that match or sort
 /// Vietnamese text case-insensitively call `unicode_lower(...)` instead.
+///
+/// Only connections from `open_db_connection`/`init_db` have these.
+/// Do NOT use `unicode_lower` in indexes, views, triggers or CHECK constraints,
+/// or any connection that skips this will fail with `no such function`.
 pub fn register_sql_functions(conn: &Connection) -> Result<()> {
     conn.create_scalar_function(
         "unicode_lower",

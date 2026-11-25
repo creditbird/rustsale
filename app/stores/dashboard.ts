@@ -2,7 +2,7 @@
 
 export interface DashboardLead {
   status: string;
-  /** The `leads` table has no `created_at` column; `last_activity` is stamped on insert and used by v2 for period filtering. */
+  /** Last activity time; moves on every activity, so a period filter means 'active in period'. */
   last_activity?: string | null;
   created_at?: string | null;
 }
