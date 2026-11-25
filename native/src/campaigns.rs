@@ -317,6 +317,31 @@ impl Campaigns {
         .await
     }
 
+    /// What saving `steps` over campaign `campaignId` would cost, before it is saved: the steps
+    /// the edit removes that still have customers waiting, as `[{ step_id, step_order, channel,
+    /// pending_leads }]` (`pending_leads` counts distinct customers). Empty means the save loses
+    /// nothing in flight. Rejects an unknown campaign or a step id that is not the campaign's.
+    /// Read-only.
+    pub async fn unified_campaign_save_impact(
+        campaign_id: JsonValue,
+        steps: JsonValue,
+    ) -> Result<JsonValue, JsError> {
+        let campaign = id64(campaign_id)?;
+        let mut steps: Vec<CampaignStep> = body(steps)?;
+        for step in &mut steps {
+            step.id = checked_optional_id64(step.id)?;
+            step.campaign_id = checked_id64(step.campaign_id)?;
+            step.template_id = checked_optional_id64(step.template_id)?;
+        }
+        on_blocking(move |h| {
+            let state = state_of::<DbState>(&h)?;
+            Ok::<_, CoreApiError>(unified::get_unified_campaign_save_impact(
+                campaign, steps, state,
+            )?)
+        })
+        .await
+    }
+
     /// All unified campaigns with their metadata.
     pub async fn unified_campaigns() -> Result<JsonValue, JsError> {
         on_blocking(move |h| {
@@ -327,6 +352,11 @@ impl Campaigns {
     }
 
     /// Saves a unified campaign and its steps in one transaction and resolves the campaign id.
+    /// Editing keeps step ids: a step with an `id` is updated in place, one without is added, and
+    /// a step left out is removed (customers still waiting there are set to `CANCELLED`, sends
+    /// already made stay as history). Removing a step that still has `PENDING` customers is
+    /// refused unless `confirmRemovePending` is `true` (default `false`); ask
+    /// `unifiedCampaignSaveImpact` first to warn the user.
     /// `campaign` uses the core record's snake_case fields (`id?`, `name`, `description?`,
     /// `channel_type`, `status`, `audience_filter_json?`, `schedule_config_json?`, `created_at`,
     /// `updated_at`); `steps` uses `{ id?, campaign_id, step_order, channel, delay_minutes,
@@ -334,6 +364,7 @@ impl Campaigns {
     pub async fn save_unified_campaign(
         campaign: JsonValue,
         steps: JsonValue,
+        confirm_remove_pending: Option<bool>,
     ) -> Result<JsonValue, JsError> {
         let mut campaign: Campaign = body(campaign)?;
         campaign.id = checked_optional_id64(campaign.id)?;
@@ -345,7 +376,12 @@ impl Campaigns {
         }
         on_blocking(move |h| {
             let state = state_of::<DbState>(&h)?;
-            Ok::<_, CoreApiError>(unified::save_unified_campaign(campaign, steps, state)?)
+            Ok::<_, CoreApiError>(unified::save_unified_campaign(
+                campaign,
+                steps,
+                confirm_remove_pending,
+                state,
+            )?)
         })
         .await
     }

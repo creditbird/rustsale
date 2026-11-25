@@ -121,7 +121,8 @@ fn setup_test_db() -> Connection {
              template_content TEXT NOT NULL,
              ai_prompt_override TEXT,
              created_at TEXT NOT NULL,
-             template_id INTEGER REFERENCES templates(id) ON DELETE SET NULL
+             template_id INTEGER REFERENCES templates(id) ON DELETE SET NULL,
+             retired_at TEXT
          );
 
          CREATE TABLE IF NOT EXISTS campaign_executions (
@@ -283,7 +284,7 @@ fn test_sequence_save_and_enrollment() {
         },
     ];
 
-    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps)
+    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps, false)
         .expect("save campaign should succeed");
     assert!(campaign_id > 0);
 
@@ -348,12 +349,14 @@ fn test_get_unified_campaign_steps_returns_own_steps_in_order() {
             sample_step(2, "EMAIL", "second of first"),
             sample_step(1, "ZALO", "first of first"),
         ],
+        false,
     )
     .expect("save first campaign");
     let second = save_unified_campaign_internal(
         &mut conn,
         sample_campaign("Second"),
         vec![sample_step(1, "ZALO", "only step of second")],
+        false,
     )
     .expect("save second campaign");
 
@@ -383,6 +386,7 @@ fn test_get_unified_campaign_steps_unknown_campaign_is_an_error() {
         &mut conn,
         sample_campaign("Exists"),
         vec![sample_step(1, "ZALO", "hello")],
+        false,
     )
     .expect("save campaign");
 
@@ -396,12 +400,14 @@ fn test_get_unified_campaign_steps_unknown_campaign_is_an_error() {
 #[test]
 fn test_get_unified_campaign_steps_empty_campaign_and_read_only() {
     let mut conn = setup_test_db();
-    let empty = save_unified_campaign_internal(&mut conn, sample_campaign("No steps"), vec![])
-        .expect("save campaign without steps");
+    let empty =
+        save_unified_campaign_internal(&mut conn, sample_campaign("No steps"), vec![], false)
+            .expect("save campaign without steps");
     let with_steps = save_unified_campaign_internal(
         &mut conn,
         sample_campaign("With steps"),
         vec![sample_step(1, "ZALO", "a"), sample_step(2, "ZALO", "b")],
+        false,
     )
     .expect("save campaign with steps");
 
@@ -433,7 +439,7 @@ fn test_get_unified_campaign_steps_empty_campaign_and_read_only() {
             s
         })
         .collect();
-    save_unified_campaign_internal(&mut conn, campaign, edited).expect("save edit");
+    save_unified_campaign_internal(&mut conn, campaign, edited, false).expect("save edit");
     let after = get_unified_campaign_steps_internal(&conn, with_steps).expect("read after edit");
     assert_eq!(after.len(), 2);
     assert_eq!(after[0].template_content, "a (edited)");
@@ -711,7 +717,7 @@ fn test_scheduler_step_progression_and_scheduling_next_step() {
         },
     ];
 
-    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps).unwrap();
+    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps, false).unwrap();
     let enrolled = enroll_leads_into_campaign_internal(&conn, campaign_id, &[lead_id]).unwrap();
     assert_eq!(enrolled, 1);
 
@@ -788,7 +794,7 @@ fn test_campaign_analytics_aggregation() {
         },
     ];
 
-    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps).unwrap();
+    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps, false).unwrap();
     enroll_leads_into_campaign_internal(&conn, campaign_id, &[lead1, lead2, lead3]).unwrap();
 
     let all_steps = crate::db::get_campaign_steps(&conn, campaign_id).unwrap();
@@ -875,7 +881,7 @@ fn test_campaign_scheduler_atomic_claim_concurrency_race() {
         template_id: None,
     }];
 
-    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps).unwrap();
+    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps, false).unwrap();
     enroll_leads_into_campaign_internal(&conn, campaign_id, &[lead_id]).unwrap();
 
     conn.execute(
@@ -1242,7 +1248,7 @@ fn test_provider_failure_and_scheduler_retry_backoff() {
         template_id: None,
     }];
 
-    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps).unwrap();
+    let campaign_id = save_unified_campaign_internal(&mut conn, campaign, steps, false).unwrap();
     enroll_leads_into_campaign_internal(&conn, campaign_id, &[lead_id]).unwrap();
 
     let scheduler = CampaignScheduler::with_defaults();
@@ -2074,4 +2080,453 @@ async fn test_live_and_simulated_delivery_provider_separation() {
         .provider_message_id
         .starts_with("zalo_msg_IMEI_PROD_"));
     assert_eq!(live_res.status, DeliveryStatus::Submitted);
+}
+
+// ---- editing a campaign keeps its enrolments and history (RS #50 D3) ----
+
+fn running_campaign_with_steps(conn: &mut Connection, n: i32) -> (i64, Vec<CampaignStep>) {
+    let mut campaign = sample_campaign("Running");
+    campaign.status = "ACTIVE".to_string();
+    let steps = (1..=n)
+        .map(|i| sample_step(i, "ZALO", &format!("step {i}")))
+        .collect();
+    let id = save_unified_campaign_internal(conn, campaign, steps, false).expect("save campaign");
+    let steps = get_unified_campaign_steps_internal(conn, id).expect("read steps");
+    (id, steps)
+}
+
+fn exec_rows(conn: &Connection, campaign_id: i64) -> Vec<(i64, i64, i32, String)> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, step_id, lead_id, status FROM campaign_executions
+             WHERE campaign_id = ?1 ORDER BY id",
+        )
+        .expect("prepare");
+    stmt.query_map([campaign_id], |r| {
+        Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+    })
+    .expect("query")
+    .map(|r| r.expect("row"))
+    .collect()
+}
+
+fn put_at_step(conn: &Connection, campaign_id: i64, step_id: i64, lead: i32, status: &str) -> i64 {
+    let id = crate::db::create_campaign_execution(
+        conn,
+        campaign_id,
+        step_id,
+        lead,
+        None,
+        None,
+        "2026-01-01T00:00:00Z",
+    )
+    .expect("create execution");
+    if status != "PENDING" {
+        crate::db::update_campaign_execution_status(
+            conn,
+            id,
+            status,
+            None,
+            Some("2026-01-01T00:00:00Z"),
+        )
+        .expect("set status");
+    }
+    id
+}
+
+#[test]
+fn test_editing_a_running_campaign_keeps_enrolments_at_kept_steps() {
+    let mut conn = setup_test_db();
+    let lead1 = insert_test_lead(&conn, "A", "Co A", "0901000001", "a@a.vn");
+    let lead2 = insert_test_lead(&conn, "B", "Co B", "0901000002", "b@b.vn");
+    let (id, steps) = running_campaign_with_steps(&mut conn, 3);
+    let (s1, s2, s3) = (steps[0].id, steps[1].id, steps[2].id);
+    let (s1, s2, s3) = (s1.expect("id1"), s2.expect("id2"), s3.expect("id3"));
+    let sent = put_at_step(&conn, id, s1, lead1, "SENT");
+    let waiting = put_at_step(&conn, id, s2, lead1, "PENDING");
+    let other = put_at_step(&conn, id, s1, lead2, "REPLIED");
+    let before = exec_rows(&conn, id);
+
+    // Edit: step 1 text changes, step 2 moves behind a new step, step 3 (nobody there) is dropped.
+    let mut edited: Vec<CampaignStep> = steps[..2].to_vec();
+    edited[0].template_content = "step 1 edited".to_string();
+    edited[1].step_order = 3;
+    let mut fresh = sample_step(2, "EMAIL", "brand new");
+    fresh.id = None;
+    edited.push(fresh);
+    let mut campaign = crate::db::get_campaign(&conn, id)
+        .expect("get")
+        .expect("exists");
+    campaign.name = "Running (edited)".to_string();
+
+    assert!(
+        get_unified_campaign_save_impact_internal(&conn, id, &edited)
+            .expect("impact")
+            .is_empty()
+    );
+    let saved =
+        save_unified_campaign_internal(&mut conn, campaign, edited, false).expect("edit saves");
+    assert_eq!(saved, id);
+
+    // Every enrolment and its status survives, on the same step ids.
+    assert_eq!(exec_rows(&conn, id), before);
+    let ids: Vec<i64> = vec![sent, waiting, other];
+    assert_eq!(
+        exec_rows(&conn, id).iter().map(|r| r.0).collect::<Vec<_>>(),
+        ids
+    );
+
+    let now = get_unified_campaign_steps_internal(&conn, id).expect("steps after edit");
+    assert_eq!(now.len(), 3);
+    let first = now
+        .iter()
+        .find(|s| s.id == Some(s1))
+        .expect("step 1 kept its id");
+    assert_eq!(first.template_content, "step 1 edited");
+    let moved = now
+        .iter()
+        .find(|s| s.id == Some(s2))
+        .expect("step 2 kept its id");
+    assert_eq!(moved.step_order, 3);
+    assert!(now.iter().all(|s| s.id != Some(s3)), "step 3 was dropped");
+    assert!(now.iter().any(|s| s.template_content == "brand new"));
+    // No history at step 3, so its row is really deleted rather than retired.
+    let rows: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM campaign_steps WHERE id = ?1",
+            [s3],
+            |r| r.get(0),
+        )
+        .expect("count");
+    assert_eq!(rows, 0);
+    assert_eq!(
+        crate::db::get_campaign(&conn, id)
+            .expect("get")
+            .expect("exists")
+            .name,
+        "Running (edited)"
+    );
+}
+
+#[test]
+fn test_removing_a_step_with_customers_reports_them_and_keeps_history() {
+    let mut conn = setup_test_db();
+    let leads: Vec<i32> = (1..=4)
+        .map(|i| {
+            insert_test_lead(
+                &conn,
+                &format!("L{i}"),
+                "Co",
+                &format!("09010000{i}"),
+                "x@x.vn",
+            )
+        })
+        .collect();
+    let (id, steps) = running_campaign_with_steps(&mut conn, 3);
+    let s1 = steps[0].id.expect("id1");
+    let s2 = steps[1].id.expect("id2");
+    // Step 2 has two customers waiting, one already sent and one replied; step 1 has one waiting.
+    let w1 = put_at_step(&conn, id, s2, leads[0], "PENDING");
+    let w2 = put_at_step(&conn, id, s2, leads[1], "PENDING");
+    let done = put_at_step(&conn, id, s2, leads[2], "SENT");
+    let replied = put_at_step(&conn, id, s2, leads[3], "REPLIED");
+    let keep = put_at_step(&conn, id, s1, leads[0], "PENDING");
+    let total = exec_rows(&conn, id).len();
+
+    let edited: Vec<CampaignStep> = vec![steps[0].clone(), steps[2].clone()];
+    let impact = get_unified_campaign_save_impact_internal(&conn, id, &edited).expect("impact");
+    assert_eq!(
+        impact,
+        vec![RemovedStepImpact {
+            step_id: s2,
+            step_order: 2,
+            channel: "ZALO".to_string(),
+            pending_leads: 2,
+        }]
+    );
+    // The preview changed nothing.
+    assert_eq!(exec_rows(&conn, id).len(), total);
+    assert_eq!(
+        get_unified_campaign_steps_internal(&conn, id)
+            .expect("steps")
+            .len(),
+        3
+    );
+
+    let campaign = crate::db::get_campaign(&conn, id)
+        .expect("get")
+        .expect("exists");
+    save_unified_campaign_internal(&mut conn, campaign, edited, true).expect("edit saves");
+
+    // Nothing is deleted: waiting customers are cancelled, finished sends keep their status.
+    let rows = exec_rows(&conn, id);
+    assert_eq!(rows.len(), total);
+    let status = |exec: i64| rows.iter().find(|r| r.0 == exec).map(|r| r.3.clone());
+    assert_eq!(status(w1).as_deref(), Some("CANCELLED"));
+    assert_eq!(status(w2).as_deref(), Some("CANCELLED"));
+    assert_eq!(status(done).as_deref(), Some("SENT"));
+    assert_eq!(status(replied).as_deref(), Some("REPLIED"));
+    assert_eq!(status(keep).as_deref(), Some("PENDING"));
+
+    // The removed step is gone from the editor but its row is kept, retired, for the history.
+    let live = get_unified_campaign_steps_internal(&conn, id).expect("steps");
+    assert_eq!(live.len(), 2);
+    assert!(live.iter().all(|s| s.id != Some(s2)));
+    let retired: Option<String> = conn
+        .query_row(
+            "SELECT retired_at FROM campaign_steps WHERE id = ?1",
+            [s2],
+            |r| r.get(0),
+        )
+        .expect("retired row still exists");
+    assert!(retired.is_some());
+    // And the cancelled customers are no longer due for a send.
+    let due =
+        crate::db::get_due_campaign_executions(&conn, "2099-01-01T00:00:00Z", 50).expect("due");
+    assert!(due.iter().all(|e| e.step_id != s2));
+}
+
+#[test]
+fn test_save_refuses_a_step_id_from_another_campaign_and_changes_nothing() {
+    let mut conn = setup_test_db();
+    let (a, steps_a) = running_campaign_with_steps(&mut conn, 2);
+    let (b, steps_b) = running_campaign_with_steps(&mut conn, 1);
+    let foreign = steps_b[0].clone();
+    let mut hijack = steps_a.clone();
+    hijack.push(foreign.clone());
+
+    let campaign = crate::db::get_campaign(&conn, a)
+        .expect("get")
+        .expect("exists");
+    let err = save_unified_campaign_internal(&mut conn, campaign.clone(), hijack.clone(), false)
+        .expect_err("a foreign step id must be refused");
+    assert!(
+        err.to_lowercase().contains("invalid"),
+        "unexpected error: {err}"
+    );
+    assert!(get_unified_campaign_save_impact_internal(&conn, a, &hijack).is_err());
+
+    let mut twice = steps_a.clone();
+    twice.push(steps_a[0].clone());
+    let err = save_unified_campaign_internal(&mut conn, campaign, twice, false)
+        .expect_err("a repeated step id must be refused");
+    assert!(
+        err.to_lowercase().contains("invalid"),
+        "unexpected error: {err}"
+    );
+
+    // The refused saves rolled back: both campaigns read as before.
+    assert_eq!(
+        get_unified_campaign_steps_internal(&conn, a)
+            .expect("a")
+            .len(),
+        2
+    );
+    let kept = get_unified_campaign_steps_internal(&conn, b).expect("b");
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].campaign_id, b);
+    assert_eq!(kept[0].template_content, foreign.template_content);
+}
+
+#[test]
+fn test_save_impact_of_an_unknown_campaign_is_not_found() {
+    let mut conn = setup_test_db();
+    let (id, steps) = running_campaign_with_steps(&mut conn, 1);
+    let err = get_unified_campaign_save_impact_internal(&conn, id + 1000, &steps)
+        .expect_err("unknown campaign");
+    assert!(err.contains("not found"), "unexpected error: {err}");
+    let mut ghost = sample_campaign("Ghost");
+    ghost.id = Some(id + 1000);
+    let err = save_unified_campaign_internal(&mut conn, ghost, steps, false)
+        .expect_err("saving over a missing campaign must fail, not half-create it");
+    assert!(err.contains("not found"), "unexpected error: {err}");
+}
+
+// ---- server guards for editing running campaigns (RS #61 / D3) ----
+
+#[test]
+fn test_removing_step_with_pending_leads_requires_confirmation_and_rolls_back() {
+    let mut conn = setup_test_db();
+    let lead1 = insert_test_lead(&conn, "Guard 1", "Co", "0902000001", "g1@co.vn");
+    let lead2 = insert_test_lead(&conn, "Guard 2", "Co", "0902000002", "g2@co.vn");
+    let (id, steps) = running_campaign_with_steps(&mut conn, 2);
+    let s1 = steps[0].id.expect("id1");
+    let s2 = steps[1].id.expect("id2");
+    let w1 = put_at_step(&conn, id, s1, lead1, "PENDING");
+    let w2 = put_at_step(&conn, id, s1, lead2, "PENDING");
+    let before_execs = exec_rows(&conn, id);
+
+    let mut campaign = crate::db::get_campaign(&conn, id)
+        .expect("get")
+        .expect("exists");
+    campaign.name = "Should Not Persist".to_string();
+    let edited = vec![steps[1].clone()];
+
+    // 1. Direct call without confirmation must be refused and leave DB completely untouched.
+    let err = save_unified_campaign_internal(&mut conn, campaign.clone(), edited.clone(), false)
+        .expect_err("removing step with pending leads without confirmation must fail");
+    assert!(
+        err.to_lowercase().contains("required"),
+        "expected confirmation required error, got: {err}"
+    );
+    assert!(
+        err.contains("2 pending lead"),
+        "error should report affected pending lead count: {err}"
+    );
+    assert_eq!(
+        crate::db::get_campaign(&conn, id)
+            .expect("get")
+            .expect("exists")
+            .name,
+        "Running"
+    );
+    assert_eq!(
+        get_unified_campaign_steps_internal(&conn, id)
+            .expect("steps")
+            .len(),
+        2
+    );
+    assert_eq!(exec_rows(&conn, id), before_execs);
+
+    // 2. Calling again with confirm_remove_pending = true succeeds, cancels PENDING, and retires step 1.
+    let saved_id = save_unified_campaign_internal(&mut conn, campaign, edited, true)
+        .expect("confirmed removal must succeed");
+    assert_eq!(saved_id, id);
+    assert_eq!(
+        crate::db::get_campaign(&conn, id)
+            .expect("get")
+            .expect("exists")
+            .name,
+        "Should Not Persist"
+    );
+    let live = get_unified_campaign_steps_internal(&conn, id).expect("live steps");
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].id, Some(s2));
+    let rows = exec_rows(&conn, id);
+    assert_eq!(rows.len(), 2);
+    assert_eq!(
+        rows.iter().find(|r| r.0 == w1).map(|r| r.3.as_str()),
+        Some("CANCELLED")
+    );
+    assert_eq!(
+        rows.iter().find(|r| r.0 == w2).map(|r| r.3.as_str()),
+        Some("CANCELLED")
+    );
+    let retired: Option<String> = conn
+        .query_row(
+            "SELECT retired_at FROM campaign_steps WHERE id = ?1",
+            [s1],
+            |r| r.get(0),
+        )
+        .expect("retired step row remains for history");
+    assert!(retired.is_some());
+}
+
+#[test]
+fn test_removing_step_without_pending_leads_succeeds_without_confirmation() {
+    let mut conn = setup_test_db();
+    let lead1 = insert_test_lead(&conn, "Done Lead", "Co", "0902000003", "g3@co.vn");
+    let (id, steps) = running_campaign_with_steps(&mut conn, 2);
+    let s1 = steps[0].id.expect("id1");
+    let s2 = steps[1].id.expect("id2");
+    // Only SENT history on step 2, zero PENDING leads.
+    put_at_step(&conn, id, s2, lead1, "SENT");
+
+    let campaign = crate::db::get_campaign(&conn, id)
+        .expect("get")
+        .expect("exists");
+    let edited = vec![steps[0].clone()];
+    save_unified_campaign_internal(&mut conn, campaign, edited, false)
+        .expect("removing step with no pending leads should succeed with confirm=false");
+
+    let live = get_unified_campaign_steps_internal(&conn, id).expect("steps");
+    assert_eq!(live.len(), 1);
+    assert_eq!(live[0].id, Some(s1));
+    // Historical SENT record stays intact and step 2 is retired.
+    let retired: Option<String> = conn
+        .query_row(
+            "SELECT retired_at FROM campaign_steps WHERE id = ?1",
+            [s2],
+            |r| r.get(0),
+        )
+        .expect("retired row");
+    assert!(retired.is_some());
+    assert!(
+        crate::db::get_campaign_step(&conn, s2)
+            .expect("query step")
+            .is_none(),
+        "get_campaign_step must ignore retired steps"
+    );
+}
+
+#[test]
+fn test_scheduler_cancels_execution_for_retired_or_missing_step_without_dispatch() {
+    let mut conn = setup_test_db();
+    let lead1 = insert_test_lead(&conn, "Retired Lead", "Co", "0903000001", "r1@co.vn");
+    let lead2 = insert_test_lead(&conn, "Missing Lead", "Co", "0903000002", "r2@co.vn");
+    let (id, steps) = running_campaign_with_steps(&mut conn, 2);
+    let s1 = steps[0].id.expect("id1");
+    let s2 = steps[1].id.expect("id2");
+
+    conn.execute(
+        "INSERT INTO zalo_sessions (imei, session_name) VALUES ('IMEI_GUARD', 'Guard Session')",
+        [],
+    )
+    .expect("insert zalo session");
+
+    // Execution 1 points to a step that is retired while still PENDING.
+    let exec_retired = put_at_step(&conn, id, s1, lead1, "PENDING");
+    conn.execute(
+        "UPDATE campaign_steps SET retired_at = '2026-01-01T00:00:00Z' WHERE id = ?1",
+        [s1],
+    )
+    .expect("retire step 1");
+
+    // Execution 2 points to a step id that no longer exists in campaign_steps.
+    let exec_missing = put_at_step(&conn, id, s2, lead2, "PENDING");
+    conn.execute_batch("PRAGMA foreign_keys = OFF;")
+        .expect("disable fk for missing-step simulation");
+    conn.execute("DELETE FROM campaign_steps WHERE id = ?1", [s2])
+        .expect("delete step 2");
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .expect("re-enable fk");
+
+    let scheduler = CampaignScheduler::with_defaults();
+    scheduler.rotator.register_account("ZALO", "IMEI_GUARD");
+
+    let summary = scheduler
+        .process_due_executions(&conn, DispatchMode::Live, 10)
+        .expect("process cycle");
+    assert_eq!(summary.total_due_found, 2);
+    assert_eq!(summary.sent_count, 0);
+    assert_eq!(summary.failed_count, 0);
+    assert_eq!(summary.skipped_count, 2);
+
+    // Neither execution may ever dispatch a message.
+    let dispatched: i64 = conn
+        .query_row("SELECT COUNT(*) FROM outreach_history", [], |r| r.get(0))
+        .expect("outreach_history count");
+    assert_eq!(dispatched, 0);
+
+    for exec_id in [exec_retired, exec_missing] {
+        let (status, note): (String, Option<String>) = conn
+            .query_row(
+                "SELECT status, error_message FROM campaign_executions WHERE id = ?1",
+                [exec_id],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .expect("read execution");
+        assert_eq!(status, "CANCELLED");
+        assert_eq!(
+            note.as_deref(),
+            Some("Step removed while editing the campaign")
+        );
+    }
+
+    // Subsequent cycle must find zero due executions (no re-processing loop).
+    let second = scheduler
+        .process_due_executions(&conn, DispatchMode::Live, 10)
+        .expect("second cycle");
+    assert_eq!(second.total_due_found, 0);
+    assert_eq!(second.sent_count, 0);
 }

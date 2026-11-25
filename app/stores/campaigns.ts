@@ -13,6 +13,8 @@ export interface UnifiedCampaign {
 }
 
 export interface StepDraft {
+  /** The stored step this draft edits (kept so a save updates it in place), null for a step added in the editor. */
+  id: number | null;
   step_order: number;
   channel: string;
   delay_minutes: number;
@@ -89,6 +91,7 @@ export function statusLabel(status: string): string {
 /** The step a new campaign starts with, or the one added after `previous`. */
 export function newStep(order: number, previous?: StepDraft): StepDraft {
   return {
+    id: null,
     step_order: order,
     channel: previous?.channel ?? "zalo",
     delay_minutes: order === 1 ? 0 : 1440,
@@ -147,6 +150,7 @@ export function stepsToDrafts(rows: StepRecord[]): StepDraft[] {
   const sorted = [...rows].sort((a, b) => a.step_order - b.step_order || (a.id ?? 0) - (b.id ?? 0));
   return renumber(
     sorted.map((r) => ({
+      id: r.id ?? null,
       step_order: r.step_order,
       channel: r.channel,
       delay_minutes: r.delay_minutes,
@@ -161,6 +165,7 @@ export function stepsToDrafts(rows: StepRecord[]): StepDraft[] {
 /**
  * What `Campaigns.saveUnifiedCampaign` takes. Without `existing` it is a new DRAFT campaign (the core assigns the ids);
  * with it the campaign keeps its id, status, channel type, audience and schedule, and only name, description and steps change.
+ * Pass `confirmRemovePending = true` as the third argument only after the user confirms removing steps that still have `PENDING` leads.
  */
 export function buildPayload(name: string, description: string, steps: StepDraft[], existing?: UnifiedCampaign) {
   const stamp = new Date().toISOString();
@@ -177,7 +182,7 @@ export function buildPayload(name: string, description: string, steps: StepDraft
       updated_at: stamp,
     },
     steps: steps.map((s) => ({
-      id: null,
+      id: existing !== undefined ? s.id : null,
       campaign_id: existing?.id ?? 0,
       step_order: s.step_order,
       channel: s.channel,
@@ -189,6 +194,19 @@ export function buildPayload(name: string, description: string, steps: StepDraft
       template_id: s.template_id,
     })),
   };
+}
+
+/** A step the save would remove while customers still wait at it (`Campaigns.unifiedCampaignSaveImpact`). */
+export interface RemovedStepImpact {
+  step_id: number;
+  step_order: number;
+  channel: string;
+  pending_leads: number;
+}
+
+/** One sentence per removed step: "Sẽ bỏ N khách đang ở bước X". */
+export function describeRemoved(impact: RemovedStepImpact[]): string[] {
+  return impact.map((r) => `Sẽ bỏ ${r.pending_leads} khách đang ở bước ${r.step_order}`);
 }
 
 export function percent(rate: number): string {

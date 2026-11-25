@@ -2,7 +2,7 @@
 import { expect, open, test } from "nsh/test";
 import { Campaigns, Host, LeadsMore, Templates } from "rustsale/native";
 import {
-  buildPayload, filterTemplates, moveStep, newStep, parseTags, previewSpintax, stepsToDrafts, stringifyTags, validateCampaign,
+  buildPayload, describeRemoved, filterTemplates, moveStep, newStep, parseTags, previewSpintax, stepsToDrafts, stringifyTags, validateCampaign,
   type TemplateRecord,
 } from "./stores/campaigns";
 
@@ -158,10 +158,18 @@ test("stored steps become ordered drafts and an edit keeps the campaign's own fi
   expect(body.campaign.channel_type).toBe("zalo");
   expect(body.campaign.schedule_config_json).toBe("{\"a\":1}");
   expect(body.steps.every((x) => x.campaign_id === 7)).toBe(true);
+  // The stored step ids ride along on an edit, so the core updates those steps in place.
+  expect(drafts.map((d) => d.id)).toEqual([1, 2]);
+  expect(body.steps.map((x) => x.id)).toEqual([1, 2]);
+  expect(buildPayload("Mới", "", drafts).steps.every((x) => x.id === null)).toBe(true);
+  expect(buildPayload("Mới", "", [newStep(1)], existing).steps[0].id).toBeNull();
+  expect(describeRemoved([{ step_id: 9, step_order: 2, channel: "zalo", pending_leads: 3 }])).toEqual([
+    "Sẽ bỏ 3 khách đang ở bước 2",
+  ]);
 });
 
 const stepsOf = async (id: number) =>
-  (await Campaigns.unifiedCampaignSteps(id)) as { step_order: number; channel: string; template_content: string }[];
+  (await Campaigns.unifiedCampaignSteps(id)) as { id: number; step_order: number; channel: string; template_content: string }[];
 
 test("a campaign is edited: its real steps load, a change is saved, status is kept", async () => {
   const stamp = Date.now();
@@ -233,4 +241,61 @@ test("a campaign that vanished shows the load error and cannot be saved", async 
   await app.waitFor("id:cc-steps-retry");
   expect((await list()).some((c) => c.id === id)).toBe(false);
   await app.press("id:cc-build-cancel");
+});
+
+test("removing a step with customers waiting asks first, and saving keeps the history", async () => {
+  const stamp = Date.now();
+  const title = `CC bỏ bước ${stamp}`;
+  await Host.start(dir);
+  const leadId = ((await LeadsMore.list()) as { id: number }[])[0].id;
+  const at = new Date().toISOString();
+  const step = (order: number, text: string) => ({
+    id: null, campaign_id: 0, step_order: order, channel: "zalo", delay_minutes: order * 60, condition_type: "ALWAYS",
+    template_content: text, ai_prompt_override: null, created_at: at, template_id: null,
+  });
+  const id = Number(await Campaigns.saveUnifiedCampaign({
+    id: null, name: title, description: null, channel_type: "zalo", status: "ACTIVE",
+    audience_filter_json: null, schedule_config_json: null, created_at: at, updated_at: at,
+  }, [step(1, "Một"), step(2, "Hai")]));
+  try {
+    const before = await stepsOf(id);
+    expect(await Campaigns.enrollLeadsIntoCampaign(id, [leadId])).toBe(1);
+
+    const app = await openCampaigns();
+    await app.waitUntil(() => has(app, title));
+    await app.press(`id:cc-edit-${id}`);
+    await app.waitFor("id:cc-step-2-content");
+    await app.press("id:cc-step-remove-1");
+    await app.press("id:cc-save");
+    await app.waitUntil(() => has(app, "Sẽ bỏ 1 khách đang ở bước 1"));
+    // Nothing is saved while the question is open, and a direct unconfirmed core call is also refused.
+    expect((await stepsOf(id)).length).toBe(2);
+    await expect(
+      Campaigns.saveUnifiedCampaign({
+        id, name: title, description: null, channel_type: "zalo", status: "ACTIVE",
+        audience_filter_json: null, schedule_config_json: null, created_at: at, updated_at: at,
+      }, [{ ...step(1, "Hai"), id: before[1].id, campaign_id: id }], false),
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    expect((await stepsOf(id)).length).toBe(2);
+
+    await app.press("id:cc-removal-cancel");
+    await app.waitUntil(() => !has(app, "Sẽ bỏ 1 khách đang ở bước 1"));
+    expect(has(app, "Sửa kịch bản chiến dịch")).toBe(true);
+    expect((await stepsOf(id)).length).toBe(2);
+
+    await app.press("id:cc-save");
+    await app.waitFor("id:cc-removal-confirm");
+    await app.press("id:cc-removal-confirm");
+    await app.waitUntil(() => !has(app, "Sửa kịch bản chiến dịch"));
+
+    const after = await stepsOf(id);
+    expect(after.map((x) => x.template_content)).toEqual(["Hai"]);
+    expect(after[0].id).toBe(before[1].id);
+    // The customer's row is still there (cancelled, not deleted), so the history is intact.
+    const a = (await Campaigns.unifiedCampaignAnalytics(id)) as { total_executions: number; pending_count: number };
+    expect(a.total_executions).toBe(1);
+    expect(a.pending_count).toBe(0);
+  } finally {
+    await Campaigns.deleteUnifiedCampaign(id);
+  }
 });

@@ -6,9 +6,9 @@ import { startCore, type Page } from "../stores/core";
 import { notify, report } from "../stores/toast";
 import {
   CHANNELS, CONDITIONS, DELAYS, PLACEHOLDERS, TEMPLATE_CHANNELS, TEMPLATE_STAGES,
-  buildPayload, delayLabel, filterTemplates, moveStep, newStep, parseTags, percent, previewSpintax, renumber,
+  buildPayload, delayLabel, describeRemoved, filterTemplates, moveStep, newStep, parseTags, percent, previewSpintax, renumber,
   statusLabel, stepsToDrafts, stringifyTags, validateCampaign, validateTemplateDraft,
-  type CampaignAnalytics, type StepDraft, type StepRecord, type TemplateFolder, type TemplateRecord, type UnifiedCampaign,
+  type CampaignAnalytics, type RemovedStepImpact, type StepDraft, type StepRecord, type TemplateFolder, type TemplateRecord, type UnifiedCampaign,
 } from "../stores/campaigns";
 
 interface PickLead { id: number; name: string; phone: string; company: string }
@@ -105,6 +105,23 @@ export function CampaignCenterScreen() {
   const addStep = () => steps.set([...steps(), newStep(steps().length + 1, steps()[steps().length - 1])]);
   const removeStep = (i: number) => steps.set(renumber(steps().filter((_, k) => k !== i)));
 
+  // Saving an edit that removes a step with customers still waiting asks first; the body checked is the body saved.
+  const removal = signal<{ body: ReturnType<typeof buildPayload>; impact: RemovedStepImpact[] } | null>(null);
+
+  const commit = async (body: ReturnType<typeof buildPayload>, confirmRemovePending = false) => {
+    try {
+      await Campaigns.saveUnifiedCampaign(body.campaign, body.steps, confirmRemovePending);
+      removal.set(null);
+      closeBuilder();
+      notify("Đã lưu chiến dịch", "success");
+      await loadList();
+    } catch (e) {
+      removal.set(null);
+      const f = report(e, { retry: () => { void save(); } });
+      if (f.action === "fix") buildError.set(f.message);
+    }
+  };
+
   const save = async () => {
     if (saving()) return;
     if (stepsState() !== "ready") return;
@@ -113,14 +130,29 @@ export function CampaignCenterScreen() {
     saving.set(true);
     buildError.set(null);
     try {
-      const body = buildPayload(name(), description(), steps(), editing() ?? undefined);
-      await Campaigns.saveUnifiedCampaign(body.campaign, body.steps);
-      closeBuilder();
-      notify("Đã lưu chiến dịch", "success");
-      await loadList();
+      const target = editing();
+      const body = buildPayload(name(), description(), steps(), target ?? undefined);
+      if (target !== null) {
+        const impact = (await Campaigns.unifiedCampaignSaveImpact(target.id, body.steps)) as RemovedStepImpact[];
+        if (impact.length > 0) {
+          removal.set({ body, impact });
+          return;
+        }
+      }
+      await commit(body, false);
     } catch (e) {
       const f = report(e, { retry: () => { void save(); } });
       if (f.action === "fix") buildError.set(f.message);
+    } finally {
+      saving.set(false);
+    }
+  };
+  const confirmRemoval = async () => {
+    const pending = removal();
+    if (pending === null || saving()) return;
+    saving.set(true);
+    try {
+      await commit(pending.body, true);
     } finally {
       saving.set(false);
     }
@@ -638,6 +670,20 @@ export function CampaignCenterScreen() {
             <Button testID="cc-st-cancel" label="Huỷ" disabled={tSaving()} onPress={() => saveTplFor.set(null)} />
             <Button testID="cc-st-save" variant="primary" label={tSaving() ? "Đang lưu…" : "Lưu mẫu"} disabled={tSaving()}
               onPress={() => { void submitTpl(); }} />
+          </View>
+        </View>
+      </Modal>
+
+      <Modal open={removal() !== null} title="Bỏ bước đang có khách?" onClose={() => { if (!saving()) removal.set(null); }}>
+        <View class="gap-3">
+          <Each of={describeRemoved(removal()?.impact ?? [])} key={(line) => line}>
+            {(line, i) => <Text testID={`cc-removal-line-${i()}`} class="text-sm text-foreground">{line()}</Text>}
+          </Each>
+          <Text class="text-sm text-muted-foreground">Việc gửi đang chờ của họ ở bước đó sẽ bị huỷ. Lịch sử đã gửi vẫn được giữ.</Text>
+          <View class="flex-row justify-end gap-2">
+            <Button testID="cc-removal-cancel" label="Quay lại sửa" disabled={saving()} onPress={() => removal.set(null)} />
+            <Button testID="cc-removal-confirm" variant="primary" label={saving() ? "Đang lưu…" : "Vẫn lưu"} disabled={saving()}
+              onPress={() => { void confirmRemoval(); }} />
           </View>
         </View>
       </Modal>

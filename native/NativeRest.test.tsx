@@ -114,6 +114,91 @@ test("campaigns: outreach templates and the unified campaign lifecycle", async (
   await expect(Campaigns.sendEmailOutreach(4_294_967_297, templateId, [])).rejects.toThrow();
 });
 
+test("campaigns: editing a campaign keeps its steps' ids, enrolments and history", async () => {
+  await Host.start(dir);
+  const stamp = Date.now();
+  const mk = (order: number, text: string, id: number | null = null, campaignId = 0) => ({
+    id,
+    campaign_id: campaignId,
+    step_order: order,
+    channel: "zalo",
+    delay_minutes: order * 60,
+    condition_type: "ALWAYS",
+    template_content: text,
+    ai_prompt_override: null,
+    created_at: "2026-01-01T00:00:00Z",
+    template_id: null
+  });
+  const head = (id: number | null, name: string) => ({
+    id,
+    name,
+    description: null,
+    channel_type: "zalo",
+    status: "ACTIVE",
+    audience_filter_json: null,
+    schedule_config_json: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z"
+  });
+  const campaignId = (await Campaigns.saveUnifiedCampaign(head(null, `Edit keep ${stamp}`), [
+    mk(1, "one"),
+    mk(2, "two")
+  ])) as number;
+  try {
+    const [first, second] = rows(await Campaigns.unifiedCampaignSteps(campaignId));
+    const leadId = rows(await LeadsMore.list())[0].id as number;
+    expect(await Campaigns.enrollLeadsIntoCampaign(campaignId, [leadId])).toBe(1);
+
+    // Dropping the first step (where the customer waits) is reported, and the preview saves nothing.
+    const keepSecond = [mk(2, "two", second.id, campaignId)];
+    const impact = rows(await Campaigns.unifiedCampaignSaveImpact(campaignId, keepSecond));
+    expect(impact).toHaveLength(1);
+    expect(impact[0].step_id).toBe(first.id);
+    expect(impact[0].pending_leads).toBe(1);
+    expect(rows(await Campaigns.unifiedCampaignSteps(campaignId))).toHaveLength(2);
+
+    // Keeping both reports nothing, and an edit leaves step ids and the enrolment alone.
+    const both = [mk(1, "one edited", first.id, campaignId), mk(2, "two", second.id, campaignId)];
+    expect(rows(await Campaigns.unifiedCampaignSaveImpact(campaignId, both))).toHaveLength(0);
+    await Campaigns.saveUnifiedCampaign(head(campaignId, `Edit keep ${stamp} b`), both);
+    const after = rows(await Campaigns.unifiedCampaignSteps(campaignId));
+    expect(after.map((step) => step.id)).toEqual([first.id, second.id]);
+    expect(after[0].template_content).toBe("one edited");
+    let analytics = row(await Campaigns.unifiedCampaignAnalytics(campaignId));
+    expect(analytics.total_executions).toBe(1);
+    expect(analytics.pending_count).toBe(1);
+
+    // Direct save removing the step with a waiting customer without confirmation is refused and changes nothing.
+    await expect(
+      Campaigns.saveUnifiedCampaign(head(campaignId, `Edit keep ${stamp} refused`), keepSecond)
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(
+      Campaigns.saveUnifiedCampaign(head(campaignId, `Edit keep ${stamp} refused`), keepSecond, false)
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    expect(rows(await Campaigns.unifiedCampaignSteps(campaignId))).toHaveLength(2);
+    analytics = row(await Campaigns.unifiedCampaignAnalytics(campaignId));
+    expect(analytics.total_executions).toBe(1);
+    expect(analytics.pending_count).toBe(1);
+
+    // With explicit confirmation, removing the step cancels the send; the execution row stays.
+    await Campaigns.saveUnifiedCampaign(head(campaignId, `Edit keep ${stamp} b`), keepSecond, true);
+    expect(rows(await Campaigns.unifiedCampaignSteps(campaignId))).toHaveLength(1);
+    analytics = row(await Campaigns.unifiedCampaignAnalytics(campaignId));
+    expect(analytics.total_executions).toBe(1);
+    expect(analytics.pending_count).toBe(0);
+
+    // A step id that is not this campaign's is refused, for both the preview and the save.
+    const foreign = [mk(1, "x", (second.id as number) + 1_000_000, campaignId)];
+    await expect(Campaigns.unifiedCampaignSaveImpact(campaignId, foreign)).rejects.toThrow();
+    await expect(
+      Campaigns.saveUnifiedCampaign(head(campaignId, `Edit keep ${stamp} b`), foreign)
+    ).rejects.toThrow();
+    await expect(Campaigns.unifiedCampaignSaveImpact(campaignId + 1_000_000, keepSecond)).rejects.toThrow();
+  } finally {
+    await Campaigns.deleteUnifiedCampaign(campaignId);
+  }
+});
+
 test("campaigns: WhatsApp campaign create, populate and cancel", async () => {
   await Host.start(dir);
 
