@@ -1,6 +1,6 @@
 import { Image, Scroll, cleanup, signal, Text, View } from "nsh";
 import { Button as Base, Input as BaseInput } from "nsh/base";
-import { checkForUpdate, downloadUpdate, installAndRestart } from "nsh/updater";
+import { checkForAppUpdate, openUpdateModal, updaterState } from "../stores/updater";
 import { ConversationNetwork, Desktop, Facebook, Host, Settings, Templates, Zalo } from "rustsale/native";
 import { Badge, Button, Checkbox, EmptyState, Input, Modal, Skeleton } from "../ui";
 import type { BadgeTone } from "../ui/Badge";
@@ -133,25 +133,6 @@ export function validateSmtp(v: { name: string; host: string; port: string; from
   return null;
 }
 
-/** Answers a core updater step with `nsh/updater`, as the packaged build does. */
-async function answerUpdater(id: number, op: string): Promise<void> {
-  try {
-    if (op === "check") {
-      const found = (await checkForUpdate()) as { version?: string; notes?: string } | null;
-      Host.answerUpdater(id, found ? { version: found.version ?? "", notes: found.notes ?? "" } : null, null);
-    } else if (op === "download") {
-      await downloadUpdate();
-      Host.answerUpdater(id, null, null);
-    } else if (op === "restart") {
-      await installAndRestart();
-    } else {
-      Host.answerUpdater(id, null, `unknown updater step ${op}`);
-    }
-  } catch (e) {
-    Host.answerUpdater(id, null, e instanceof Error ? e.message : String(e));
-  }
-}
-
 /** Checks the Facebook form before the core is asked. */
 export function validateFacebook(pageId: string, token: string): string | null {
   if (pageId.trim() === "") return "Cần nhập Page ID.";
@@ -174,9 +155,6 @@ function GeneralSettings() {
   const busy = signal(false);
   const formError = signal<string | null>(null);
   const testing = signal(false);
-  const updateStatus = signal("Chưa kiểm tra.");
-  const checking = signal(false);
-  const update = signal<{ version: string; notes: string } | null>(null);
   const language = signal("vi");
   const savingLanguage = signal(false);
   const autostart = signal(false);
@@ -277,39 +255,24 @@ function GeneralSettings() {
     }
   };
 
-  const checkUpdates = async () => {
-    if (checking()) return;
-    checking.set(true);
-    updateStatus.set("Đang kiểm tra…");
-    try {
-      const found = (await checkForUpdate()) as { version?: string; notes?: string } | null;
-      if (found?.version) {
-        update.set({ version: found.version, notes: found.notes ?? "" });
-        updateStatus.set(`Có bản mới ${found.version}.`);
-      } else {
-        update.set(null);
-        updateStatus.set("Bạn đang dùng bản mới nhất.");
-      }
-    } catch {
-      update.set(null);
-      updateStatus.set("Không kiểm tra được cập nhật.");
-    } finally {
-      checking.set(false);
-    }
+  const updateBusy = () => {
+    const status = updaterState().status;
+    return status === "checking" || status === "downloading";
   };
 
-  const install = async () => {
-    if (checking()) return;
-    checking.set(true);
-    updateStatus.set("Đang tải bản cập nhật…");
-    try {
-      await downloadUpdate();
-      updateStatus.set("Đang cài đặt…");
-      await installAndRestart();
-    } catch {
-      updateStatus.set("Không cài được bản cập nhật.");
-      checking.set(false);
-    }
+  const updateStatusText = () => {
+    const s = updaterState();
+    if (s.status === "checking") return "Đang kiểm tra…";
+    if (s.status === "available" && s.availableVersion) return `Có bản mới v${s.availableVersion}.`;
+    if (s.status === "up-to-date") return "Bạn đang dùng bản mới nhất.";
+    if (s.status === "downloading") return `Đang tải bản cập nhật… ${s.progress.percentage}%`;
+    if (s.status === "downloaded") return "Đã tải xong bản cập nhật. Khởi động lại để cài đặt.";
+    if (s.status === "error") return s.errorMessage ?? "Không kiểm tra được cập nhật.";
+    return "Chưa kiểm tra.";
+  };
+
+  const checkUpdates = async () => {
+    await checkForAppUpdate({ silent: false, openOnAvailable: false });
   };
 
   const chooseLanguage = async (next: string) => {
@@ -440,16 +403,16 @@ function GeneralSettings() {
 
       <View class="gap-3 rounded-(--radius) border border-border bg-card p-4">
         <Text class="text-base font-semibold text-foreground">Cập nhật</Text>
-        <Text testID="settings-update-status" class="text-sm text-muted-foreground">{updateStatus()}</Text>
-        <If when={update() !== null}>
-          <Text class="text-sm text-foreground">{`Phiên bản ${update()?.version ?? ""}: ${update()?.notes ?? ""}`}</Text>
+        <Text testID="settings-update-status" class="text-sm text-muted-foreground">{updateStatusText()}</Text>
+        <If when={updaterState().availableVersion !== null}>
+          <Text class="text-sm text-foreground">{`Phiên bản v${updaterState().availableVersion ?? ""}: ${updaterState().releaseNotes ?? ""}`}</Text>
           <View class="flex-row justify-end">
             <Button testID="settings-update-install" variant="primary" label="Tải và cài"
-              disabled={checking()} onPress={() => { void install(); }} />
+              disabled={updateBusy()} onPress={openUpdateModal} />
           </View>
         </If>
         <View class="flex-row justify-end">
-          <Button testID="settings-update-check" label="Kiểm tra cập nhật" disabled={checking()}
+          <Button testID="settings-update-check" label="Kiểm tra cập nhật" disabled={updateBusy()}
             onPress={() => { void checkUpdates(); }} />
         </View>
       </View>
@@ -1336,10 +1299,6 @@ function AccountsSettings() {
 /** Settings: notifications and currency on one tab, channel accounts on the other. */
 export function SettingsScreen() {
   const tab = signal<"general" | "accounts">("general");
-  // The core asks TSX to run a step of `nsh/updater`; it waits for the answer.
-  const stopUpdater = Host.onUpdaterRequest((id, op) => { void answerUpdater(id, op); });
-  cleanup(stopUpdater);
-
   return (
     <View class="flex-1">
       <View class="flex-row items-center justify-between px-6 pt-6">
