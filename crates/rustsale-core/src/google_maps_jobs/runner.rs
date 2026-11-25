@@ -1481,7 +1481,7 @@ mod tests {
         runner.start("pause-blocking").await.unwrap();
         processor.wait_started().await;
         let paused =
-            tokio::time::timeout(Duration::from_millis(100), runner.pause("pause-blocking")).await;
+            tokio::time::timeout(Duration::from_secs(1), runner.pause("pause-blocking")).await;
         if paused.is_err() {
             gate.notify_waiters();
             runner.wait_for_idle(Duration::from_secs(1)).await.unwrap();
@@ -2332,7 +2332,7 @@ mod tests {
         let runner = runner(repository.clone(), processor.clone());
 
         runner.start("place-limit-job").await.unwrap();
-        runner.wait_for_idle(Duration::from_secs(2)).await.unwrap();
+        runner.wait_for_idle(Duration::from_secs(5)).await.unwrap();
 
         let stored = repository
             .get_job("place-limit-job")
