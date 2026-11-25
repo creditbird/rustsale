@@ -3125,15 +3125,28 @@ pub fn is_valid_zalo_lead_target(phone: Option<&str>, zalo_uid: Option<&str>) ->
     phone.map(is_vn_mobile).unwrap_or(false)
 }
 
-pub fn filter_outreachable_zalo_lead_ids(
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct SkippedZaloLead {
+    pub lead_id: i32,
+    pub reason: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+pub struct ZaloOutreachStartResult {
+    pub queued: usize,
+    pub skipped: usize,
+    pub skipped_leads: Vec<SkippedZaloLead>,
+}
+
+pub fn filter_outreachable_zalo_leads_detailed(
     conn: &Connection,
     lead_ids: &[i32],
-) -> Result<(Vec<i32>, Vec<i32>), rusqlite::Error> {
+) -> Result<(Vec<i32>, Vec<SkippedZaloLead>), rusqlite::Error> {
     if lead_ids.is_empty() {
         return Ok((Vec::new(), Vec::new()));
     }
     let mut valid_ids = Vec::new();
-    let mut invalid_ids = Vec::new();
+    let mut skipped_leads = Vec::new();
 
     for &id in lead_ids {
         let res: Result<(Option<String>, Option<String>), rusqlite::Error> = conn.query_row(
@@ -3146,23 +3159,46 @@ pub fn filter_outreachable_zalo_lead_ids(
                 if is_valid_zalo_lead_target(phone_opt.as_deref(), uid_opt.as_deref()) {
                     valid_ids.push(id);
                 } else {
-                    invalid_ids.push(id);
+                    let reason = if phone_opt.as_deref().is_none_or(|p| p.trim().is_empty()) {
+                        "missing_phone"
+                    } else {
+                        "invalid_phone"
+                    };
+                    skipped_leads.push(SkippedZaloLead {
+                        lead_id: id,
+                        reason: reason.to_string(),
+                    });
                 }
             }
             Err(rusqlite::Error::QueryReturnedNoRows) => {
-                invalid_ids.push(id);
+                skipped_leads.push(SkippedZaloLead {
+                    lead_id: id,
+                    reason: "lead_not_found".to_string(),
+                });
             }
             Err(e) => return Err(e),
         }
     }
 
-    for &id in &invalid_ids {
+    for entry in &skipped_leads {
         conn.execute(
             "UPDATE leads SET has_zalo = 0, zalo_status = 'INVALID_PHONE' WHERE id = ?1",
-            [id],
+            [entry.lead_id],
         )?;
     }
 
+    Ok((valid_ids, skipped_leads))
+}
+
+pub fn filter_outreachable_zalo_lead_ids(
+    conn: &Connection,
+    lead_ids: &[i32],
+) -> Result<(Vec<i32>, Vec<i32>), rusqlite::Error> {
+    let (valid_ids, skipped_leads) = filter_outreachable_zalo_leads_detailed(conn, lead_ids)?;
+    let invalid_ids = skipped_leads
+        .into_iter()
+        .map(|entry| entry.lead_id)
+        .collect();
     Ok((valid_ids, invalid_ids))
 }
 
@@ -3179,29 +3215,29 @@ pub async fn start_zalo_outreach(
     burst_max_messages: Option<u32>,
     burst_delay_seconds: Option<u64>,
     inter_message_delay_seconds: Option<u64>,
-) -> Result<(), String> {
+) -> Result<ZaloOutreachStartResult, String> {
     let enable_burst = enable_burst_limit.unwrap_or(false);
     let burst_max = burst_max_messages.unwrap_or(0);
     let burst_delay = burst_delay_seconds.unwrap_or(0);
     let inter_delay = inter_message_delay_seconds.unwrap_or(0);
 
-    let (valid_lead_ids, skipped_ids) = {
+    let (valid_lead_ids, skipped_leads) = {
         let db_state = app_handle.state::<DbState>().map_err(|e| e.to_string())?;
         let conn = db_state
             .conn
             .lock()
             .map_err(|e| format!("Database lock error: {e}"))?;
-        filter_outreachable_zalo_lead_ids(&conn, &lead_ids)
+        filter_outreachable_zalo_leads_detailed(&conn, &lead_ids)
             .map_err(|e| format!("Database error: {e}"))?
     };
 
-    if !skipped_ids.is_empty() {
+    let skipped_count = skipped_leads.len();
+    if skipped_count > 0 {
         let _ = app_handle.emit(
             "outreach-log",
             OutreachLogPayload {
                 message: format!(
-                    "Automatically skipped {} lead(s) missing phone number before starting campaign",
-                    skipped_ids.len()
+                    "Automatically skipped {skipped_count} lead(s) missing phone number before starting campaign"
                 ),
             },
         );
@@ -3221,13 +3257,21 @@ pub async fn start_zalo_outreach(
                 message: "No eligible leads found (missing phone numbers).".to_string(),
             },
         );
-        return Ok(());
+        return Ok(ZaloOutreachStartResult {
+            queued: 0,
+            skipped: skipped_count,
+            skipped_leads,
+        });
     }
 
     let Some(active_partitions) =
         resolve_outreach_partitions(&app_handle, &imeis, &valid_lead_ids)?
     else {
-        return Ok(());
+        return Ok(ZaloOutreachStartResult {
+            queued: 0,
+            skipped: skipped_count,
+            skipped_leads,
+        });
     };
 
     let total_leads: usize = active_partitions.iter().map(|(_, ids)| ids.len()).sum();
@@ -3290,7 +3334,11 @@ pub async fn start_zalo_outreach(
             processed_offset += count;
         }
     });
-    Ok(())
+    Ok(ZaloOutreachStartResult {
+        queued: total_leads,
+        skipped: skipped_count,
+        skipped_leads,
+    })
 }
 
 fn emit_outreach_complete(app_handle: &AppHandle, total_sent: usize, message: &str) {

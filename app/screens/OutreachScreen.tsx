@@ -6,6 +6,7 @@ import { notify, report } from "../stores/toast";
 import { startCore } from "../stores/core";
 import { useOutreachLeads } from "../stores/outreach";
 import { zaloCampaign } from "../stores/campaign";
+import { parseZaloOutreachResult } from "../stores/zaloTarget";
 import { OutreachLeads } from "./OutreachLeads";
 
 interface ZaloAccount {
@@ -214,13 +215,30 @@ export function OutreachScreen() {
         return;
       }
       campaign.begin();
-      await Campaigns.startZaloOutreach(
-        chosenAccounts(), template, ids,
-        burstEnabled(), delays.burstMax, delays.burstDelay, delays.inter,
+      const result = parseZaloOutreachResult(
+        await Campaigns.startZaloOutreach(
+          chosenAccounts(), template, ids,
+          burstEnabled(), delays.burstMax, delays.burstDelay, delays.inter,
+        ),
       );
-      status.set(`Đang gửi tới ${ids.length} lead…`);
-      campaign.appendLog(`Bắt đầu gửi tới ${ids.length} lead.`);
-      notify(`Đã bắt đầu gửi tới ${ids.length} lead`, "success");
+      if (result.queued <= 0) {
+        campaign.abort();
+        const msg = "SĐT không hợp lệ, không gửi.";
+        runError.set(msg);
+        status.set(msg);
+        notify(msg, "danger");
+        return;
+      }
+      if (result.skipped > 0) {
+        const msg = `Đã xếp ${result.queued}, bỏ ${result.skipped} (SĐT không hợp lệ).`;
+        status.set(msg);
+        campaign.appendLog(msg);
+        notify(`Đã xếp ${result.queued}, bỏ ${result.skipped}`, "warning");
+      } else {
+        status.set(`Đang gửi tới ${result.queued} lead…`);
+        campaign.appendLog(`Bắt đầu gửi tới ${result.queued} lead.`);
+        notify(`Đã bắt đầu gửi tới ${result.queued} lead`, "success");
+      }
     } catch (e) {
       const f = report(e, { retry: () => { void run(); } });
       if (f.action === "fix") runError.set(f.message);
