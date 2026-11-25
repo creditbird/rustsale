@@ -34,9 +34,20 @@ test("the owner and value filters narrow the page in the core", async () => {
   const rich = await add(`Loc dat ${stamp}`, { owner: `Chi ${stamp}`, value: 80_000_000 });
   const other = await add(`Loc khac ${stamp}`, { owner: `Dung ${stamp}`, value: 80_000_000 });
 
-  const byOwner = (await Leads.page({ owner: `chi ${stamp}` }, null, 50)) as Page<{ id: number }>;
+  // Core filters owner by exact trimmed value from Leads.owners() so Vietnamese names match cleanly.
+  const byOwner = (await Leads.page({ owner: `Chi ${stamp}` }, null, 50)) as Page<{ id: number }>;
   expect(byOwner.total).toBe(2);
   expect(byOwner.items.map((lead) => lead.id).sort()).toEqual([cheap, rich].sort());
+
+  const byTrimmedOwner = (await Leads.page(
+    { owner: `  Chi ${stamp}  ` },
+    null,
+    50
+  )) as Page<{ id: number }>;
+  expect(byTrimmedOwner.total).toBe(2);
+
+  const wrongCase = (await Leads.page({ owner: `chi ${stamp}` }, null, 50)) as Page<{ id: number }>;
+  expect(wrongCase.total).toBe(0);
 
   const byValue = (await Leads.page(
     { owner: `Chi ${stamp}`, minValue: 10_000_000, maxValue: 90_000_000 },
