@@ -14,14 +14,27 @@ interface Calls {
   email: unknown[][];
 }
 
-async function openLead(state: Calls, name: string, id: number) {
+interface StubZaloAccount {
+  account_key: string;
+  display_name: string | null;
+  auth_status: string;
+}
+
+const DEFAULT_ZALO_ACCOUNTS: StubZaloAccount[] = [
+  { account_key: "acc-z", display_name: "Zalo Một", auth_status: "valid" },
+];
+
+async function openLead(
+  state: Calls,
+  name: string,
+  id: number,
+  zaloAccounts: StubZaloAccount[] = DEFAULT_ZALO_ACCOUNTS,
+) {
   await Host.start(dir);
   const app = await open("./App.tsx", {
     modules: {
       "rustsale/native": {
-        "Zalo.accounts": () => [
-          { account_key: "acc-z", display_name: "Zalo Một", auth_status: "valid" },
-        ],
+        "Zalo.accounts": () => zaloAccounts,
         "Campaigns.outreachTemplates": () => [
           { id: 7, name: "Mẫu Zalo", content: "Chào [name]" },
         ],
@@ -52,7 +65,7 @@ async function openLead(state: Calls, name: string, id: number) {
   return app;
 }
 
-test("one Zalo message is sent with the chosen account and template, then logged", async () => {
+test("one Zalo message is queued with the chosen account and template, then logged", async () => {
   const stamp = Date.now();
   const name = `Gui Zalo ${stamp}`;
   const id = (await Leads.add({ name, status: "New", phone: "0901234567" })) as number;
@@ -72,12 +85,14 @@ test("one Zalo message is sent with the chosen account and template, then logged
   expect(state.zalo[0][2]).toEqual([id]);
   await eventually(async () => {
     const acts = (await LeadsMore.activities(id)) as { activity_type: string; content: string }[];
-    return acts.some((a) => a.activity_type === "Zalo" && a.content.includes("Mẫu Zalo"));
+    return acts.some(
+      (a) => a.activity_type === "Zalo" && a.content === "Đã xếp hàng gửi Zalo: Mẫu Zalo",
+    );
   });
-  await app.waitUntil(() => has(app, "Đã gửi Zalo: Mẫu Zalo"));
+  await app.waitUntil(() => has(app, "Đã xếp hàng gửi Zalo: Mẫu Zalo"));
 });
 
-test("one email is sent with the chosen SMTP and template, then logged", async () => {
+test("one email is queued with the chosen SMTP and template, then logged", async () => {
   const stamp = Date.now();
   const name = `Gui Email ${stamp}`;
   const id = (await Leads.add({ name, email: `lead${stamp}@example.test`, status: "New" })) as number;
@@ -96,9 +111,11 @@ test("one email is sent with the chosen SMTP and template, then logged", async (
   expect(state.email[0][2]).toEqual([id]);
   await eventually(async () => {
     const acts = (await LeadsMore.activities(id)) as { activity_type: string; content: string }[];
-    return acts.some((a) => a.activity_type === "Email" && a.content.includes("Mẫu Email"));
+    return acts.some(
+      (a) => a.activity_type === "Email" && a.content === "Đã xếp hàng gửi email: Mẫu Email",
+    );
   });
-  await app.waitUntil(() => has(app, "Đã gửi email: Mẫu Email"));
+  await app.waitUntil(() => has(app, "Đã xếp hàng gửi email: Mẫu Email"));
 });
 
 test("a lead without an email is refused before any SMTP call", async () => {
@@ -125,4 +142,22 @@ test("a lead without a phone or Zalo is refused before any Zalo call", async () 
   await app.waitUntil(() => has(app, "Khách chưa có số điện thoại hoặc Zalo."));
   expect(state.zalo.length).toBe(0);
   expect(app.shows("id:send-zalo-confirm")).toBe(false);
+});
+
+test("Zalo send is blocked with an error when no account has valid auth_status", async () => {
+  const stamp = Date.now();
+  const name = `Gui Zalo het han ${stamp}`;
+  const id = (await Leads.add({ name, status: "New", phone: "0901234567" })) as number;
+  const state: Calls = { zalo: [], email: [] };
+  const app = await openLead(state, name, id, [
+    { account_key: "acc-expired", display_name: "Zalo Hết hạn", auth_status: "expired" },
+  ]);
+
+  await app.press("id:lead-send-zalo");
+  await app.waitFor("id:send-zalo-error");
+  await app.waitUntil(() => has(app, "Chưa có tài khoản Zalo hợp lệ"));
+  expect(has(app, "Zalo Hết hạn")).toBe(false);
+  await app.press("id:send-zalo-confirm");
+  expect(state.zalo.length).toBe(0);
+  expect(app.shows("id:send-zalo-confirm")).toBe(true);
 });

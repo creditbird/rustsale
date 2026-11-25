@@ -123,6 +123,7 @@ interface EmailTemplate {
 }
 
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const NO_VALID_ZALO_ACCOUNT = "Chưa có tài khoản Zalo hợp lệ. Hãy đăng nhập lại tài khoản Zalo.";
 
 /** The lead detail panel the Leads, Contacts and Categories screens share. */
 export function LeadDetail(props: LeadDetailProps) {
@@ -168,18 +169,24 @@ export function LeadDetail(props: LeadDetailProps) {
     zaloError.set(null);
     zaloAccounts.set([]);
     zaloTemplates.set([]);
+    zaloAccount.set("");
+    zaloTemplate.set(null);
     try {
       const [accounts, templates] = await Promise.all([
         Zalo.accounts(),
         Campaigns.outreachTemplates(),
       ]);
-      const accountRows = accounts as ZaloAccount[];
+      const validAccounts = (accounts as ZaloAccount[]).filter(
+        (account) => account.auth_status === "valid",
+      );
       const templateRows = templates as ZaloTemplate[];
-      zaloAccounts.set(accountRows);
+      zaloAccounts.set(validAccounts);
       zaloTemplates.set(templateRows);
-      const valid = accountRows.find((account) => account.auth_status === "valid") ?? accountRows[0];
-      zaloAccount.set(valid?.account_key ?? "");
+      zaloAccount.set(validAccounts[0]?.account_key ?? "");
       zaloTemplate.set(templateRows[0]?.id ?? null);
+      if (validAccounts.length === 0) {
+        zaloError.set(NO_VALID_ZALO_ACCOUNT);
+      }
     } catch (e) {
       report(e, { retry: () => { void openZalo(); } });
     }
@@ -189,8 +196,11 @@ export function LeadDetail(props: LeadDetailProps) {
   };
   const sendZalo = async () => {
     if (zaloBusy()) return;
-    if (zaloAccount() === "") {
-      zaloError.set("Chưa có tài khoản Zalo đã đăng nhập.");
+    const selected = zaloAccounts().find(
+      (account) => account.account_key === zaloAccount() && account.auth_status === "valid",
+    );
+    if (!selected) {
+      zaloError.set(NO_VALID_ZALO_ACCOUNT);
       return;
     }
     if (zaloTemplate() === null) {
@@ -201,13 +211,13 @@ export function LeadDetail(props: LeadDetailProps) {
     zaloBusy.set(true);
     zaloError.set(null);
     try {
-      await Campaigns.startZaloOutreach([zaloAccount()], zaloTemplate(), [lead.id]);
+      await Campaigns.startZaloOutreach([selected.account_key], zaloTemplate(), [lead.id]);
       // The send is queued from here on: a failed log must never offer a retry that sends it twice.
       try {
         await LeadsMore.addActivity({
           leadId: lead.id,
           activityType: "Zalo",
-          content: `Đã gửi Zalo: ${zaloTemplateName()}`,
+          content: `Đã xếp hàng gửi Zalo: ${zaloTemplateName()}`,
           performedBy: "Self",
         });
       } catch {
@@ -234,6 +244,8 @@ export function LeadDetail(props: LeadDetailProps) {
     emailError.set(null);
     smtpAccounts.set([]);
     emailTemplates.set([]);
+    smtpId.set(null);
+    emailTemplateId.set(null);
     try {
       const [accounts, templates] = await Promise.all([
         Templates.smtpAccounts(),
@@ -272,7 +284,7 @@ export function LeadDetail(props: LeadDetailProps) {
         await LeadsMore.addActivity({
           leadId: lead.id,
           activityType: "Email",
-          content: `Đã gửi email: ${emailTemplateName()}`,
+          content: `Đã xếp hàng gửi email: ${emailTemplateName()}`,
           performedBy: "Self",
         });
       } catch {
@@ -415,7 +427,10 @@ export function LeadDetail(props: LeadDetailProps) {
               items={zaloAccounts().map((account) => ({ value: account.account_key, title: zaloLabel(account) }))}
               value={zaloAccount()}
               placeholder="Chọn tài khoản Zalo"
-              onChange={({ value }) => zaloAccount.set(value ?? "")}
+              onChange={({ value }) => {
+                zaloAccount.set(value ?? "");
+                if (value) zaloError.set(null);
+              }}
               trigger={
                 <View testID="send-zalo-account-trigger" class="h-9 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
                   <Text class="truncate text-sm text-foreground">
