@@ -16,7 +16,7 @@ import { PipelineScreen } from "./screens/PipelineScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { DashboardScreen } from "./screens/DashboardScreen";
 import { CampaignCenterScreen } from "./screens/CampaignCenterScreen";
-import { Placeholder } from "./screens/Placeholder";
+import { FacebookHubScreen } from "./screens/FacebookHubScreen";
 
 function SidebarItem(props: { id: (typeof NAV)[number]["id"]; label: string; glyph: string }) {
   return (
@@ -34,21 +34,23 @@ function SidebarItem(props: { id: (typeof NAV)[number]["id"]; label: string; gly
 }
 
 function pick(r: RouteId) {
-  if (r === "dashboard") return <DashboardScreen />;
-  if (r === "leads") return <LeadsScreen />;
-  if (r === "conversation") return <ConversationScreen />;
-  if (r === "template_center") return <TemplatesScreen />;
-  if (r === "scraper") return <ScraperScreen />;
-  if (r === "categories") return <CategoriesScreen />;
-  if (r === "contacts") return <ContactsScreen />;
-  if (r === "outreach") return <OutreachScreen />;
-  if (r === "email_outreach") return <EmailOutreachScreen />;
-  if (r === "whatsapp_outreach") return <WhatsAppOutreachScreen />;
-  if (r === "ai_approval") return <AiApprovalScreen />;
-  if (r === "pipeline") return <PipelineScreen />;
-  if (r === "settings") return <SettingsScreen />;
-  if (r === "campaign_center") return <CampaignCenterScreen />;
-  return <Placeholder title={NAV.find((n) => n.id === r)?.label ?? ""} />;
+  switch (r) {
+    case "dashboard": return <DashboardScreen />;
+    case "leads": return <LeadsScreen />;
+    case "conversation": return <ConversationScreen />;
+    case "template_center": return <TemplatesScreen />;
+    case "scraper": return <ScraperScreen />;
+    case "categories": return <CategoriesScreen />;
+    case "contacts": return <ContactsScreen />;
+    case "outreach": return <OutreachScreen />;
+    case "email_outreach": return <EmailOutreachScreen />;
+    case "whatsapp_outreach": return <WhatsAppOutreachScreen />;
+    case "ai_approval": return <AiApprovalScreen />;
+    case "pipeline": return <PipelineScreen />;
+    case "settings": return <SettingsScreen />;
+    case "campaign_center": return <CampaignCenterScreen />;
+    case "facebook_hub": return <FacebookHubScreen />;
+  }
 }
 
 /** The app frame: sidebar on the left, the routed screen on the right. */
