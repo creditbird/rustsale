@@ -24,10 +24,6 @@ serde_path_to_error = "0.1"
 thiserror = "2"
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
 async-trait = "0.1"
-# Not used here: it holds zip's 2.x line at 2.4.2, because calamine 0.26 (a dependency of
-# rustsale-core) does not compile against zip 2.6, which a fresh resolution would pick (the
-# lockfile that nsh generates under .nsh/ resolves anew).
-zip = { version = "=2.4.2", default-features = false }
 
 # Pins for `nsh run --target gpui` (#55). nsh-platform-gpui 0.6.1 asks for `gpui-fast ^0.1.16`, and gpui-fast
 # 0.1.19 (what a fresh resolution picks) no longer has lyon's `FillOptions::even_odd`, which nsh-platform-gpui
