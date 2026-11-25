@@ -387,7 +387,7 @@ mod compact_message_tests {
 
 /// Manual check against a COPY of `rustsale.db` (never the live file):
 /// `RUSTSALE_CAPTION_CHECK_DB=/tmp/copy/rustsale.db RUSTSALE_CAPTION_CHECK_IDS=92836,92842 \
-///  RUSTSALE_CAPTION_CHECK_CONV=2250596 cargo test --lib caption_check_on_db_copy -- --ignored --nocapture`
+///  RUSTSALE_CAPTION_CHECK_CONV=1000001 cargo test --lib caption_check_on_db_copy -- --ignored --nocapture`
 #[cfg(test)]
 mod db_copy_check {
     use super::*;

@@ -1118,7 +1118,7 @@ fn normalized_content(
 
 #[test]
 fn formatted_rtf_text_keeps_its_title_as_plain_text() {
-    let title = "QUOC ANH // 900814405E--- ACTR\nCHO XE ĐI --- FULL SAILUN";
+    let title = "KHACH MAU // ABCD1234567--- ACTR\nCHO XE ĐI --- FULL HANG MAU";
     let message = normalized_content(json!({
         "action": "rtf",
         "childnumber": 0,
@@ -1139,7 +1139,7 @@ fn pin_notice_text_content_is_unchanged_by_the_rtf_fix() {
     let message = normalized_content(json!({
         "action": "msginfo.actionlist",
         "description": "",
-        "title": "Vận Tải Quốc Anh đã ghim tin nhắn x",
+        "title": "Khách Mẫu đã ghim tin nhắn x",
         "params": "{}"
     }));
     assert_eq!(message.content_type, "unsupported");

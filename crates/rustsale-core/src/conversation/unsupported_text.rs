@@ -193,12 +193,12 @@ mod tests {
     fn pin_notice_is_a_labelled_notice() {
         let content = json!({
             "action": "msginfo.actionlist",
-            "title": "Vận Tải Quốc Anh đã ghim tin nhắn https://x.test/...",
+            "title": "Khách Mẫu đã ghim tin nhắn https://x.test/...",
             "params": "{}"
         });
         assert_eq!(
             label(content),
-            "[thông báo] Vận Tải Quốc Anh đã ghim tin nhắn https://x.test/..."
+            "[thông báo] Khách Mẫu đã ghim tin nhắn https://x.test/..."
         );
     }
 

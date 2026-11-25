@@ -934,15 +934,15 @@ mod tests {
     #[test]
     fn parses_comments_blanks_and_the_example_line() {
         let (rules, bad) = parse_allowlist(
-            "\u{feff}# mã dự án, uid, conversation\n\nVTQA,7359857892895854028,2250596\r\n  # note\n",
+            "\u{feff}# mã dự án, uid, conversation\n\nDEMO,1000000000000000001,1000001\r\n  # note\n",
         );
         assert!(bad.is_empty());
         assert_eq!(
             rules,
             vec![AllowRule {
-                project_code: "VTQA".into(),
-                sender_uid: Some("7359857892895854028".into()),
-                conversation_id: Some(2_250_596),
+                project_code: "DEMO".into(),
+                sender_uid: Some("1000000000000000001".into()),
+                conversation_id: Some(1_000_001),
             }]
         );
     }
