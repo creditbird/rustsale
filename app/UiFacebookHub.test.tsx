@@ -565,6 +565,8 @@ test("submit prevents double-click and surfaces core/API errors for post and pag
   await app.waitUntil(() => has(app, "Đang gửi…"));
   await app.press("id:fb-post-submit").catch(() => undefined);
   await eventually(async () => state.publishCalls.length === 1);
+  await app.waitFor("id:fb-post-success");
+  await app.waitUntil(() => !has(app, "Đang gửi…"));
   expect(state.scheduleCalls.length).toBe(1);
 
   // Core/API failure on schedulePost shows user-facing error
@@ -573,7 +575,7 @@ test("submit prevents double-click and surfaces core/API errors for post and pag
   await app.type("id:fb-post-message", `Lỗi API ${stamp}`);
   await app.press("id:fb-post-submit");
   await app.waitFor("id:fb-post-error");
-  expect(has(app, "Dịch vụ tạm thời chưa sẵn sàng")).toBe(true);
+  expect(has(app, "Có lỗi khi xử lý")).toBe(true);
 
   // Core/API failure on pageHealth shows error banner and retry recovers
   await app.press("id:fb-tab-compliance");
@@ -581,7 +583,7 @@ test("submit prevents double-click and surfaces core/API errors for post and pag
   state.healthFail = true;
   await app.press("id:fb-health-refresh");
   await app.waitFor("id:fb-health-error");
-  expect(has(app, "Dịch vụ tạm thời chưa sẵn sàng")).toBe(true);
+  expect(has(app, "Có lỗi khi xử lý")).toBe(true);
 
   state.healthFail = false;
   await app.press("id:fb-health-retry");
