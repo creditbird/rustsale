@@ -7,7 +7,9 @@ Workflow: `.github/workflows/nsh-v3-gates.yml`. It runs the v3 gates on GitHub r
 
 - push to `feat/nsh-v3*` (and to `chore/nsh-v3-ci-gates`)
 - pull request into `feat/nsh-v3*`
-- manually: Actions tab > "NSH v3 gates" > Run workflow, or `gh workflow run nsh-v3-gates.yml --ref <branch>`
+- manually, on any branch without pushing to it: `gh workflow run nsh-v3-gates.yml -R creditbird/rustsale --ref <branch-that-has-this-file> -f ref=<branch-to-test>`
+  (the workflow file comes from `--ref`, the code under test from `ref`; until this file is merged use `--ref chore/nsh-v3-ci-gates`).
+  The run summary shows the tested ref and commit sha.
 
 A newer push to the same branch cancels the older run. No secrets are used. `RUSTSALE_DEMO=1` is set only in the `app` job.
 
@@ -22,6 +24,19 @@ A newer push to the same branch cancels the older run. No secrets are used. `RUS
 
 Toolchain: Rust 1.98.1 (same as the .deb container), nsh v0.6.1. Cargo caches (`Swatinem/rust-cache`) and the nsh
 cache are keyed per job; the first run on a new branch family is cold and slower, later runs are warm.
+
+## Typical durations (GitHub runner, int9 code)
+
+Measured on `chore/nsh-v3-ci-gates` (int9 + workflow). Jobs run in parallel, so the wall time is the slowest job.
+
+| Job | Cold cache (run 45462177301) | Warm cache (run 45499546565) |
+|---|---|---|
+| `core` | 6 m 18 s | 5 m 00 s |
+| `native` | 8 m 01 s | 5 m 28 s |
+| `app` (`nsh check` ~5 m, `nsh test` ~6 m 15 s) | 13 m 14 s | 12 m 16 s |
+| wall time | ~13 m | ~12 m |
+
+Runs: https://github.com/creditbird/rustsale/actions/runs/45462177301 and https://github.com/creditbird/rustsale/actions/runs/45499546565
 
 ## How to read the result
 

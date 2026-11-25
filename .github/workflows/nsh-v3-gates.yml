@@ -6,6 +6,11 @@ name: NSH v3 gates
 # How to read the result: docs/v3/ci-gates.md
 on:
   workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or sha to test (run the workflow from a ref that has this file, e.g. --ref chore/nsh-v3-ci-gates)'
+        required: false
+        default: ''
   push:
     branches: ['feat/nsh-v3*', 'chore/nsh-v3-ci-gates']
   pull_request:
@@ -15,7 +20,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: nsh-v3-gates-${{ github.ref }}
+  group: nsh-v3-gates-${{ inputs.ref || github.ref }}
   cancel-in-progress: true
 
 env:
@@ -34,6 +39,10 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Tested commit
+        run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -58,6 +67,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Tested commit
+        run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -88,6 +101,10 @@ jobs:
       RUSTSALE_DEMO: '1'
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Tested commit
+        run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ env.RUST_VERSION }}
@@ -134,6 +151,7 @@ jobs:
         run: |
           {
             echo "### NSH v3 gates"
+            echo "Tested ref: \`${{ inputs.ref || github.ref_name }}\`"
             echo "| Job | Result | Duration |"
             echo "|---|---|---|"
             gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate \
