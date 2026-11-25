@@ -485,9 +485,7 @@ impl ConversationService {
         Ok(())
     }
 
-    pub fn list_direct_chat_accounts(
-        &self,
-    ) -> Result<Vec<super::types::DirectChatAccount>> {
+    pub fn list_direct_chat_accounts(&self) -> Result<Vec<super::types::DirectChatAccount>> {
         Ok(self.repository.list_direct_chat_accounts()?)
     }
 
