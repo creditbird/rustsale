@@ -22,19 +22,40 @@ interface Calls {
   email: unknown[][];
 }
 
+interface StubZaloAccount {
+  account_key: string;
+  display_name: string | null;
+  auth_status: string;
+}
+
+interface OpenLeadOptions {
+  zaloAccounts?: StubZaloAccount[];
+  zaloResult?: ZaloOutreachStartResult;
+}
+
+const DEFAULT_ZALO_ACCOUNTS: StubZaloAccount[] = [
+  { account_key: "acc-z", display_name: "Zalo Một", auth_status: "valid" },
+];
+
+const DEFAULT_ZALO_RESULT: ZaloOutreachStartResult = {
+  queued: 1,
+  skipped: 0,
+  skipped_leads: [],
+};
+
 async function openLead(
   state: Calls,
   name: string,
   id: number,
-  zaloResult: ZaloOutreachStartResult = { queued: 1, skipped: 0, skipped_leads: [] },
+  options: OpenLeadOptions = {},
 ) {
+  const zaloAccounts = options.zaloAccounts ?? DEFAULT_ZALO_ACCOUNTS;
+  const zaloResult = options.zaloResult ?? DEFAULT_ZALO_RESULT;
   await Host.start(dir);
   const app = await open("./App.tsx", {
     modules: {
       "rustsale/native": {
-        "Zalo.accounts": () => [
-          { account_key: "acc-z", display_name: "Zalo Một", auth_status: "valid" },
-        ],
+        "Zalo.accounts": () => zaloAccounts,
         "Campaigns.outreachTemplates": () => [
           { id: 7, name: "Mẫu Zalo", content: "Chào [name]" },
         ],
@@ -144,7 +165,7 @@ test("zaloTarget helpers mirror core phone and UID validation rules", () => {
   expect(parseZaloOutreachResult(null)).toEqual({ queued: 0, skipped: 0, skipped_leads: [] });
 });
 
-test("one Zalo message is sent with the chosen account and template, then logged", async () => {
+test("one Zalo message is queued with the chosen account and template, then logged", async () => {
   await Host.start(dir);
   const stamp = Date.now();
   const name = `Gui Zalo ${stamp}`;
@@ -166,15 +187,17 @@ test("one Zalo message is sent with the chosen account and template, then logged
     expect(state.zalo[0][2]).toEqual([id]);
     await eventually(async () => {
       const acts = (await LeadsMore.activities(id)) as { activity_type: string; content: string }[];
-      return acts.some((a) => a.activity_type === "Zalo" && a.content.includes("Mẫu Zalo"));
+      return acts.some(
+        (a) => a.activity_type === "Zalo" && a.content === "Đã xếp hàng gửi Zalo: Mẫu Zalo",
+      );
     });
-    await app.waitUntil(() => has(app, "Đã gửi Zalo: Mẫu Zalo"));
+    await app.waitUntil(() => has(app, "Đã xếp hàng gửi Zalo: Mẫu Zalo"));
   } finally {
     await LeadsMore.delete(id);
   }
 });
 
-test("one email is sent with the chosen SMTP and template, then logged", async () => {
+test("one email is queued with the chosen SMTP and template, then logged", async () => {
   await Host.start(dir);
   const stamp = Date.now();
   const name = `Gui Email ${stamp}`;
@@ -195,9 +218,11 @@ test("one email is sent with the chosen SMTP and template, then logged", async (
     expect(state.email[0][2]).toEqual([id]);
     await eventually(async () => {
       const acts = (await LeadsMore.activities(id)) as { activity_type: string; content: string }[];
-      return acts.some((a) => a.activity_type === "Email" && a.content.includes("Mẫu Email"));
+      return acts.some(
+        (a) => a.activity_type === "Email" && a.content === "Đã xếp hàng gửi email: Mẫu Email",
+      );
     });
-    await app.waitUntil(() => has(app, "Đã gửi email: Mẫu Email"));
+    await app.waitUntil(() => has(app, "Đã xếp hàng gửi email: Mẫu Email"));
   } finally {
     await LeadsMore.delete(id);
   }
@@ -274,9 +299,11 @@ test("when core skips the lead (queued = 0), LeadDetail reports error and logs n
   try {
     const state: Calls = { zalo: [], email: [] };
     const app = await openLead(state, name, id, {
-      queued: 0,
-      skipped: 1,
-      skipped_leads: [{ lead_id: id, reason: "invalid_phone" }],
+      zaloResult: {
+        queued: 0,
+        skipped: 1,
+        skipped_leads: [{ lead_id: id, reason: "invalid_phone" }],
+      },
     });
 
     await app.press("id:lead-send-zalo");
@@ -304,9 +331,11 @@ test("when core returns both queued and skipped, LeadDetail reports both counts 
   try {
     const state: Calls = { zalo: [], email: [] };
     const app = await openLead(state, name, id, {
-      queued: 2,
-      skipped: 1,
-      skipped_leads: [{ lead_id: 999999, reason: "invalid_phone" }],
+      zaloResult: {
+        queued: 2,
+        skipped: 1,
+        skipped_leads: [{ lead_id: 999999, reason: "invalid_phone" }],
+      },
     });
 
     await app.press("id:lead-send-zalo");
@@ -319,7 +348,9 @@ test("when core returns both queued and skipped, LeadDetail reports both counts 
 
     await eventually(async () => {
       const acts = (await LeadsMore.activities(id)) as { activity_type: string; content: string }[];
-      return acts.some((a) => a.activity_type === "Zalo" && a.content.includes("Mẫu Zalo"));
+      return acts.some(
+        (a) => a.activity_type === "Zalo" && a.content === "Đã xếp hàng gửi Zalo: Mẫu Zalo",
+      );
     });
   } finally {
     await LeadsMore.delete(id);
@@ -363,4 +394,62 @@ test("OutreachScreen reports queued and skipped counts when both are non-zero", 
   await app.press("id:zalo-run");
   await eventually(async () => state.zalo.length === 1);
   await app.waitUntil(() => has(app, "Đã xếp 2, bỏ 1"));
+});
+
+test("Zalo send is disabled with an error when no account has valid auth_status", async () => {
+  await Host.start(dir);
+  const stamp = Date.now();
+  const name = `Gui Zalo het han ${stamp}`;
+  const id = (await Leads.add({ name, status: "New", phone: "0901234567" })) as number;
+  try {
+    const state: Calls = { zalo: [], email: [] };
+    const app = await openLead(state, name, id, {
+      zaloAccounts: [
+        { account_key: "acc-expired", display_name: "Zalo Hết hạn", auth_status: "expired" },
+      ],
+    });
+
+    await app.press("id:lead-send-zalo");
+    await app.waitFor("id:send-zalo-error");
+    await app.waitUntil(() => has(app, "Chưa có tài khoản Zalo hợp lệ"));
+    expect(has(app, "Zalo Hết hạn")).toBe(false);
+    await expect(app.press("id:send-zalo-confirm")).rejects.toMatchObject({
+      code: "ERR_NSH_TEST_DISABLED",
+    });
+    expect(state.zalo.length).toBe(0);
+    expect(app.shows("id:send-zalo-confirm")).toBe(true);
+  } finally {
+    await LeadsMore.delete(id);
+  }
+});
+
+test("Zalo send preselects the valid account when an expired account comes first", async () => {
+  await Host.start(dir);
+  const stamp = Date.now();
+  const name = `Gui Zalo hop le ${stamp}`;
+  const id = (await Leads.add({ name, status: "New", phone: "0901234567" })) as number;
+  try {
+    const state: Calls = { zalo: [], email: [] };
+    const app = await openLead(state, name, id, {
+      zaloAccounts: [
+        { account_key: "acc-expired", display_name: "Zalo Hết hạn", auth_status: "expired" },
+        { account_key: "acc-valid", display_name: "Zalo Hợp lệ", auth_status: "valid" },
+      ],
+    });
+
+    await app.press("id:lead-send-zalo");
+    await app.waitFor("id:send-zalo-account-trigger");
+    await app.waitUntil(() => has(app, "Zalo Hợp lệ"));
+    expect(has(app, "Zalo Hết hạn")).toBe(false);
+    expect(app.shows("id:send-zalo-error")).toBe(false);
+    await app.press("id:send-zalo-confirm");
+    await eventually(async () => state.zalo.length === 1);
+    await app.waitFor("id:send-zalo-confirm", { state: "gone" });
+
+    expect(state.zalo[0][0]).toEqual(["acc-valid"]);
+    expect(state.zalo[0][1]).toBe(7);
+    expect(state.zalo[0][2]).toEqual([id]);
+  } finally {
+    await LeadsMore.delete(id);
+  }
 });

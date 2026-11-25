@@ -2,6 +2,8 @@
 
 export interface DashboardLead {
   status: string;
+  /** last activity time; moves on every activity, so a period filter means 'active in period'. */
+  last_activity?: string | null;
 }
 
 export interface DashboardDeal {
@@ -61,7 +63,6 @@ export function summarize(
   const amountOf = (deal: DashboardDeal) =>
     convertAmount(deal.value, deal.currency, currency.base_currency, currency.exchange_rate);
   const won = deals.filter((deal) => deal.stage === "Won");
-  const lost = deals.filter((deal) => deal.stage === "Lost");
   const open = deals
     .filter((deal) => deal.stage !== "Won" && deal.stage !== "Lost")
     .sort((a, b) => amountOf(b) - amountOf(a));
@@ -85,10 +86,10 @@ export function displayMoney(value: number, currency: string): string {
   return fraction ? `${grouped},${fraction} ${unit}` : `${grouped} ${unit}`;
 }
 
-/** The window of deals the dashboard shows, as the person picks it. */
+/** The window of leads and deals the dashboard shows, as the person picks it. */
 export type Period = "" | "30" | "90" | "year";
 
-/** Midnight at the start of `period`, or `null` for every deal. */
+/** Midnight at the start of `period`, or `null` for all records. */
 export function periodStart(period: Period, now: Date = new Date()): Date | null {
   if (period === "") return null;
   const start = new Date(now.getTime());
@@ -102,16 +103,35 @@ export function periodStart(period: Period, now: Date = new Date()): Date | null
   return start;
 }
 
+/** Whether an ISO timestamp falls inside `period`. */
+export function dateInPeriod(
+  timestamp: string | null | undefined,
+  period: Period,
+  now: Date = new Date(),
+): boolean {
+  const start = periodStart(period, now);
+  if (start === null) return true;
+  if (!timestamp) return false;
+  const time = new Date(timestamp).getTime();
+  return Number.isFinite(time) && time >= start.getTime();
+}
+
 /** Whether a deal created at `created_at` falls inside `period`. */
 export function dealInPeriod(
   deal: { created_at: string },
   period: Period,
   now: Date = new Date(),
 ): boolean {
-  const start = periodStart(period, now);
-  if (start === null) return true;
-  const time = new Date(deal.created_at).getTime();
-  return Number.isFinite(time) && time >= start.getTime();
+  return dateInPeriod(deal.created_at, period, now);
+}
+
+/** Whether a lead was active inside `period` (filters on `last_activity`). */
+export function leadInPeriod(
+  lead: { last_activity?: string | null },
+  period: Period,
+  now: Date = new Date(),
+): boolean {
+  return dateInPeriod(lead.last_activity, period, now);
 }
 
 /** The pipeline stages the distribution shows, in the order the v2 dashboard used. */

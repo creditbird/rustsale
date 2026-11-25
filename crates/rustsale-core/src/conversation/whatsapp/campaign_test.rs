@@ -1,7 +1,7 @@
 use super::campaign::{
-    add_to_suppression_list, cancel_campaign, claim_next_recipients, create_campaign,
+    add_to_suppression_list, cancel_campaign, claim_next_recipients, create_campaign, get_campaign,
     is_in_quiet_hours, is_suppressed, pause_campaign, populate_recipients,
-    recover_interrupted_campaign, refresh_campaign_counters, resume_campaign,
+    recover_interrupted_campaign, refresh_campaign_counters, resume_campaign, start_campaign,
     update_recipient_status, CampaignRecipientInput, CreateCampaignRequest, RecipientEvaluation,
     WhatsAppCampaignEngine,
 };
@@ -288,4 +288,110 @@ fn test_interrupted_campaign_recovery() {
     let reclaimed = claim_next_recipients(&conn, campaign_id, 10, Some(2)).unwrap();
     assert_eq!(reclaimed.len(), 2);
     assert_eq!(reclaimed[0].assigned_channel_account_id, Some(2));
+}
+
+#[test]
+fn test_create_campaign_rejects_blank_name_and_invalid_accounts() {
+    let conn = setup_test_db();
+
+    let blank_name = CreateCampaignRequest {
+        name: "   ".to_string(),
+        template_id: None,
+        assigned_account_ids: vec![1],
+        rate_limit_min_delay_secs: None,
+        rate_limit_max_delay_secs: None,
+        burst_limit_per_batch: None,
+        burst_pause_secs: None,
+        quiet_hours_enabled: None,
+        quiet_hours_start: None,
+        quiet_hours_end: None,
+        timezone: None,
+    };
+    let blank_err = create_campaign(&conn, &blank_name).unwrap_err().to_string();
+    assert!(
+        blank_err.contains("Invalid campaign") && blank_err.contains("must not be empty"),
+        "expected invalid_request error for blank name, got: {blank_err}"
+    );
+
+    for bad_accounts in [vec![], vec![0], vec![-1, 0], vec![1, 0], vec![1, -1]] {
+        let req = CreateCampaignRequest {
+            name: "No Accounts".to_string(),
+            template_id: None,
+            assigned_account_ids: bad_accounts,
+            rate_limit_min_delay_secs: None,
+            rate_limit_max_delay_secs: None,
+            burst_limit_per_batch: None,
+            burst_pause_secs: None,
+            quiet_hours_enabled: None,
+            quiet_hours_start: None,
+            quiet_hours_end: None,
+            timezone: None,
+        };
+        let err = create_campaign(&conn, &req).unwrap_err().to_string();
+        assert!(
+            err.contains("Invalid campaign") && err.contains("required"),
+            "expected invalid_request error for bad accounts, got: {err}"
+        );
+    }
+}
+
+#[test]
+fn test_start_and_resume_reject_campaign_without_valid_account() {
+    let conn = setup_test_db();
+
+    // Seed draft/paused campaigns with no valid assigned account (e.g. legacy rows).
+    for (status, accounts_json) in [
+        ("draft", "[]"),
+        ("draft", "[0]"),
+        ("draft", "[1, 0]"),
+        ("paused", "[]"),
+        ("paused", "[1, 0]"),
+    ] {
+        conn.execute(
+            "INSERT INTO whatsapp_outreach_campaigns (
+                name, status, assigned_account_ids_json, created_at, updated_at
+             ) VALUES ('Legacy Empty', ?1, ?2, '2026-11-25T00:00:00Z', '2026-11-25T00:00:00Z')",
+            rusqlite::params![status, accounts_json],
+        )
+        .unwrap();
+        let campaign_id = conn.last_insert_rowid();
+
+        let err = if status == "paused" {
+            resume_campaign(&conn, campaign_id).unwrap_err().to_string()
+        } else {
+            start_campaign(&conn, campaign_id).unwrap_err().to_string()
+        };
+        assert!(
+            err.contains("Invalid campaign") && err.contains("required"),
+            "expected invalid_request wording when starting/resuming without valid account, got: {err}"
+        );
+
+        let record = get_campaign(&conn, campaign_id).unwrap();
+        assert_eq!(record.status, status);
+    }
+
+    // Valid campaign starts cleanly.
+    let valid_id = create_campaign(
+        &conn,
+        &CreateCampaignRequest {
+            name: "Valid WA".to_string(),
+            template_id: None,
+            assigned_account_ids: vec![1],
+            rate_limit_min_delay_secs: None,
+            rate_limit_max_delay_secs: None,
+            burst_limit_per_batch: None,
+            burst_pause_secs: None,
+            quiet_hours_enabled: None,
+            quiet_hours_start: None,
+            quiet_hours_end: None,
+            timezone: None,
+        },
+    )
+    .unwrap();
+    start_campaign(&conn, valid_id).unwrap();
+    assert_eq!(get_campaign(&conn, valid_id).unwrap().status, "queued");
+
+    // Missing campaign returns not-found row error.
+    let missing_err = start_campaign(&conn, 999_999).unwrap_err();
+    assert!(matches!(missing_err, rusqlite::Error::QueryReturnedNoRows));
 }

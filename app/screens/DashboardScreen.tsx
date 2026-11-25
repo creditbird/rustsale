@@ -9,6 +9,7 @@ import {
   convertAmount,
   dealInPeriod,
   displayMoney,
+  leadInPeriod,
   stageBreakdown,
   summarize,
   type CurrencySettings,
@@ -34,8 +35,9 @@ export function DashboardScreen() {
 
   const applyPeriod = (next: Period) => {
     period.set(next);
+    const leads = leadsRaw().filter((lead) => leadInPeriod(lead, next));
     const deals = dealsRaw().filter((deal) => dealInPeriod(deal, next));
-    summary.set(summarize(leadsRaw(), deals, currency()));
+    summary.set(summarize(leads, deals, currency()));
   };
   const stages = (): StageSlice[] =>
     stageBreakdown(dealsRaw().filter((deal) => dealInPeriod(deal, period())), currency());
@@ -55,11 +57,13 @@ export function DashboardScreen() {
       if (mine !== generation) return;
       const base = settings as CurrencySettings;
       currency.set(base);
-      leadsRaw.set(leads as DashboardLead[]);
-      dealsRaw.set(deals as DashboardDeal[]);
+      const leadRows = leads as DashboardLead[];
+      const dealRows = deals as DashboardDeal[];
+      leadsRaw.set(leadRows);
+      dealsRaw.set(dealRows);
       summary.set(summarize(
-        leads as DashboardLead[],
-        (deals as DashboardDeal[]).filter((deal) => dealInPeriod(deal, period())),
+        leadRows.filter((lead) => leadInPeriod(lead, period())),
+        dealRows.filter((deal) => dealInPeriod(deal, period())),
         base,
       ));
       activities.set(recent as DashboardActivity[]);
