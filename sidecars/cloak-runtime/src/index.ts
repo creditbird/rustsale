@@ -69,7 +69,20 @@ export async function dispatch(
   }
 }
 
+/**
+ * stdout carries only the JSON protocol. Libraries that call console.log/info/debug would
+ * corrupt it, so route them to stderr (the Rust side logs stderr and ignores non-JSON stdout).
+ */
+export function redirectConsoleToStderr(
+  target: Pick<Console, 'log' | 'info' | 'debug' | 'error'> = console,
+): void {
+  target.log = target.error.bind(target);
+  target.info = target.error.bind(target);
+  target.debug = target.error.bind(target);
+}
+
 export async function runSidecar(runtime: RuntimeAdapter = new CloakRuntime()): Promise<void> {
+  redirectConsoleToStderr();
   const lines = createInterface({ input: process.stdin, crlfDelay: Number.POSITIVE_INFINITY });
   const shutdown = async () => {
     await runtime.shutdown().catch((error) => console.error('[cloak-runtime] shutdown failed', error));

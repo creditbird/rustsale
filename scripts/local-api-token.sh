@@ -3,11 +3,18 @@
 #   local-api-token.sh create <name> [scopes]   # scopes: comma list, default inbox,timeline,read,send
 #   local-api-token.sh revoke <name>
 #   local-api-token.sh list
-# Token plaintext goes to $DATA_DIR/<name>.token (mode 600); the clients file keeps only its sha256.
+# Requires RUSTSALE_DATA_DIR (no default). Token plaintext goes to $DATA_DIR/<name>.token (mode 600); the clients file keeps only its sha256.
 # The running app reloads the clients file on change; no restart needed.
 set -euo pipefail
 umask 077
-DATA_DIR="${RUSTSALE_DATA_DIR:-$HOME/.local/share/com.rustsale.crm}"
+# No default on purpose: v3 must never fall back to the production data dir
+# (~/.local/share/com.rustsale.crm). The caller names the directory explicitly.
+if [ -z "${RUSTSALE_DATA_DIR:-}" ]; then
+  echo "error: RUSTSALE_DATA_DIR is required (no default; v3 never falls back to the production data dir)" >&2
+  exit 2
+fi
+DATA_DIR="$RUSTSALE_DATA_DIR"
+[ -d "$DATA_DIR" ] || { echo "error: RUSTSALE_DATA_DIR '$DATA_DIR' is not an existing directory" >&2; exit 2; }
 FILE="${RUSTSALE_LOCAL_API_CLIENTS_FILE:-$DATA_DIR/local-api-clients.json}"
 command -v jq >/dev/null || { echo "jq is required" >&2; exit 1; }
 [ -f "$FILE" ] || echo '[]' > "$FILE"

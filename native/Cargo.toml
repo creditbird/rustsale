@@ -1,0 +1,47 @@
+[package]
+name = "nsh-app-rustsale"
+version = "0.1.0"
+edition = "2024"
+publish = false
+description = "RustSale v3 native module: the only place TSX reaches rustsale-core"
+
+# Own workspace so the NSH hosts build this crate alone; the core joins by path.
+[workspace]
+
+[features]
+# Synthetic data for screen tests (`Demo.prepare`, `Demo.seed`). Off by default: a release or
+# `nsh package` build has no such export. `nsh` cannot pass cargo features, so `build.rs` also turns
+# it on when the environment has RUSTSALE_DEMO=1 (set it for `nsh test` and `nsh check` only).
+demo = []
+
+[dependencies]
+nsh-core = "0.6.1"
+nsh-base = "0.6.1"
+rustsale-core = { path = "../crates/rustsale-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_path_to_error = "0.1"
+thiserror = "2"
+base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["png"] }
+qrcode = { version = "0.14", default-features = false, features = ["image"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "macros", "time"] }
+async-trait = "0.1"
+
+# Pins for `nsh run --target gpui` (#55). nsh-platform-gpui 0.6.1 asks for `gpui-fast ^0.1.16`, and gpui-fast
+# 0.1.19 (what a fresh resolution picks) no longer has lyon's `FillOptions::even_odd`, which nsh-platform-gpui
+# 0.6.1 calls at render.rs:466 (E0599). nsh resolves the GPUI host's lockfile anew from the app's requirements
+# (it does not read this crate's Cargo.lock), and an optional dependency does not count there, so the exact
+# requirement sits under `cfg(any())`: it is in every resolution but false on every target, so nothing here
+# compiles or links it. Remove this table once nsh-platform-gpui is released with a fix for gpui-fast 0.1.19.
+[target.'cfg(any())'.dependencies]
+gpui-fast = "=0.1.17"
+gpui-fast-platform = "=0.1.17"
+
+[dev-dependencies]
+nsh-core = { version = "0.6.1", features = ["declarations"] }
+tempfile = "3"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

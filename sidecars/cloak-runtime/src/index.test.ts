@@ -1,12 +1,21 @@
 import { describe, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { classifyGoogleMapsPageState } from './googleMaps';
-import { dispatch, RuntimeFault, type RuntimeAdapter } from './index';
+import { classifyGoogleMapsPageState, inspectGoogleMapsPage } from './googleMaps';
+import { dispatch, redirectConsoleToStderr, RuntimeFault, type RuntimeAdapter } from './index';
 import {
   CloakRuntime,
   PINNED_CLOAKBROWSER_BINARY_VERSION,
+  killProcessTree,
   persistentLaunchOptions,
   pinnedCloakBrowserBinaryVersion,
   preferredBrowserTransport,
@@ -27,6 +36,25 @@ function runtime(overrides: Partial<RuntimeAdapter> = {}): RuntimeAdapter {
     shutdown: async () => ({ stopped: true }),
     ...overrides,
   };
+}
+
+const linuxTest = process.platform === 'linux' ? test : test.skip;
+
+function linuxProcessCommandLine(pid: number): string {
+  if (process.platform !== 'linux') return '';
+  try {
+    return readFileSync(`/proc/${pid}/cmdline`, 'utf8');
+  } catch {
+    return '';
+  }
+}
+
+async function waitForLinuxCommandLine(pid: number, fragment: string): Promise<void> {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (linuxProcessCommandLine(pid).includes(fragment)) return;
+    await Bun.sleep(25);
+  }
+  expect(linuxProcessCommandLine(pid)).toContain(fragment);
 }
 
 async function waitForNoLinuxProcess(fragment: string): Promise<void> {
@@ -124,6 +152,195 @@ describe('cloak-runtime protocol', () => {
       ok: true,
       result: { installed: true, version: '146.0.7680.177.5' },
     });
+  });
+});
+
+async function inspectFixture(html: string, url: string) {
+  const { JSDOM } = await import('jsdom');
+  const dom = new JSDOM(
+    `<!doctype html><html><head><title>Google Maps</title></head><body>${html}</body></html>`,
+    { url },
+  );
+  const body = dom.window.document.body;
+  Object.defineProperty(body, 'innerText', {
+    configurable: true,
+    value: body.textContent ?? '',
+  });
+
+  const globals = globalThis as unknown as {
+    document?: Document;
+    window?: Window & typeof globalThis;
+  };
+  const previousDocument = globals.document;
+  const previousWindow = globals.window;
+  globals.document = dom.window.document as unknown as Document;
+  globals.window = dom.window as unknown as Window & typeof globalThis;
+  try {
+    return await inspectGoogleMapsPage({
+      evaluate: async (pageFunction: () => unknown) => pageFunction(),
+    } as never);
+  } finally {
+    if (previousDocument === undefined) delete globals.document;
+    else globals.document = previousDocument;
+    if (previousWindow === undefined) delete globals.window;
+    else globals.window = previousWindow;
+    dom.window.close();
+  }
+}
+
+describe('browser process cleanup', () => {
+  linuxTest('launch_cleans_stale_profile_processes_before_start', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rustsale-launch-clean-'));
+    const profileDir = join(root, 'profile');
+    mkdirSync(profileDir, { recursive: true });
+    const singletonFiles = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'];
+    for (const name of singletonFiles) {
+      await Bun.write(join(profileDir, name), 'stale');
+    }
+    const child = Bun.spawn(
+      [process.execPath, '-e', 'setInterval(() => {}, 1000)', `--user-data-dir=${profileDir}`],
+      { stdin: 'ignore', stdout: 'ignore', stderr: 'ignore' },
+    );
+    const instance = new CloakRuntime({ cacheDir: join(root, 'cache') });
+    let launchStarted = false;
+    let staleProcessAliveAtStart = true;
+    let singletonLockAtStart = true;
+    (instance as unknown as {
+      launchWindowsCdp: () => Promise<never>;
+    }).launchWindowsCdp = async () => {
+      launchStarted = true;
+      staleProcessAliveAtStart = linuxProcessCommandLine(child.pid).length > 0;
+      singletonLockAtStart = existsSync(join(profileDir, 'SingletonLock'));
+      throw new RuntimeFault('browser_startup', 'stop-after-cleanup', false);
+    };
+
+    const originalTransport = process.env.RUSTSALE_BROWSER_TRANSPORT;
+    process.env.RUSTSALE_BROWSER_TRANSPORT = 'cdp-websocket';
+    try {
+      await waitForLinuxCommandLine(child.pid, profileDir);
+      await expect(instance.launch({ profileDir, headless: true })).rejects.toThrow(
+        'stop-after-cleanup',
+      );
+      expect(launchStarted).toBe(true);
+      expect(staleProcessAliveAtStart).toBe(false);
+      expect(singletonLockAtStart).toBe(false);
+    } finally {
+      if (originalTransport) process.env.RUSTSALE_BROWSER_TRANSPORT = originalTransport;
+      else delete process.env.RUSTSALE_BROWSER_TRANSPORT;
+      child.kill('SIGKILL');
+      await child.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  linuxTest('kill_process_tree_ignores_unrelated_process_with_path_in_argv', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'rustsale-kill-tree-'));
+    const profileDir = join(root, 'profile');
+    const child = Bun.spawn([process.execPath, '-e', 'setInterval(() => {}, 1000)', profileDir], {
+      stdin: 'ignore',
+      stdout: 'ignore',
+      stderr: 'ignore',
+    });
+    try {
+      await waitForLinuxCommandLine(child.pid, profileDir);
+      killProcessTree(undefined, profileDir);
+      await Bun.sleep(300);
+      expect(linuxProcessCommandLine(child.pid)).toContain(profileDir);
+    } finally {
+      child.kill('SIGKILL');
+      await child.exited;
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+});
+
+describe('stdout protocol channel', () => {
+  test('console.log and friends go to stderr, not the protocol stdout', () => {
+    const errors: unknown[][] = [];
+    const fake = {
+      log: (..._args: unknown[]) => {
+        throw new Error('log must be redirected');
+      },
+      info: (..._args: unknown[]) => {
+        throw new Error('info must be redirected');
+      },
+      debug: (..._args: unknown[]) => {
+        throw new Error('debug must be redirected');
+      },
+      error: (...args: unknown[]) => {
+        errors.push(args);
+      },
+    };
+
+    redirectConsoleToStderr(fake);
+    fake.log('a');
+    fake.info('b');
+    fake.debug('c');
+
+    expect(errors).toEqual([['a'], ['b'], ['c']]);
+  });
+});
+
+describe('sidecar lifecycle', () => {
+  test(
+    'evaluate_clears_timeout_timer',
+    async () => {
+      const fixture = join(import.meta.dir, 'test-fixtures', 'evaluate-once-sidecar.ts');
+      const child = Bun.spawn([process.execPath, fixture], {
+        stdin: 'pipe',
+        stdout: 'pipe',
+        stderr: 'pipe',
+      });
+      const reader = child.stdout.getReader();
+      const decoder = new TextDecoder();
+      let stdout = '';
+      child.stdin.write(
+        `${JSON.stringify({
+          id: 'eval-1',
+          command: 'evaluate',
+          payload: { expression: '1', timeoutMs: 3_000 },
+        })}\n`,
+      );
+      child.stdin.end();
+
+      const responseDeadline = Date.now() + 10_000;
+      while (!stdout.includes('"ok":true') && Date.now() < responseDeadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        stdout += decoder.decode(value, { stream: true });
+      }
+
+      const outcome = await Promise.race([
+        child.exited.then((code) => ({ code })),
+        Bun.sleep(2_000).then(() => ({ code: 'timeout' as const })),
+      ]);
+      if (outcome.code === 'timeout') {
+        child.kill('SIGKILL');
+      }
+      await child.exited;
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        stdout += decoder.decode(value, { stream: true });
+      }
+
+      expect(stdout).toContain('"id":"eval-1"');
+      expect(stdout).toContain('"ok":true');
+      expect(outcome.code).toBe(0);
+    },
+    20_000,
+  );
+
+  test('evaluate_reports_evaluation_timeout_when_expression_stalls', async () => {
+    const instance = new CloakRuntime();
+    (instance as unknown as { page: unknown }).page = {
+      isClosed: () => false,
+      evaluate: () => new Promise(() => {}),
+    };
+
+    await expect(
+      instance.evaluate({ expression: 'await new Promise(() => {})', timeoutMs: 25 }),
+    ).rejects.toMatchObject({ kind: 'evaluation_timeout', retryable: true });
   });
 });
 
@@ -230,6 +447,63 @@ describe('Google Maps block detection', () => {
         bodyText: 'Quá nhiều yêu cầu, vui lòng thử lại sau.',
       }),
     ).toBe('rate_limited');
+  });
+
+  test('classify_feed_with_harmless_aria_label_is_ready', async () => {
+    const harmless = await inspectFixture(
+      '<div role="feed"><h1>Results</h1></div><button aria-label="Chấp nhận quảng cáo">Ads</button>',
+      'https://www.google.com/maps/search/cafe',
+    );
+    expect(harmless.state).toBe('ready');
+
+    const consent = await inspectFixture(
+      '<div role="dialog"><button aria-label="Chấp nhận tất cả">OK</button></div>',
+      'https://www.google.com/maps',
+    );
+    expect(consent.state).toBe('consent_required');
+  }, 30_000);
+
+  test('classify_place_with_empty_h1_is_place_unavailable', async () => {
+    const gone = await inspectFixture(
+      '<div role="main"><h1 class="sr-only"> </h1><button aria-label="Zoom in">+</button></div>',
+      'https://www.google.com/maps/place/?q=place_id:ChIJdoesnotexist',
+    );
+    expect(gone.state).toBe('place_unavailable');
+
+    const goneWithMessage = await inspectFixture(
+      '<div role="main"><h1 class="sr-only"> </h1><button aria-label="Zoom in">+</button><p>Google Maps can\'t find ChIJdoesnotexist</p></div>',
+      'https://www.google.com/maps/place/?q=place_id:ChIJdoesnotexist',
+    );
+    expect(goneWithMessage.state).toBe('place_unavailable');
+
+    const goneIconOnly = await inspectFixture(
+      '<div role="main"><h1 class="sr-only"> </h1><button aria-label="Zoom in"></button></div>',
+      'https://www.google.com/maps/place/?q=place_id:ChIJdoesnotexist',
+    );
+    expect(goneIconOnly.state).toBe('place_unavailable');
+
+    const real = await inspectFixture(
+      '<div role="main"><h1>Cafe Sam</h1><button data-item-id="address">1 Le Loi</button></div>',
+      'https://www.google.com/maps/place/Cafe+Sam',
+    );
+    expect(real.state).toBe('ready');
+
+    const emptySearch = await inspectFixture(
+      '<div role="main"><p>Google Maps can\'t find ChIJdoesnotexist</p></div>',
+      'https://www.google.com/maps/search/ChIJdoesnotexist',
+    );
+    expect(emptySearch.state).toBe('empty_results');
+  });
+
+  test('classify_error_page_with_h1_is_not_ready', () => {
+    expect(
+      classifyGoogleMapsPageState({
+        url: 'https://www.google.com/maps/place/Example',
+        title: 'Error 500 (Server Error)',
+        hasPlaceHeading: true,
+        bodyText: 'Error Server Error',
+      }),
+    ).toBe('selector_changed');
   });
 
   test('a challenge overlay is detected even while the feed DOM survives', () => {

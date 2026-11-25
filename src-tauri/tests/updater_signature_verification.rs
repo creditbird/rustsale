@@ -80,7 +80,8 @@ fn test_updater_signature_against_public_key() {
 
     // 3. If exact release bundle for current version exists, verify it against latest.json (fail-closed)
     let version = tauri_conf["version"].as_str().unwrap_or("0.1.14");
-    let expected_deb_name = format!("RustSale CRM_{}_amd64.deb", version);
+    let product_name = tauri_conf["productName"].as_str().unwrap_or("RustSale CRM");
+    let expected_deb_name = format!("{}_{}_amd64.deb", product_name, version);
     let deb_path = repo_root
         .join("src-tauri/target/release/bundle/deb")
         .join(&expected_deb_name);

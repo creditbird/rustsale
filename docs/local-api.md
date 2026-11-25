@@ -8,7 +8,7 @@ Body limit 64 KB. Errors are always JSON `{"code","message"}`.
   entries `{name, sha256, scopes, disabled?}`. Only SHA-256 hashes are stored; reloaded automatically when the file changes.
 - Scopes: `inbox`, `timeline`, `read`, `send`.
 - `RUSTSALE_LOCAL_API_TOKEN` (env, legacy) still works as client `legacy-env` with all scopes; a warning is logged at startup.
-- Create / rotate: `scripts/local-api-token.sh create <name> [scopes]` → token in `~/.local/share/com.rustsale.crm/<name>.token` (600). Re-running `create` rotates.
+- Create / rotate: `scripts/local-api-token.sh create <name> [scopes]` (requires `RUSTSALE_DATA_DIR`, no default; v3 never falls back to the production dir) → token in `$RUSTSALE_DATA_DIR/<name>.token` (600). Re-running `create` rotates.
 - Revoke: `scripts/local-api-token.sh revoke <name>` (or set `"disabled": true`). Takes effect on the next request, no restart.
 - List: `scripts/local-api-token.sh list` (never shows tokens).
 

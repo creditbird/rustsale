@@ -1,0 +1,396 @@
+//! The one error TSX sees: `{ code, message }`, thrown as an `Error` whose
+//! `code` is the stable string and whose `message` is for people.
+
+use nsh_core::element::JsError;
+use rustsale_core::conversation::error::{ConversationCommandError, SendTargetError};
+use rustsale_core::paging::PageError;
+
+/// What a call into the core fails with.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("{code}: {message}")]
+pub struct CoreApiError {
+    /// Stable machine-readable code (`invalid_cursor`, `not_found`, ...).
+    pub code: String,
+    /// Human-readable detail; never holds secrets.
+    pub message: String,
+}
+
+impl CoreApiError {
+    /// An error with `code` and `message`.
+    pub fn new(code: &str, message: impl Into<String>) -> Self {
+        Self {
+            code: code.to_owned(),
+            message: message.into(),
+        }
+    }
+
+    /// The core was not started yet.
+    pub fn not_started() -> Self {
+        Self::new(
+            "unavailable",
+            "the core is not started: call Core.start() first",
+        )
+    }
+
+    /// A worker thread or lock failed.
+    pub fn internal(message: impl Into<String>) -> Self {
+        Self::new("internal", message)
+    }
+
+    /// An argument TSX passed is not acceptable.
+    pub fn invalid(message: impl Into<String>) -> Self {
+        Self::new("invalid_request", message)
+    }
+
+    /// This system does not have the feature: the call is well-formed but the platform is not
+    /// covered by this build (an autostart entry on Windows or macOS, for example).
+    pub fn unsupported(message: impl Into<String>) -> Self {
+        Self::new("unsupported", message)
+    }
+}
+
+/// Core commands report plain `String` errors. They carry no code, so the
+/// message is sorted into the few codes TSX can act on; everything else is
+/// `internal`.
+impl From<String> for CoreApiError {
+    fn from(message: String) -> Self {
+        let lower = message.to_lowercase();
+        let schema_fault = lower.contains("no such table")
+            || lower.contains("no such column")
+            || lower.contains("no such index");
+        if schema_fault {
+            // A schema fault is the app's bug, not a missing record the caller can fix. The raw
+            // message can carry the statement, so it stays in the log and JS only sees the kind.
+            eprintln!("[rustsale] database schema error: {message}");
+            return Self::new("internal", "database error");
+        }
+        // The importer's own Vietnamese rejection of an oversized sheet: the file is the problem.
+        let sheet_too_large = lower.contains("quá lớn") && lower.contains("giới hạn tối đa");
+        let code = if sheet_too_large {
+            "invalid_request"
+        } else if lower.contains("not found")
+            || lower.contains("no such")
+            || lower.contains("returned no rows")
+            || lower.contains("does not exist")
+            || lower.contains("không tồn tại")
+            || lower.contains("no zalo session matches")
+        {
+            "not_found"
+        } else if lower.contains("invalid")
+            || lower.contains("must not be empty")
+            || lower.contains("required")
+            || lower.contains("unsupported")
+        {
+            "invalid_request"
+        } else if lower.contains("not logged in")
+            || lower.contains("disconnected")
+            || lower.contains("unavailable")
+            || lower.contains("not running")
+        {
+            "unavailable"
+        } else if lower.contains("already")
+            || lower.contains("conflict")
+            || lower.contains("duplicate")
+        {
+            "conflict"
+        } else {
+            "internal"
+        };
+        Self {
+            code: code.to_owned(),
+            message,
+        }
+    }
+}
+
+impl From<&str> for CoreApiError {
+    fn from(message: &str) -> Self {
+        Self::from(message.to_owned())
+    }
+}
+
+impl From<ConversationCommandError> for CoreApiError {
+    fn from(error: ConversationCommandError) -> Self {
+        Self {
+            code: serde_code(&error),
+            message: error.message,
+        }
+    }
+}
+
+fn serde_code(error: &ConversationCommandError) -> String {
+    // The core's own stable snake_case code, unchanged.
+    serde_json::to_value(error.code)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_else(|| "internal".to_owned())
+}
+
+impl From<PageError> for CoreApiError {
+    fn from(error: PageError) -> Self {
+        match error {
+            PageError::InvalidCursor(m) => Self::new("invalid_cursor", m),
+            PageError::InvalidRequest(m) => Self::new("invalid_request", m),
+            PageError::Database(m) => Self::new("database", m),
+            PageError::Internal(m) => Self::new("internal", m),
+        }
+    }
+}
+
+/// A send target that cannot take the message: missing rows are `not_found`, an account of another
+/// conversation is `invalid_request`, an account that is not connected is `unavailable`.
+impl From<SendTargetError> for CoreApiError {
+    fn from(error: SendTargetError) -> Self {
+        let code = match &error {
+            SendTargetError::ConversationNotFound(_) | SendTargetError::AccountNotFound(_) => {
+                "not_found"
+            }
+            SendTargetError::AccountMismatch { .. } => "invalid_request",
+            SendTargetError::AccountUnavailable { .. } => "unavailable",
+            SendTargetError::Database(_) => "internal",
+        };
+        match error {
+            // The database text can carry SQL; it stays in the log.
+            SendTargetError::Database(detail) => {
+                eprintln!("[rustsale] send target check failed: {detail}");
+                Self::new(code, "database error")
+            }
+            other => Self::new(code, other.to_string()),
+        }
+    }
+}
+
+impl From<CoreApiError> for JsError {
+    fn from(error: CoreApiError) -> Self {
+        JsError::Error(error.message).with_code(&error.code)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rustsale_core::conversation::error::{ConversationError, ConversationErrorCode};
+
+    #[test]
+    fn string_errors_are_sorted_by_meaning() {
+        assert_eq!(CoreApiError::from("Lead not found").code, "not_found");
+        assert_eq!(CoreApiError::from("invalid status").code, "invalid_request");
+        assert_eq!(
+            CoreApiError::from("account disconnected").code,
+            "unavailable"
+        );
+        assert_eq!(CoreApiError::from("duplicate phone").code, "conflict");
+        assert_eq!(CoreApiError::from("disk exploded").code, "internal");
+    }
+
+    #[test]
+    fn an_oversized_sheet_is_invalid_request_with_its_message() {
+        let text = "Trang tính 'Sheet1' quá lớn: 1048576 dòng x 16384 cột (giới hạn tối đa 100000 dòng, 200 cột). Vui lòng xóa các ô thừa ở xa hoặc tách nhỏ tệp trước khi nhập.";
+        let error = CoreApiError::from(text);
+        assert_eq!(error.code, "invalid_request");
+        assert_eq!(error.message, text);
+        // A sheet named like a not-found message must not change the code.
+        assert_eq!(
+            CoreApiError::from(
+                "Trang tính 'not found' quá lớn: 9 dòng x 9 cột (giới hạn tối đa 5 dòng, 5 cột)."
+            )
+            .code,
+            "invalid_request"
+        );
+    }
+
+    #[test]
+    fn whatsapp_campaign_account_errors_are_invalid_request() {
+        assert_eq!(
+            CoreApiError::from(
+                "Invalid campaign: at least one valid WhatsApp account is required to start the campaign"
+            )
+            .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            CoreApiError::from(
+                "Invalid campaign: at least one WhatsApp account is required; connect an account and assign it to the campaign"
+            )
+            .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            CoreApiError::from("Invalid campaign: name must not be empty").code,
+            "invalid_request"
+        );
+    }
+
+    #[test]
+    fn missing_rows_and_files_are_not_found() {
+        assert_eq!(
+            CoreApiError::from("Query returned no rows").code,
+            "not_found"
+        );
+        assert_eq!(
+            CoreApiError::from(
+                "No channel account found for Facebook page x: Query returned no rows"
+            )
+            .code,
+            "not_found"
+        );
+        assert_eq!(
+            CoreApiError::from("Tệp không tồn tại: /tmp/qa.csv").code,
+            "not_found"
+        );
+        assert_eq!(
+            CoreApiError::from("scrape job qa was not found").code,
+            "not_found"
+        );
+    }
+
+    #[test]
+    fn a_missing_zalo_session_is_not_found() {
+        let error = CoreApiError::from("No Zalo session matches account key demo-zalo-uid");
+        assert_eq!(error.code, "not_found");
+    }
+
+    #[test]
+    fn schema_faults_are_internal_not_not_found() {
+        assert_eq!(CoreApiError::from("no such table: leads").code, "internal");
+        assert_eq!(
+            CoreApiError::from("no such column: leads.phone").code,
+            "internal"
+        );
+        assert_eq!(CoreApiError::from("no such file").code, "not_found");
+    }
+
+    #[test]
+    fn schema_faults_do_not_leak_sql_to_js() {
+        let error = CoreApiError::from(
+            "Failed to query leads: no such column: phone (SELECT id, phone FROM leads WHERE tenant_id = 7)",
+        );
+        assert_eq!(error.code, "internal");
+        assert_eq!(error.message, "database error");
+        assert!(!error.message.contains("SELECT"));
+    }
+
+    #[test]
+    fn message_is_kept_verbatim() {
+        let error = CoreApiError::from("Lead 7 not found");
+        assert_eq!(error.message, "Lead 7 not found");
+    }
+
+    #[test]
+    fn conversation_codes_pass_through() {
+        let command =
+            ConversationError::new(ConversationErrorCode::StageExpired, "gone").command_error();
+        let error = CoreApiError::from(command);
+        assert_eq!(error.code, "stage_expired");
+        assert_eq!(error.message, "gone");
+    }
+
+    #[test]
+    fn page_errors_map_to_stable_codes() {
+        assert_eq!(
+            CoreApiError::from(PageError::InvalidCursor("x".into())).code,
+            "invalid_cursor"
+        );
+        assert_eq!(
+            CoreApiError::from(PageError::InvalidRequest("x".into())).code,
+            "invalid_request"
+        );
+        assert_eq!(
+            CoreApiError::from(PageError::Database("x".into())).code,
+            "database"
+        );
+        assert_eq!(
+            CoreApiError::from(PageError::Internal("x".into())).code,
+            "internal"
+        );
+    }
+
+    #[test]
+    fn send_target_errors_map_to_codes() {
+        let cases = [
+            (SendTargetError::ConversationNotFound(7), "not_found"),
+            (SendTargetError::AccountNotFound(9), "not_found"),
+            (
+                SendTargetError::AccountMismatch {
+                    account_id: 2,
+                    conversation_id: 3,
+                },
+                "invalid_request",
+            ),
+            (
+                SendTargetError::AccountUnavailable {
+                    account_id: 1,
+                    status: "disconnected".into(),
+                },
+                "unavailable",
+            ),
+            (SendTargetError::Database("disk".into()), "internal"),
+        ];
+        for (error, code) in cases {
+            assert_eq!(CoreApiError::from(error).code, code);
+        }
+        let hidden = CoreApiError::from(SendTargetError::Database("SELECT secret".into()));
+        assert_eq!(hidden.message, "database error");
+        assert_eq!(
+            CoreApiError::from(SendTargetError::AccountNotFound(9)).message,
+            "channel account 9 not found"
+        );
+    }
+
+    #[test]
+    fn whatsapp_campaign_mixed_zero_account_id_is_invalid_request()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use rustsale_core::conversation::whatsapp::campaign::{
+            CreateCampaignRequest, create_campaign, resume_campaign, start_campaign,
+        };
+        let conn = rustsale_core::db::init_db(":memory:")?;
+        let req = CreateCampaignRequest {
+            name: "Mixed Accounts".to_string(),
+            template_id: None,
+            assigned_account_ids: vec![1, 0],
+            rate_limit_min_delay_secs: None,
+            rate_limit_max_delay_secs: None,
+            burst_limit_per_batch: None,
+            burst_pause_secs: None,
+            quiet_hours_enabled: None,
+            quiet_hours_start: None,
+            quiet_hours_end: None,
+            timezone: None,
+        };
+        let create_err = match create_campaign(&conn, &req) {
+            Ok(id) => return Err(format!("expected [1, 0] to be rejected, got id {id}").into()),
+            Err(err) => err.to_string(),
+        };
+        assert_eq!(CoreApiError::from(create_err).code, "invalid_request");
+
+        for (status, is_resume) in [("draft", false), ("paused", true)] {
+            conn.execute(
+                "INSERT INTO whatsapp_outreach_campaigns (
+                    name, status, assigned_account_ids_json, created_at, updated_at
+                 ) VALUES ('Legacy Mixed', ?1, '[1, 0]', '2026-11-25T00:00:00Z', '2026-11-25T00:00:00Z')",
+                [status],
+            )?;
+            let campaign_id = conn.last_insert_rowid();
+            let err = if is_resume {
+                resume_campaign(&conn, campaign_id)
+            } else {
+                start_campaign(&conn, campaign_id)
+            };
+            let msg = match err {
+                Ok(()) => {
+                    return Err(format!("expected [1, 0] {status} campaign to be rejected").into());
+                }
+                Err(e) => e.to_string(),
+            };
+            assert_eq!(CoreApiError::from(msg).code, "invalid_request");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn js_error_carries_code_and_message() {
+        let js: JsError = CoreApiError::new("not_found", "no lead 9").into();
+        assert_eq!(js.code(), Some("not_found"));
+        assert_eq!(js.message(), "no lead 9");
+    }
+}

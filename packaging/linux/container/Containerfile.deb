@@ -1,0 +1,13 @@
+# Build image for the .deb: the distro's own glibc, OpenSSL, GTK 4 and WebKitGTK 6.0 (issue #57).
+# BASE is debian:13 or ubuntu:24.04. Used by build-deb-container.sh; nothing of the repo is copied in.
+ARG BASE=debian:13
+FROM ${BASE}
+ARG RUST_VERSION=1.98.1
+ENV DEBIAN_FRONTEND=noninteractive \
+    RUSTUP_HOME=/opt/rustup CARGO_HOME=/opt/cargo PATH=/opt/cargo/bin:$PATH
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential pkg-config curl ca-certificates git xz-utils binutils dpkg-dev \
+      libssl-dev libgtk-4-dev libwebkitgtk-6.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libclang-dev cmake libsqlite3-dev libxkbcommon-dev libwayland-dev libx11-dev \
+    && rm -rf /var/lib/apt/lists/*
+# rustc from the distro is too old (Ubuntu 24.04 has 1.75), so the toolchain comes from rustup.
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain ${RUST_VERSION}

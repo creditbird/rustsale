@@ -1,0 +1,213 @@
+name: NSH v3 gates
+
+# Gate v3 on GitHub runners, so developers do not queue `heavy-job` on the shared dev machine (issue: RS CI gates).
+# Runs on push / PR into feat/nsh-v3* (and on the CI branch itself). No secrets, no network side effects:
+# RUSTSALE_DEMO=1 is set only for the `app` job (synthetic data for screen tests); never for a release build.
+# How to read the result: docs/v3/ci-gates.md
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: 'Branch, tag or sha to test (run the workflow from a ref that has this file, e.g. --ref chore/nsh-v3-ci-gates)'
+        required: false
+        default: ''
+  push:
+    branches: ['feat/nsh-v3*', 'chore/nsh-v3-ci-gates']
+  pull_request:
+    branches: ['feat/nsh-v3*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: nsh-v3-gates-${{ inputs.ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: '0'
+  CARGO_NET_RETRY: '10'
+  RUST_VERSION: '1.98.1'   # same toolchain as packaging/linux/container/Containerfile.deb
+  NSH_VERSION: 'v0.6.1'
+  DEBIAN_FRONTEND: noninteractive
+
+jobs:
+  # ---- core: fmt + clippy + lib tests of crates/rustsale-core (no GTK needed) ----
+  core:
+    name: core (fmt, clippy, test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Tested commit
+        run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: nsh-v3-core
+          workspaces: '. -> target'
+      - name: System deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libclang-dev cmake libsqlite3-dev
+      - name: cargo fmt
+        run: cargo fmt -p rustsale-core --check
+      - name: cargo clippy
+        run: cargo clippy -p rustsale-core --all-targets -- -D warnings
+      - name: cargo test (lib)
+        run: cargo test -p rustsale-core --lib
+
+  # ---- native: the NSH native module (own workspace under native/) ----
+  native:
+    name: native (clippy, test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Tested commit
+        run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: nsh-v3-native
+          workspaces: 'native -> target'
+      - name: System deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libgtk-4-dev libwebkitgtk-6.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libclang-dev cmake libsqlite3-dev libxkbcommon-dev libwayland-dev libx11-dev
+      - name: gpui-fast pin is present
+        run: |
+          grep -q 'gpui-fast = "=0.1.17"' native/Cargo.toml
+          grep -q 'gpui-fast-platform = "=0.1.17"' native/Cargo.toml
+      - name: cargo clippy (native)
+        working-directory: native
+        run: cargo clippy --all-targets -- -D warnings
+      - name: cargo test (native)
+        working-directory: native
+        run: cargo test
+
+  # ---- app: `nsh check` + `nsh test` of the TSX app (with the native crate and demo data) ----
+  app:
+    name: app (nsh check, nsh test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      RUSTSALE_DEMO: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Tested commit
+        run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: nsh-v3-app
+          workspaces: |
+            native -> target
+            app/.nsh
+      - name: nsh cache (binary, TypeScript 7, components, fonts)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nsh
+            ~/.local/bin/nsh
+            ~/.cache/nsh
+          key: nsh-${{ runner.os }}-${{ env.NSH_VERSION }}
+      - name: System deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libgtk-4-dev libwebkitgtk-6.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libclang-dev cmake libsqlite3-dev libxkbcommon-dev libwayland-dev libx11-dev
+      - name: Install nsh
+        run: |
+          if [ ! -x "$HOME/.local/bin/nsh" ]; then
+            curl -fsSL https://nsh.dev/install.sh | NSH_VERSION="$NSH_VERSION" sh
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/nsh" --version
+      - name: nsh check
+        working-directory: app
+        run: nsh check
+      - name: nsh test
+        working-directory: app
+        run: nsh test
+
+  # ---- native-tests: `nsh test` of native/*.test.tsx against the real native module (no demo data) ----
+  # Separate from `app` (no RUSTSALE_DEMO) so a failure here names the native tests, and so it runs in parallel.
+  native-tests:
+    name: native (nsh test)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+      - name: Tested commit
+        run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: nsh-v3-native-tests
+          workspaces: 'native -> target'
+      - name: nsh cache (binary, TypeScript 7, components, fonts)
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.nsh
+            ~/.local/bin/nsh
+            ~/.cache/nsh
+          key: nsh-${{ runner.os }}-${{ env.NSH_VERSION }}
+      - name: System deps
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends pkg-config libssl-dev libgtk-4-dev libwebkitgtk-6.0-dev libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libclang-dev cmake libsqlite3-dev libxkbcommon-dev libwayland-dev libx11-dev
+      - name: Install nsh
+        run: |
+          if [ ! -x "$HOME/.local/bin/nsh" ]; then
+            curl -fsSL https://nsh.dev/install.sh | NSH_VERSION="$NSH_VERSION" sh
+          fi
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/nsh" --version
+      - name: nsh test (native)
+        working-directory: native
+        run: |
+          set -o pipefail
+          nsh test 2>&1 | tee "$RUNNER_TEMP/native-nsh-test.log"
+      - name: nsh test (native) result lines
+        if: always()
+        run: |
+          {
+            echo "### native nsh test"
+            echo '```'
+            tail -n 15 "$RUNNER_TEMP/native-nsh-test.log" 2>/dev/null || echo "no log (the step did not run)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ---- summary: one place to read the four results and their durations ----
+  summary:
+    name: gate summary
+    runs-on: ubuntu-24.04
+    needs: [core, native, native-tests, app]
+    if: always()
+    steps:
+      - name: Result table
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo "### NSH v3 gates"
+            echo "Tested ref: \`${{ inputs.ref || github.ref_name }}\`"
+            echo "| Job | Result | Duration |"
+            echo "|---|---|---|"
+            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate \
+              --jq '.jobs[] | select(.name != "gate summary") | "| \(.name) | \(.conclusion // "running") | \(if .completed_at then ((.completed_at | fromdate) - (.started_at | fromdate)) else 0 end)s |"'
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail if a gate failed
+        run: |
+          [ "${{ needs.core.result }}" = success ] && [ "${{ needs.native.result }}" = success ] && [ "${{ needs.native-tests.result }}" = success ] && [ "${{ needs.app.result }}" = success ]

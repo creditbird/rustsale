@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/rustsale-core", "src-tauri"]
+# zca-rs is vendored code kept byte-for-byte; it denies clippy lints its own source does not
+# satisfy (unwrap/indexing), so it is not linted as a workspace member. Test it with
+# `cargo test --manifest-path crates/zca-rs/Cargo.toml` (same target dir).
+exclude = ["crates/zca-rs"]
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

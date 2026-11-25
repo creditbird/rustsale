@@ -1,5 +1,6 @@
-import { readdirSync, readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import { join } from 'node:path';
 import * as cloak from 'cloakbrowser';
 import type { BinaryInfo } from 'cloakbrowser';
 import * as playwright from 'playwright-core';
@@ -14,6 +15,8 @@ import {
 } from './protocol';
 
 export const PINNED_CLOAKBROWSER_WRAPPER_VERSION = '0.5.1';
+
+const PROFILE_SINGLETON_FILES = ['SingletonLock', 'SingletonCookie', 'SingletonSocket'] as const;
 
 const PINNED_CLOAKBROWSER_BINARY_VERSIONS: Readonly<Record<string, string>> = {
   'linux-x64': '146.0.7680.177.5',
@@ -272,8 +275,12 @@ export class CloakRuntime {
   }
 
   async launch(payload: LaunchPayload): Promise<{ launched: true; url: string }> {
+    if (!payload.profileDir) {
+      throw new RuntimeFault('invalid_input', 'profileDir is required', false);
+    }
     await this.shutdown();
     this.profileDir = payload.profileDir;
+    await cleanStaleProfile(payload.profileDir);
     const transport = preferredBrowserTransport();
     try {
       if (transport === 'cdp-websocket') {
@@ -374,14 +381,25 @@ export class CloakRuntime {
     if (!payload.expression) {
       throw new RuntimeFault('invalid_input', 'expression is required', false);
     }
+    const timeoutMs = payload.timeoutMs ?? 30_000;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       const value = await Promise.race([
         page.evaluate((expression) => globalThis.eval(expression), payload.expression),
-        timeout(payload.timeoutMs ?? 30_000, 'evaluation_timeout'),
+        new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(
+            () => reject(new RuntimeFault('evaluation_timeout', 'evaluation timed out', true)),
+            timeoutMs,
+          );
+        }),
       ]);
       return { value };
     } catch (error) {
       throw mapBrowserError(error, 'evaluation_timeout');
+    } finally {
+      if (timeoutId !== undefined) {
+        clearTimeout(timeoutId);
+      }
     }
   }
 
@@ -479,13 +497,16 @@ export function killProcessTree(proc?: ChildProcess, userDataDir?: string): void
             const pid = parseInt(entry, 10);
             if (pidsToKill.has(pid)) continue;
             try {
-              if (userDataDir) {
-                const cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf8').replaceAll('\0', ' ');
-                if (cmdline.includes(userDataDir)) {
-                  pidsToKill.add(pid);
-                  addedNew = true;
-                  continue;
-                }
+              if (
+                userDataDir &&
+                processArgvMatchesProfile(
+                  readFileSync(`/proc/${entry}/cmdline`, 'utf8'),
+                  userDataDir,
+                )
+              ) {
+                pidsToKill.add(pid);
+                addedNew = true;
+                continue;
               }
               const stat = readFileSync(`/proc/${entry}/stat`, 'utf8');
               const closeParen = stat.lastIndexOf(')');
@@ -515,6 +536,57 @@ export function killProcessTree(proc?: ChildProcess, userDataDir?: string): void
     }
   } catch (error) {
     console.error('[cloak-runtime] killProcessTree failed', error);
+  }
+}
+
+async function cleanStaleProfile(profileDir: string): Promise<void> {
+  killProcessTree(undefined, profileDir);
+  if (process.platform !== 'linux') return;
+
+  const deadline = Date.now() + 2_000;
+  while (Date.now() < deadline && findProfileProcessPids(profileDir).length > 0) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  if (findProfileProcessPids(profileDir).length > 0) return;
+
+  for (const name of PROFILE_SINGLETON_FILES) {
+    try {
+      rmSync(join(profileDir, name), { force: true });
+    } catch {}
+  }
+}
+
+function findProfileProcessPids(userDataDir: string): number[] {
+  if (process.platform !== 'linux') return [];
+  const pids: number[] = [];
+  try {
+    for (const entry of readdirSync('/proc')) {
+      if (!/^\d+$/.test(entry)) continue;
+      try {
+        const cmdline = readFileSync(`/proc/${entry}/cmdline`, 'utf8');
+        if (processArgvMatchesProfile(cmdline, userDataDir)) {
+          pids.push(parseInt(entry, 10));
+        }
+      } catch {}
+    }
+  } catch {}
+  return pids;
+}
+
+function processArgvMatchesProfile(rawCmdline: string, userDataDir: string): boolean {
+  const expected = normalizePathForComparison(userDataDir);
+  const prefix = '--user-data-dir=';
+  return rawCmdline.split('\0').some((arg) => {
+    if (!arg.startsWith(prefix)) return false;
+    return normalizePathForComparison(arg.slice(prefix.length)) === expected;
+  });
+}
+
+function normalizePathForComparison(path: string): string {
+  try {
+    return realpathSync(path);
+  } catch {
+    return path;
   }
 }
 
@@ -550,12 +622,6 @@ function validateHttpUrl(value: string): string {
     throw new RuntimeFault('invalid_input', 'url must be credential-free HTTP(S)', false);
   }
   return url.toString();
-}
-
-function timeout(timeoutMs: number, kind: 'evaluation_timeout'): Promise<never> {
-  return new Promise((_, reject) => {
-    setTimeout(() => reject(new RuntimeFault(kind, 'evaluation timed out', true)), timeoutMs);
-  });
 }
 
 function mapBrowserError(
