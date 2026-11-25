@@ -744,7 +744,7 @@ Quy ước: "đã xác minh" = đọc lại đúng dòng code; "chưa chắc" = 
 | C7 | Cửa sổ chờ sẵn sàng 10s rồi `selector_changed` không retry | vừa | google_maps.rs:100-101, 279-300 |
 | C8 | Phát hiện "hết danh sách" sai khi mạng chậm (3×800ms ổn định) | vừa | google_maps.rs:80, 342-349 |
 | C9 | Timer `evaluation_timeout` không bị hủy → sidecar không thoát, bị SIGKILL | vừa | runtime.ts:378-381, 555-559; index.ts:95 |
-| C10 | `h1` bất kỳ được coi là "ready" (trang lỗi 5xx / shell) | vừa (chưa chắc) | googleMaps.ts:55, 117 |
+| C10 | `h1` bất kỳ được coi là "ready" (trang lỗi 5xx / shell / place đã gỡ) — đã sửa ở #56 (`place_unavailable` → `PlaceUnavailable`) | vừa (chưa chắc) | googleMaps.ts, google_maps.rs |
 | C11 | UI bỏ event của job không phải active → danh sách lịch sử/đếm lệch, job kẹt "running" | vừa | GoogleMapsScraper.svelte:404 |
 | C12 | UI: bấm "Start" nhiều lần tạo job trùng | vừa | GoogleMapsScraper.svelte:775, 316-378 |
 | C13 | UI: rò listener khi unmount trước khi `subscribe` xong | thấp | GoogleMapsScraper.svelte:450-460, 481-483 |
@@ -910,6 +910,8 @@ Bằng chứng: googleMaps.ts:117 `hasPlaceHeading: Boolean(document.querySelect
 Đề xuất sửa: với place dùng `[role="main"] h1` cộng điều kiện có ít nhất một `[data-item-id]` hoặc nút hành động; với listing yêu cầu feed. Tách hai chế độ kiểm tra `expect: 'listing' | 'place'` truyền từ Rust.
 
 Test hồi quy: `classify_error_page_with_h1_is_not_ready` (index.test.ts): snapshot `hasPlaceHeading: true` nhưng body "Error Server Error" → không phải `ready`.
+
+Cập nhật hành vi cuối (#56): sidecar yêu cầu `h1` có chữ mới trả `ready`; trang `/maps/place/` có `h1` rỗng ẩn kèm khung bản đồ hoặc thông báo không tìm thấy trả trạng thái `place_unavailable` (`GoogleMapsPageState::PlaceUnavailable`). Ở Rust (`google_maps.rs`), `wait_for_page_health` áp dụng cửa sổ chờ lắng `place_unavailable_attempts = 4` lần poll × `ready_delay_ms` 500 ms (3 nhịp ngủ ≈ 1,5 s) để place thật tải chậm kịp hydrate `<h1>`, sau đó ánh xạ sang `ScrapeErrorKind::PlaceUnavailable` (`retryable = false`, không retry). Runner không cộng `PlaceUnavailable` vào chuỗi lỗi liên tiếp (`consecutive_failures`), vẫn giữ chốt tổng/tỉ lệ lỗi hệ thống.
 
 #### C11 — UI bỏ event của job không phải active
 Mức: **vừa** — danh sách lịch sử hiển thị trạng thái/đếm cũ vĩnh viễn; chọn lại job đó dùng object cũ nên UI báo "running" khi job đã xong, không còn event nào để cập nhật.
@@ -1082,7 +1084,7 @@ Tính năng người dùng thao tác được (UI `GoogleMapsScraper.svelte` + s
    - Tùy chọn chạy ẩn (headless) hoặc có cửa sổ.
 3. Vòng đời job: `start/resume`, `pause`, `cancel`, `retry failed units`, `retry email enrichment`, xóa job (chỉ khi partial/completed/failed/cancelled), tự phục hồi job gián đoạn khi mở app (`recover_startup`, trạng thái `interrupted`), `paused_limit_reached`, `paused_requires_action`.
 4. Giám sát: tiến độ % (processed/total units), bộ đếm Discovered / Qualified / Leads / Failed units cập nhật thời gian thực qua sự kiện `google-maps-scrape-job-event` (có `sequence`, bỏ event cũ và sau terminal), lỗi gần nhất (kind + message), URL bị chặn, nhật ký dòng lệnh trong UI, danh sách lịch sử job và chọn job để xem.
-5. Xử lý chặn: phát hiện captcha/consent/rate_limited/blank/selector_changed/empty_results; khi cần người dùng thì mở lại trình duyệt có cửa sổ trên cùng profile tại URL bị chặn, người dùng giải xong bấm "I completed browser check — Resume"; hệ thống kiểm tra lại sức khỏe trang rồi chạy tiếp.
+5. Xử lý chặn: phát hiện `captcha`/`consent`/`rate_limited`/`blank`/`selector_changed`/`empty_results`/`place_unavailable` (trong đó `place_unavailable` ánh xạ sang `PlaceUnavailable`, không retry và không dừng job); khi cần người dùng thì mở lại trình duyệt có cửa sổ trên cùng profile tại URL bị chặn, người dùng giải xong bấm "I completed browser check — Resume"; hệ thống kiểm tra lại sức khỏe trang rồi chạy tiếp.
 6. Hồi phục: retry theo backoff cho lỗi tạm thời, retry thủ công cho unit lỗi (cả job `partial` lẫn `failed`), nhập lead từ kết quả đã sẵn trước khi retry/khởi động lại, chụp chẩn đoán (diagnostics) khi lỗi.
 7. Lập kế hoạch quét: các loại unit (keyword / district / grid / place), tự chia ô lưới (`should_subdivide`) khi ô bão hòa, giới hạn độ sâu/số ô, phát hiện `coverage_truncated`, dedup place theo identity (`!1s`, `!3d/!4d`).
 8. Trích xuất mỗi place: tên, điện thoại, địa chỉ, website, facebook, zalo, tọa độ, place id, canonical URL; lọc theo vùng yêu cầu (bbox hoặc khớp địa chỉ theo token).
@@ -1121,7 +1123,7 @@ Thêm: `live_dom_probe` (trang listing + 4 trang place), `live_state_probe` (tr�
 | B-U3 | Không tái hiện | n/a | 2 job qua nhiều lần checkpoint + import, version 46 và 42, 0 lỗi xung đột |
 | B-U4 | **Xác nhận** | thấp | `GridScraper` và `generate_grid` chỉ được test trong `grid.rs` dùng |
 | C6 | Không tái hiện trong dữ liệu lưu | thấp | DOM gốc có glyph 4/4, nhưng 0/38 kết quả lưu có glyph (v3 đọc `aria-label` trước) |
-| C10 | **Xác nhận một phần** | thấp | Trang place không tồn tại vẫn được tính `Ready`; extractor chặn bằng lỗi `SelectorChanged` |
+| C10 | **Đã sửa (#56)** | thấp | Đã xử lý hoàn toàn: trang place đã gỡ trả `place_unavailable` → `PlaceUnavailable` (không retry, cửa sổ chờ ~1,5 s, không cộng chuỗi lỗi liên tiếp); xem Phần F |
 | C18 | Không tái hiện (máy thử) | thấp | URL place mất `hl` nhưng trang vẫn ra cùng ngôn ngữ với listing; chưa thử máy locale vi |
 | C19 | Không tái hiện | n/a | 0 lần dừng nhầm vì consent/captcha trong 40 unit thật; selector consent đã thu hẹp |
 
@@ -1156,7 +1158,7 @@ Không có hạn tổng thời gian cho một website, và các site được x�
 
 **C6 (không tái hiện trong dữ liệu lưu, thấp).** Xem B-U1. Thêm: class bị làm rối `.rogA2c` vẫn có trên trang thật (4/4), nhưng chỉ là fallback sau `aria-label`/`data-item-id`. Nên theo dõi tỉ lệ địa chỉ rỗng khi Google đổi class.
 
-**C10 (xác nhận một phần, thấp).** Sidecar v3 đã siết điều kiện (`[role="main"] h1` cộng `[data-item-id]` hoặc nút trong `main`, `googleMaps.ts:137`), nên phần "h1 ẩn" của mô tả cũ đã được xử lý: trang bản đồ trống có h1 "This area" thì ra `SelectorChanged`, trang không có kết quả ra `EmptyResults`. Còn lại: trang place không tồn tại (id giả) có h1 rỗng ẩn nhưng vẫn có nút trong `main` nên được tính `Ready`. Hậu quả: extractor thấy tên rỗng và trả lỗi `SelectorChanged` không retry (`google_maps.rs:416`), không sinh dữ liệu rác, nhưng nhãn lỗi sai (đáng ra là "place không còn tồn tại") và lỗi này tính vào chuỗi lỗi liên tiếp của job. Sửa: coi place `Ready` chỉ khi `h1` có chữ; thêm loại lỗi riêng cho place không còn.
+**C10 (đã sửa ở #56, thấp).** Sidecar v3 siết `hasPlaceHeading` chỉ đúng khi `[role="main"] h1` có chữ (kèm `[data-item-id]` hoặc nút trong `main`), và phân loại trang `/maps/place/` có `h1` rỗng ẩn kèm khung bản đồ (hoặc thông báo không tìm thấy) thành `place_unavailable` (`GoogleMapsPageState::PlaceUnavailable`) thay vì `ready`. Trong `google_maps.rs`, `wait_for_page_health` chờ lắng 4 lần poll × `ready_delay_ms` 500 ms (3 nhịp ngủ ≈ 1,5 s) để place thật tải chậm kịp hydrate `<h1>`, sau đó trả `ScrapeErrorKind::PlaceUnavailable` với `retryable = false` (không retry). Runner loại trừ `PlaceUnavailable` khỏi chuỗi lỗi liên tiếp của job (vẫn giữ chốt tổng/tỉ lệ lỗi hệ thống), nên các place đã gỡ không còn làm dừng cả job.
 
 **C18 (không tái hiện ở máy thử, thấp).** Mã canonical hoá đúng là cắt `?hl` (`url_hl=false` khi mở lại URL place). Trên máy thử trang vẫn ra tiếng Anh nhất quán với listing (nhãn "Address:", danh mục tiếng Anh); khi thêm `hl=vi` thì ra tiếng Việt, tức tham số có tác dụng. Lỗi lẫn ngôn ngữ chỉ xảy ra khi locale/IP của máy chạy khác ngôn ngữ listing; chưa thử trên máy locale vi. Lần thử bước thứ ba (có `hl=en` tường minh) bị `NavigationTimeout` 30 s nên không có số liệu cho bước này. Sửa rẻ: giữ lại `hl` khi mở URL place.
 
@@ -1167,7 +1169,7 @@ Không có hạn tổng thời gian cho một website, và các site được x�
 1. A-U1 (vừa): `catch_unwind` quanh `run_job` hoặc giám sát `JoinHandle`, ghi `Failed`.
 2. A-U2 + A-U4 (vừa/thấp): một sửa chung: `tauri-plugin-single-instance` cộng lease `owner_id`/`heartbeat_at` cho `recover_interrupted_jobs`; chờ recover xong trước khi nhận `start`.
 3. A-U5 (thấp): timeout tổng ~30 s mỗi website, chạy vài website song song.
-4. C10 (thấp): `h1` phải có chữ; lỗi riêng cho place không còn.
+4. C10 (thấp, đã sửa ở #56): `h1` phải có chữ; thêm trạng thái `place_unavailable` → `PlaceUnavailable` (không retry, cửa sổ chờ ~1,5 s, không cộng vào chuỗi lỗi liên tiếp).
 5. B-U4 (thấp): xoá `GridScraper`, đưa `generate_grid` vào `#[cfg(test)]`.
 
 ## E.4. Chưa kiểm được
@@ -1189,9 +1191,12 @@ Nhánh `feat/nsh-v3-scraper-fix2`, nền `feat/nsh-v3-int8` @fdbe8fa. Mỗi lỗ
 | A-U2 | Khoá instance duy nhất theo thư mục dữ liệu (`instance_lock.rs`, khoá file OS, tự nhả khi process chết); thêm lease `owner_id` + `heartbeat_at` (10 s/lần, hạn 45 s); recover chỉ nhận job không chủ hoặc lease hết hạn | instance hai đổi job `Running` thành `Interrupted`, unit về `Pending` | `au2_two_instances`: `recovered_jobs=0`, job vẫn `Running`, hoàn tất `Completed` 1/1; 4 test repository `dead_owner_recovery_*` và `heartbeat_*` |
 | A-U4 | Cùng lease với A-U2: recover bỏ qua job của chính instance | `recovered_jobs=1`, job vừa chạy thành `Interrupted` | `au4_recover_race`: `recovered_jobs=0`, hoàn tất `Completed` 1/1 |
 | A-U5 | Hạn tổng `SITE_DEADLINE` = 30 s cho mỗi website; quá hạn trả lỗi `TransientNetwork`, `retryable` (không bị tính là "không có email"); website được xử lý song song (có test đếm đồng thời) | 84 s, 154 s, 315 s theo 3 kịch bản chậm | `site_deadline::a_slow_site_is_cut_off_at_the_per_website_deadline`: cả 3 kịch bản ≤ 30 s; `a_healthy_site_is_not_affected_by_the_deadline`: site khoẻ < 10 s, đủ 6 request |
-| C10 | `hasPlaceHeading` chỉ đúng khi có `h1` mang chữ (`googleMaps.ts`) | place không tồn tại (h1 rỗng ẩn) vẫn `Ready`, extractor trả `SelectorChanged` sai nhãn | test sidecar `classify_place_with_empty_h1_is_not_ready`: **đỏ** trên `googleMaps.ts` cũ (`Expected: not "ready"`), **xanh** trên bản sửa; 22/22 test nhóm "Google Maps block detection" đạt |
+| C10 | Sidecar (`googleMaps.ts`): `hasPlaceHeading` đòi `h1` có chữ; trang `/maps/place/` có `h1` rỗng ẩn kèm khung bản đồ hoặc thông báo không tìm thấy trả `place_unavailable`. Core (`google_maps.rs`, `types.rs`, `runner.rs`): cửa sổ chờ lắng `place_unavailable_attempts = 4` lần poll × `ready_delay_ms` 500 ms (3 nhịp ngủ ≈ 1,5 s) rồi trả `ScrapeErrorKind::PlaceUnavailable` (`retryable = false`), loại trừ khỏi chuỗi lỗi liên tiếp của runner (vẫn giữ chốt tổng/tỉ lệ lỗi hệ thống). | trang place đã gỡ (h1 rỗng ẩn) không có loại lỗi riêng, bị gán sai nhãn và tính vào chuỗi lỗi liên tiếp của job | sidecar `classify_place_with_empty_h1_is_not_ready` / `emptyPlace` / `placeNotFound` trả `place_unavailable` (32/32 test sidecar đạt); core `place_page_without_a_name_reports_place_unavailable`, `slow_real_place_hydrating_past_place_unavailable_succeeds`, `dead_places_over_sidecar_protocol_finish_all_units_without_long_polling` (3/3 place đã gỡ kết thúc `PlaceUnavailable`, 1 attempt/place, không làm dừng job; place chậm vẫn `ready`) |
 | B-U4 | Xoá `GridScraper` (−281 dòng ở `scrapers/grid.rs`); không còn nơi nào gọi | chỉ test dùng | build và test không còn tham chiếu |
 | Ghi chú A-U1 (profile) | Release profile đặt `panic = "abort"` (`Cargo.toml`), nên `catch_unwind` của A-U1 chỉ có tác dụng ở dev/test. Ở release, panic trong runner làm app thoát; lần mở sau, recovery đánh job đó `Interrupted`, không phải `Failed`. Nakroth quyết giữ `abort` (xem comment trên #56). | n/a | n/a |
+
+**Bổ sung danh sách loại lỗi (`ScrapeErrorKind`, `google_maps_jobs/types.rs`):**
+- `PlaceUnavailable` (`place_unavailable`, `retryable = false`): trang place đã bị gỡ hoặc không tồn tại; phát sinh sau cửa sổ chờ lắng ~1,5 s (4 lần poll × `ready_delay_ms` 500 ms), không retry, không cộng vào `consecutive_failures` của runner và không nằm trong danh sách lỗi tạm thời được reset khi bấm "thử lại" (`retry_failed_units`).
 
 Kết quả gate trên nhánh này (máy dev, qua hàng đợi `heavy-job`):
 
