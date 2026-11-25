@@ -183,15 +183,16 @@ test("a campaign is edited: its real steps load, a change is saved, status is ke
   await app.waitUntil(() => has(app, "Đang chạy"));
 
   await app.press(`id:cc-edit-${id}`);
-  await app.waitUntil(() => has(app, "Gốc một") && has(app, "Gốc hai"));
+  await app.waitFor("id:cc-step-2-content");
   expect(has(app, "Sửa kịch bản chiến dịch")).toBe(true);
-  await app.type("id:cc-step-2-content", "Hai đã sửa");
+  expect(has(app, "Bước 2 · sau 1 ngày")).toBe(true);
+  await app.type("id:cc-step-2-content", " đã sửa");
   await app.press("id:cc-step-1-ch-whatsapp");
   await app.press("id:cc-save");
   await app.waitUntil(() => !has(app, "Sửa kịch bản chiến dịch"));
 
   const after = await stepsOf(id);
-  expect(after.map((x) => x.template_content)).toEqual(["Gốc một", "Hai đã sửa"]);
+  expect(after.map((x) => x.template_content)).toEqual(["Gốc một", "Gốc hai đã sửa"]);
   expect(after.map((x) => x.channel)).toEqual(["whatsapp", "email"]);
   expect((await list()).find((c) => c.id === id)?.status).toBe("ACTIVE");
   expect((await list()).filter((c) => c.name === title).length).toBe(1);
@@ -229,6 +230,7 @@ test("a campaign that vanished shows the load error and cannot be saved", async 
   await Campaigns.deleteUnifiedCampaign(id);
   await app.press(`id:cc-edit-${id}`);
   await app.waitUntil(() => has(app, "Chưa tải được các bước của chiến dịch."));
-  await app.press("id:cc-save");
+  await app.waitFor("id:cc-steps-retry");
   expect((await list()).some((c) => c.id === id)).toBe(false);
+  await app.press("id:cc-build-cancel");
 });

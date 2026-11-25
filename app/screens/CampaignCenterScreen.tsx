@@ -434,8 +434,10 @@ export function CampaignCenterScreen() {
             <View testID="cc-steps-loading" class="gap-2"><Skeleton /><Skeleton /></View>
           </If>
           <If when={stepsState() === "error"}>
-            <View class="rounded-(--radius) border border-border">
-              <ErrorState message="Chưa tải được các bước của chiến dịch." onRetry={() => { const c = editing(); if (c !== null) void loadEditSteps(c); }} />
+            <View class="flex-row items-center justify-between gap-2 rounded-(--radius) border border-border p-3">
+              <Text testID="cc-steps-error" class="text-sm text-destructive">Chưa tải được các bước của chiến dịch.</Text>
+              <Button testID="cc-steps-retry" label="Thử lại" size="sm"
+                onPress={() => { const c = editing(); if (c !== null) void loadEditSteps(c); }} />
             </View>
           </If>
           <If when={stepsState() === "ready" && steps().length === 0}>
