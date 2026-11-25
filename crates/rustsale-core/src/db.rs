@@ -672,6 +672,10 @@ pub fn init_db(db_path: &str) -> Result<Connection> {
             [],
         );
 
+        // A step an edit removed but whose sends are history is kept with `retired_at` set, so the
+        // executions that point at it are not cascade-deleted. Readers of live steps skip it.
+        let _ = tx.execute("ALTER TABLE campaign_steps ADD COLUMN retired_at TEXT", []);
+
         tx.execute(
             "CREATE TABLE IF NOT EXISTS campaign_executions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1575,7 +1579,8 @@ pub fn get_campaign_steps(
 ) -> Result<Vec<crate::models::CampaignStep>> {
     let mut stmt = conn.prepare(
         "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at, template_id
-         FROM campaign_steps WHERE campaign_id = ?1 ORDER BY step_order ASC, id ASC",
+         FROM campaign_steps WHERE campaign_id = ?1 AND retired_at IS NULL
+         ORDER BY step_order ASC, id ASC",
     )?;
     let rows = stmt.query_map([campaign_id], |row| {
         Ok(crate::models::CampaignStep {

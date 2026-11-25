@@ -17,6 +17,16 @@ pub struct StepAnalytics {
     pub skipped: i64,
 }
 
+/// A step an edit would remove while customers still wait at it (their send is `PENDING`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RemovedStepImpact {
+    pub step_id: i64,
+    pub step_order: i32,
+    pub channel: String,
+    /// Distinct customers whose pending send at this step the save would cancel.
+    pub pending_leads: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CampaignAnalytics {
     pub campaign_id: i64,
@@ -93,6 +103,18 @@ pub fn get_all_unified_campaigns(state: State<'_, DbState>) -> Result<Vec<Campai
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
     get_all_unified_campaigns_internal(&conn)
+}
+
+pub fn get_unified_campaign_save_impact(
+    campaign_id: i64,
+    steps: Vec<CampaignStep>,
+    state: State<'_, DbState>,
+) -> Result<Vec<RemovedStepImpact>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    get_unified_campaign_save_impact_internal(&conn, campaign_id, &steps)
 }
 
 pub fn save_unified_campaign(
@@ -435,6 +457,87 @@ pub fn get_all_unified_campaigns_internal(conn: &Connection) -> Result<Vec<Campa
     crate::db::get_all_campaigns(conn).map_err(|e| format!("Failed to get campaigns: {}", e))
 }
 
+/// Cancelled execution: the customer was waiting at a step the edit removed. Kept as history.
+const STEP_REMOVED_NOTE: &str = "Step removed while editing the campaign";
+
+/// The live steps of `campaign_id` and, of those, the ones `submitted` leaves out.
+///
+/// A submitted step with a positive `id` must be one of the campaign's live steps (it is updated
+/// in place); a step without one is new. A foreign, stale or repeated id is refused, so an edit
+/// can never touch another campaign's step.
+fn plan_step_changes(
+    conn: &Connection,
+    campaign_id: i64,
+    submitted: &[CampaignStep],
+) -> Result<Vec<CampaignStep>, String> {
+    let existing =
+        crate::db::get_campaign_steps(conn, campaign_id).map_err(|e| format!("DB error: {}", e))?;
+    let mut seen: Vec<i64> = Vec::new();
+    for step in submitted {
+        let Some(id) = step.id.filter(|id| *id > 0) else {
+            continue;
+        };
+        if !existing.iter().any(|e| e.id == Some(id)) {
+            return Err(format!(
+                "Invalid step id {}: it is not a step of campaign {}",
+                id, campaign_id
+            ));
+        }
+        if seen.contains(&id) {
+            return Err(format!("Invalid steps: step id {} appears twice", id));
+        }
+        seen.push(id);
+    }
+    Ok(existing
+        .into_iter()
+        .filter(|e| e.id.is_some_and(|id| !seen.contains(&id)))
+        .collect())
+}
+
+fn pending_leads_at_step(conn: &Connection, step_id: i64) -> Result<i64, String> {
+    conn.query_row(
+        "SELECT COUNT(DISTINCT lead_id) FROM campaign_executions
+         WHERE step_id = ?1 AND status = 'PENDING'",
+        [step_id],
+        |row| row.get(0),
+    )
+    .map_err(|e| format!("DB error: {}", e))
+}
+
+/// What saving `steps` over campaign `campaign_id` would cost: the steps it removes that still
+/// have customers waiting, with how many. Read-only; an empty list means the save loses nothing
+/// in flight. An unknown campaign is an error.
+pub fn get_unified_campaign_save_impact_internal(
+    conn: &Connection,
+    campaign_id: i64,
+    steps: &[CampaignStep],
+) -> Result<Vec<RemovedStepImpact>, String> {
+    crate::db::get_campaign(conn, campaign_id)
+        .map_err(|e| format!("DB error: {}", e))?
+        .ok_or_else(|| format!("Campaign {} not found", campaign_id))?;
+    let mut impact = Vec::new();
+    for step in plan_step_changes(conn, campaign_id, steps)? {
+        let Some(step_id) = step.id else { continue };
+        let pending_leads = pending_leads_at_step(conn, step_id)?;
+        if pending_leads > 0 {
+            impact.push(RemovedStepImpact {
+                step_id,
+                step_order: step.step_order,
+                channel: step.channel,
+                pending_leads,
+            });
+        }
+    }
+    Ok(impact)
+}
+
+/// Saves `campaign` and its `steps` in one transaction.
+///
+/// Editing an existing campaign keeps the steps' ids: a submitted step with an id is updated in
+/// place, one without is inserted, and only a step the edit leaves out is removed. Enrolments and
+/// history at the kept steps are untouched. For a removed step, customers still `PENDING` there
+/// are set to `CANCELLED` (they are not deleted), and the step row stays, retired, when any
+/// execution points at it, so the sends already made are not cascade-deleted with it.
 pub fn save_unified_campaign_internal(
     conn: &mut Connection,
     campaign: Campaign,
@@ -444,8 +547,12 @@ pub fn save_unified_campaign_internal(
         .transaction()
         .map_err(|e| format!("Failed to begin transaction: {}", e))?;
 
-    let campaign_id = match campaign.id {
+    let (campaign_id, removed) = match campaign.id {
         Some(id) if id > 0 => {
+            crate::db::get_campaign(&tx, id)
+                .map_err(|e| format!("DB error: {}", e))?
+                .ok_or_else(|| format!("Campaign {} not found", id))?;
+            let removed = plan_step_changes(&tx, id, &steps)?;
             crate::db::update_campaign(
                 &tx,
                 id,
@@ -457,38 +564,84 @@ pub fn save_unified_campaign_internal(
                 campaign.schedule_config_json.as_deref(),
             )
             .map_err(|e| format!("Failed to update campaign: {}", e))?;
-
-            // Replace steps
-            tx.execute("DELETE FROM campaign_steps WHERE campaign_id = ?1", [id])
-                .map_err(|e| format!("Failed to clear old campaign steps: {}", e))?;
-
-            id
+            (id, removed)
         }
-        _ => crate::db::create_campaign(
-            &tx,
-            &campaign.name,
-            campaign.description.as_deref(),
-            &campaign.channel_type,
-            &campaign.status,
-            campaign.audience_filter_json.as_deref(),
-            campaign.schedule_config_json.as_deref(),
-        )
-        .map_err(|e| format!("Failed to create campaign: {}", e))?,
+        _ => (
+            crate::db::create_campaign(
+                &tx,
+                &campaign.name,
+                campaign.description.as_deref(),
+                &campaign.channel_type,
+                &campaign.status,
+                campaign.audience_filter_json.as_deref(),
+                campaign.schedule_config_json.as_deref(),
+            )
+            .map_err(|e| format!("Failed to create campaign: {}", e))?,
+            Vec::new(),
+        ),
     };
+    let editing = campaign.id.is_some_and(|id| id > 0);
 
     for step in steps {
-        crate::db::create_campaign_step(
-            &tx,
-            campaign_id,
-            step.step_order,
-            &step.channel,
-            step.delay_minutes,
-            &step.condition_type,
-            &step.template_content,
-            step.ai_prompt_override.as_deref(),
-            step.template_id,
+        match step.id.filter(|id| editing && *id > 0) {
+            Some(step_id) => crate::db::update_campaign_step(
+                &tx,
+                step_id,
+                step.step_order,
+                &step.channel,
+                step.delay_minutes,
+                &step.condition_type,
+                &step.template_content,
+                step.ai_prompt_override.as_deref(),
+                step.template_id,
+            )
+            .map_err(|e| format!("Failed to update campaign step: {}", e))?,
+            None => {
+                crate::db::create_campaign_step(
+                    &tx,
+                    campaign_id,
+                    step.step_order,
+                    &step.channel,
+                    step.delay_minutes,
+                    &step.condition_type,
+                    &step.template_content,
+                    step.ai_prompt_override.as_deref(),
+                    step.template_id,
+                )
+                .map_err(|e| format!("Failed to create campaign step: {}", e))?;
+            }
+        }
+    }
+
+    for step in removed {
+        let Some(step_id) = step.id else { continue };
+        tx.execute(
+            "UPDATE campaign_executions
+             SET status = 'CANCELLED', error_message = ?2,
+                 executed_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+             WHERE step_id = ?1 AND status = 'PENDING'",
+            rusqlite::params![step_id, STEP_REMOVED_NOTE],
         )
-        .map_err(|e| format!("Failed to create campaign step: {}", e))?;
+        .map_err(|e| format!("Failed to cancel pending sends of a removed step: {}", e))?;
+        let has_history: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM campaign_executions WHERE step_id = ?1)",
+                [step_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| format!("DB error: {}", e))?;
+        if has_history {
+            tx.execute(
+                "UPDATE campaign_steps
+                 SET retired_at = strftime('%Y-%m-%dT%H:%M:%SZ', 'now')
+                 WHERE id = ?1",
+                [step_id],
+            )
+            .map_err(|e| format!("Failed to retire a removed step: {}", e))?;
+        } else {
+            tx.execute("DELETE FROM campaign_steps WHERE id = ?1", [step_id])
+                .map_err(|e| format!("Failed to remove a campaign step: {}", e))?;
+        }
     }
 
     tx.commit()

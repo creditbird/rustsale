@@ -214,6 +214,7 @@ impl CampaignScheduler {
                                     .query_row(
                                         "SELECT id, delay_minutes FROM campaign_steps
                                          WHERE campaign_id = ?1 AND step_order = ?2
+                                           AND retired_at IS NULL
                                          ORDER BY step_order ASC LIMIT 1",
                                         rusqlite::params![step.campaign_id, step.step_order + 1],
                                         |row| Ok((row.get(0)?, row.get(1)?)),
