@@ -64,7 +64,7 @@ export function DashboardScreen() {
               <Text testID="dash-caption" class="text-sm text-muted-foreground">
                 {summary() === null
                   ? (failed() ? "Chưa tải được dữ liệu" : "Đang mở dữ liệu…")
-                  : `${summary()!.deals.length} deal đang mở · ${activities().length} hoạt động gần đây`}
+                  : `${summary()!.openCount} deal đang mở · ${activities().length} hoạt động gần đây`}
               </Text>
             </View>
             <Button
