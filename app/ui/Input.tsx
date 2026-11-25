@@ -7,6 +7,8 @@ export interface InputProps {
   testID?: string;
   onSubmit?: () => void;
   multiline?: boolean;
+  /** Masks entered characters for secrets such as passwords. */
+  masked?: boolean;
   class?: string;
   /** Takes the keyboard focus once shown: a field in a dialog that opens to be typed in. */
   autoFocus?: boolean;
@@ -21,6 +23,7 @@ export function Input(props: InputProps) {
       placeholder={props.placeholder}
       autoFocus={props.autoFocus}
       multiline={props.multiline}
+      masked={props.masked}
       returnKeyType={props.multiline ? "default" : "search"}
       onChange={({ value }) => props.onValue(value)}
       onSubmit={() => props.onSubmit?.()}
