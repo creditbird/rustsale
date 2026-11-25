@@ -485,6 +485,10 @@ impl ConversationService {
         Ok(())
     }
 
+    pub fn list_direct_chat_accounts(&self) -> Result<Vec<super::types::DirectChatAccount>> {
+        Ok(self.repository.list_direct_chat_accounts()?)
+    }
+
     pub fn start_direct_conversation(
         &self,
         request: &super::types::StartDirectConversationRequest,

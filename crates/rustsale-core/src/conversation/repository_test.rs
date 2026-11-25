@@ -7130,3 +7130,35 @@ fn start_direct_conversation_reports_a_missing_channel_account() {
         "missing account must be reported as not found: {error}"
     );
 }
+
+#[test]
+fn direct_chat_accounts_are_enabled_zalo_and_whatsapp_only() {
+    let harness = Harness::new();
+    let conn = open_db_connection(harness.path.to_str().unwrap()).unwrap();
+    let now = "2026-01-01T00:00:00Z";
+    for (id, channel, key, enabled) in [
+        (1, "zalo", "zalo-on", 1),
+        (2, "whatsapp", "wa-on", 1),
+        (3, "zalo", "zalo-off", 0),
+        (4, "messenger", "fb-on", 1),
+        (5, "email", "mail-on", 1),
+    ] {
+        conn.execute(
+            "INSERT INTO channel_accounts
+             (id, channel, provider_account_key, display_name, enabled, connection_status, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?3, ?4, 'connected', ?5, ?5)",
+            params![id, channel, key, enabled, now],
+        )
+        .unwrap();
+    }
+    drop(conn);
+
+    let accounts = harness
+        .repository
+        .list_direct_chat_accounts()
+        .expect("list direct chat accounts");
+    let ids: Vec<i64> = accounts.iter().map(|account| account.id).collect();
+    assert_eq!(ids, vec![1, 2]);
+    assert_eq!(accounts[0].channel, "zalo");
+    assert_eq!(accounts[1].channel, "whatsapp");
+}

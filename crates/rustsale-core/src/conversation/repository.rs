@@ -4635,6 +4635,28 @@ impl ConversationRepository {
         Ok(())
     }
 
+    /// Zalo and WhatsApp accounts, oldest first: the ones `start_direct_conversation` understands.
+    pub fn list_direct_chat_accounts(
+        &self,
+    ) -> Result<Vec<crate::conversation::types::DirectChatAccount>> {
+        let conn = open_db_connection(&self.db_path)?;
+        let mut stmt = conn.prepare(
+            "SELECT id, channel, display_name, connection_status
+             FROM channel_accounts
+             WHERE channel IN ('zalo', 'whatsapp') AND enabled = 1
+             ORDER BY id",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(crate::conversation::types::DirectChatAccount {
+                id: row.get(0)?,
+                channel: row.get(1)?,
+                display_name: row.get(2)?,
+                connection_status: row.get(3)?,
+            })
+        })?;
+        rows.collect()
+    }
+
     pub fn start_direct_conversation(
         &self,
         request: &crate::conversation::types::StartDirectConversationRequest,

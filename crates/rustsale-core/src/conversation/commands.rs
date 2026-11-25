@@ -193,6 +193,15 @@ pub fn delete_conversations_batch(
         .map_err(|error| error.to_string())
 }
 
+pub fn list_direct_chat_accounts(
+    state: State<'_, ConversationState>,
+) -> Result<Vec<crate::conversation::types::DirectChatAccount>, String> {
+    state
+        .service
+        .list_direct_chat_accounts()
+        .map_err(|error| error.to_string())
+}
+
 pub fn start_direct_conversation(
     state: State<'_, ConversationState>,
     request: StartDirectConversationRequest,
