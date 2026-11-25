@@ -94,3 +94,25 @@ test("a long column scrolls: cost per scroll step", async () => {
   const q = (p: number) => times[Math.min(times.length - 1, Math.floor(p * times.length))].toFixed(2);
   console.log(`pipeline-scroll N=${N} steps=${times.length} (24 frames each, manual clock) median=${q(0.5)}ms p95=${q(0.95)}ms max=${times[times.length - 1].toFixed(2)}ms`);
 }, 300000);
+
+test("a new deal switched to USD is saved with 500, not the VND default", async () => {
+  const stamp = Date.now();
+  const leadName = `Khách USD ${stamp}`;
+  await Host.start(dir);
+  await Leads.add({ name: leadName, company: "Công ty usd", status: "New" });
+  const app = await openPipeline();
+  await app.press("id:pipe-create");
+  await app.type("id:deal-lead", leadName);
+  const leads = (await Leads.page({ search: leadName }, null, 5)) as { items: { id: number }[] };
+  await app.press(`id:deal-pick-${leads.items[0].id}`);
+  await app.press("id:deal-cur-USD");
+  await app.press("id:deal-save");
+  let created: DealRow | undefined;
+  await eventually(async () => {
+    created = ((await Deals.list()) as DealRow[]).find((d) => d.title.includes("Công ty usd"));
+    return created !== undefined;
+  });
+  if (!created) throw new Error("the created deal is not in the core");
+  if (created.value !== 500 || created.currency !== "USD") throw new Error(`saved ${created.value} ${created.currency}`);
+  await Deals.delete(created.id);
+});

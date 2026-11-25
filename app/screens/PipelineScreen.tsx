@@ -5,7 +5,7 @@ import { Button, EmptyState, Input, Modal, Skeleton } from "../ui";
 import { money, type Lead } from "../components/LeadDetail";
 import { startCore, type Page } from "../stores/core";
 import { notify, report } from "../stores/toast";
-import { group, neighbour, OTHER, parseAmount, STAGES, totalOf, type Deal } from "../stores/pipeline";
+import { DEFAULT_DEAL_VALUE, group, neighbour, OTHER, parseAmount, valueAfterCurrencyChange, STAGES, totalOf, type Deal } from "../stores/pipeline";
 
 const COLUMNS = [...STAGES.map((s) => ({ key: s.key, label: s.label, hint: s.prob })), { key: OTHER, label: "Khác", hint: "" }];
 
@@ -99,7 +99,7 @@ export function PipelineScreen() {
     leadRows.set([]);
     picked.set(null);
     title.set("");
-    value.set("10000000");
+    value.set(DEFAULT_DEAL_VALUE.VND);
     currency.set("VND");
     stage.set(at === OTHER ? STAGES[0].key : at);
     formError.set(null);
@@ -216,8 +216,8 @@ export function PipelineScreen() {
           <Input testID="deal-title" value={title()} placeholder="Tên deal" onValue={(v) => title.set(v)} />
           <View class="flex-row items-center gap-2">
             <View class="flex-1"><Input testID="deal-value" value={value()} placeholder="Giá trị" onValue={(v) => value.set(v)} /></View>
-            <Button testID="deal-cur-VND" label="VND" variant={currency() === "VND" ? "primary" : "secondary"} onPress={() => currency.set("VND")} />
-            <Button testID="deal-cur-USD" label="USD" variant={currency() === "USD" ? "primary" : "secondary"} onPress={() => currency.set("USD")} />
+            <Button testID="deal-cur-VND" label="VND" variant={currency() === "VND" ? "primary" : "secondary"} onPress={() => { value.set(valueAfterCurrencyChange(value(), "VND")); currency.set("VND"); }} />
+            <Button testID="deal-cur-USD" label="USD" variant={currency() === "USD" ? "primary" : "secondary"} onPress={() => { value.set(valueAfterCurrencyChange(value(), "USD")); currency.set("USD"); }} />
           </View>
           <View class="flex-row flex-wrap gap-1">
             <Each of={STAGES} key={(s) => s.key}>
