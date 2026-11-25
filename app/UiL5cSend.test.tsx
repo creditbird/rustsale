@@ -113,3 +113,16 @@ test("a lead without an email is refused before any SMTP call", async () => {
   expect(state.email.length).toBe(0);
   expect(app.shows("id:send-email-confirm")).toBe(false);
 });
+
+test("a lead without a phone or Zalo is refused before any Zalo call", async () => {
+  const stamp = Date.now();
+  const name = `Gui thieu sdt ${stamp}`;
+  const id = (await Leads.add({ name, status: "New" })) as number;
+  const state: Calls = { zalo: [], email: [] };
+  const app = await openLead(state, name, id);
+
+  await app.press("id:lead-send-zalo");
+  await app.waitUntil(() => has(app, "Khách chưa có số điện thoại hoặc Zalo."));
+  expect(state.zalo.length).toBe(0);
+  expect(app.shows("id:send-zalo-confirm")).toBe(false);
+});
