@@ -132,6 +132,172 @@ mod outreach_complete {
         assert!(message.contains("account"), "message: {message}");
     }
 
+    #[tokio::test]
+    async fn zalo_run_skips_invalid_phone_and_reports_zero_queued() {
+        let (app, template, _valid_lead) = app_with_lead();
+        let (lead_abc, lead_short, lead_empty) = {
+            let state = app.state::<commands::DbState>();
+            let mut conn = state.conn.lock().unwrap();
+            let abc = commands::add_lead_internal(
+                &mut conn,
+                "Invalid ABC".into(),
+                "Co".into(),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                "".into(),
+                "abc".into(),
+                None,
+                None,
+            )
+            .unwrap();
+            let short = commands::add_lead_internal(
+                &mut conn,
+                "Invalid Short".into(),
+                "Co".into(),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                "".into(),
+                "12345".into(),
+                None,
+                None,
+            )
+            .unwrap();
+            let empty = commands::add_lead_internal(
+                &mut conn,
+                "Missing Phone".into(),
+                "Co".into(),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                "".into(),
+                "".into(),
+                None,
+                None,
+            )
+            .unwrap();
+            (abc, short, empty)
+        };
+
+        let missing_id = 999_999;
+        let result = commands::start_zalo_outreach(
+            app.handle().clone(),
+            vec!["mock-imei-1".into()],
+            template,
+            vec![lead_abc, lead_short, lead_empty, missing_id],
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("invalid leads return structured skip result");
+
+        assert_eq!(result.queued, 0);
+        assert_eq!(result.skipped, 4);
+        assert_eq!(
+            result.skipped_leads,
+            vec![
+                commands::SkippedZaloLead {
+                    lead_id: lead_abc,
+                    reason: "invalid_phone".into(),
+                },
+                commands::SkippedZaloLead {
+                    lead_id: lead_short,
+                    reason: "invalid_phone".into(),
+                },
+                commands::SkippedZaloLead {
+                    lead_id: lead_empty,
+                    reason: "missing_phone".into(),
+                },
+                commands::SkippedZaloLead {
+                    lead_id: missing_id,
+                    reason: "lead_not_found".into(),
+                },
+            ]
+        );
+        assert_eq!(app.events.count("outreach-complete"), 1);
+
+        let state = app.state::<commands::DbState>();
+        let conn = state.conn.lock().unwrap();
+        for id in [lead_abc, lead_short, lead_empty] {
+            let (has_zalo, status): (Option<i32>, Option<String>) = conn
+                .query_row(
+                    "SELECT has_zalo, zalo_status FROM leads WHERE id = ?1",
+                    [id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(has_zalo, Some(0));
+            assert_eq!(status.as_deref(), Some("INVALID_PHONE"));
+        }
+    }
+
+    #[tokio::test]
+    async fn zalo_run_mixed_valid_and_invalid_returns_queued_and_skipped() {
+        let (app, template, valid_phone_lead) = app_with_lead();
+        let (valid_uid_lead, invalid_lead) = {
+            let state = app.state::<commands::DbState>();
+            let mut conn = state.conn.lock().unwrap();
+            let uid_lead = commands::add_lead_internal(
+                &mut conn,
+                "Has UID".into(),
+                "Co".into(),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                "".into(),
+                "abc".into(),
+                None,
+                None,
+            )
+            .unwrap();
+            conn.execute(
+                "UPDATE leads SET has_zalo = 1, zalo_uid = '9876543210' WHERE id = ?1",
+                [uid_lead],
+            )
+            .unwrap();
+            let bad = commands::add_lead_internal(
+                &mut conn,
+                "Bad Phone".into(),
+                "Co".into(),
+                "New".into(),
+                0.0,
+                "Owner".into(),
+                "".into(),
+                "12345".into(),
+                None,
+                None,
+            )
+            .unwrap();
+            (uid_lead, bad)
+        };
+
+        let result = commands::start_zalo_outreach(
+            app.handle().clone(),
+            vec!["mock-imei-1".into()],
+            template,
+            vec![valid_phone_lead, valid_uid_lead, invalid_lead],
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .expect("mixed batch succeeds with queued and skipped counts");
+
+        assert_eq!(result.queued, 2);
+        assert_eq!(result.skipped, 1);
+        assert_eq!(
+            result.skipped_leads,
+            vec![commands::SkippedZaloLead {
+                lead_id: invalid_lead,
+                reason: "invalid_phone".into(),
+            }]
+        );
+    }
+
     #[test]
     fn zalo_run_that_splits_into_no_work_completes() {
         let app = MockApp::new();

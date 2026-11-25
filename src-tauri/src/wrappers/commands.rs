@@ -391,7 +391,7 @@ pub async fn start_zalo_outreach(
     burst_max_messages: Option<u32>,
     burst_delay_seconds: Option<u64>,
     inter_message_delay_seconds: Option<u64>,
-) -> Result<(), String> {
+) -> Result<rustsale_core::commands::ZaloOutreachStartResult, String> {
     let app = core.handle();
     rustsale_core::commands::start_zalo_outreach(
         app.clone(),
