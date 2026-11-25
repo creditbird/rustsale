@@ -91,3 +91,11 @@ export function parseAmount(raw: string, currency: string): AmountResult {
   const value = Number(s.replace(/[.,]/g, ""));
   return Number.isSafeInteger(value) ? { ok: true, value } : bad("Giá trị quá lớn.");
 }
+
+export const DEFAULT_DEAL_VALUE: Record<string, string> = { VND: "10000000", USD: "500" };
+
+/** The amount field after the currency changes: an untouched default follows the currency, a number the user typed stays. */
+export function valueAfterCurrencyChange(current: string, next: string): string {
+  const untouched = Object.values(DEFAULT_DEAL_VALUE).includes(current.trim());
+  return untouched ? (DEFAULT_DEAL_VALUE[next] ?? current) : current;
+}

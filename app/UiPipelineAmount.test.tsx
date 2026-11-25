@@ -1,5 +1,5 @@
 import { expect, test } from "nsh/test";
-import { parseAmount } from "./stores/pipeline";
+import { parseAmount, valueAfterCurrencyChange } from "./stores/pipeline";
 
 const val = (s: string, c: string) => { const r = parseAmount(s, c); return r.ok ? r.value : null; };
 
@@ -30,4 +30,11 @@ test("ambiguous or invalid values are rejected, not guessed", () => {
   expect(val("-5", "VND")).toBeNull();
   expect(val("-1.5", "USD")).toBeNull();
   expect(val("", "VND")).toBeNull();
+});
+
+test("switching currency resets an untouched default, keeps a typed amount", () => {
+  expect(valueAfterCurrencyChange("10000000", "USD")).toBe("500");
+  expect(valueAfterCurrencyChange("500", "VND")).toBe("10000000");
+  expect(valueAfterCurrencyChange("2500000", "USD")).toBe("2500000");
+  expect(valueAfterCurrencyChange("", "USD")).toBe("");
 });
