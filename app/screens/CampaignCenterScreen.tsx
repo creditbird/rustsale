@@ -108,9 +108,9 @@ export function CampaignCenterScreen() {
   // Saving an edit that removes a step with customers still waiting asks first; the body checked is the body saved.
   const removal = signal<{ body: ReturnType<typeof buildPayload>; impact: RemovedStepImpact[] } | null>(null);
 
-  const commit = async (body: ReturnType<typeof buildPayload>) => {
+  const commit = async (body: ReturnType<typeof buildPayload>, confirmRemovePending = false) => {
     try {
-      await Campaigns.saveUnifiedCampaign(body.campaign, body.steps);
+      await Campaigns.saveUnifiedCampaign(body.campaign, body.steps, confirmRemovePending);
       removal.set(null);
       closeBuilder();
       notify("Đã lưu chiến dịch", "success");
@@ -139,7 +139,7 @@ export function CampaignCenterScreen() {
           return;
         }
       }
-      await commit(body);
+      await commit(body, false);
     } catch (e) {
       const f = report(e, { retry: () => { void save(); } });
       if (f.action === "fix") buildError.set(f.message);
@@ -152,7 +152,7 @@ export function CampaignCenterScreen() {
     if (pending === null || saving()) return;
     saving.set(true);
     try {
-      await commit(pending.body);
+      await commit(pending.body, true);
     } finally {
       saving.set(false);
     }

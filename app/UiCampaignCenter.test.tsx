@@ -268,7 +268,14 @@ test("removing a step with customers waiting asks first, and saving keeps the hi
     await app.press("id:cc-step-remove-1");
     await app.press("id:cc-save");
     await app.waitUntil(() => has(app, "Sẽ bỏ 1 khách đang ở bước 1"));
-    // Nothing is saved while the question is open.
+    // Nothing is saved while the question is open, and a direct unconfirmed core call is also refused.
+    expect((await stepsOf(id)).length).toBe(2);
+    await expect(
+      Campaigns.saveUnifiedCampaign({
+        id, name: title, description: null, channel_type: "zalo", status: "ACTIVE",
+        audience_filter_json: null, schedule_config_json: null, created_at: at, updated_at: at,
+      }, [{ ...step(1, "Hai"), id: before[1].id, campaign_id: id }], false),
+    ).rejects.toMatchObject({ code: "invalid_request" });
     expect((await stepsOf(id)).length).toBe(2);
 
     await app.press("id:cc-removal-cancel");

@@ -168,8 +168,20 @@ test("campaigns: editing a campaign keeps its steps' ids, enrolments and history
     expect(analytics.total_executions).toBe(1);
     expect(analytics.pending_count).toBe(1);
 
-    // Removing the step with the waiting customer cancels the send; the execution row stays.
-    await Campaigns.saveUnifiedCampaign(head(campaignId, `Edit keep ${stamp} b`), keepSecond);
+    // Direct save removing the step with a waiting customer without confirmation is refused and changes nothing.
+    await expect(
+      Campaigns.saveUnifiedCampaign(head(campaignId, `Edit keep ${stamp} refused`), keepSecond)
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    await expect(
+      Campaigns.saveUnifiedCampaign(head(campaignId, `Edit keep ${stamp} refused`), keepSecond, false)
+    ).rejects.toMatchObject({ code: "invalid_request" });
+    expect(rows(await Campaigns.unifiedCampaignSteps(campaignId))).toHaveLength(2);
+    analytics = row(await Campaigns.unifiedCampaignAnalytics(campaignId));
+    expect(analytics.total_executions).toBe(1);
+    expect(analytics.pending_count).toBe(1);
+
+    // With explicit confirmation, removing the step cancels the send; the execution row stays.
+    await Campaigns.saveUnifiedCampaign(head(campaignId, `Edit keep ${stamp} b`), keepSecond, true);
     expect(rows(await Campaigns.unifiedCampaignSteps(campaignId))).toHaveLength(1);
     analytics = row(await Campaigns.unifiedCampaignAnalytics(campaignId));
     expect(analytics.total_executions).toBe(1);

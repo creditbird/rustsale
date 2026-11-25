@@ -1,3 +1,4 @@
+use crate::campaign::commands::STEP_REMOVED_NOTE;
 use crate::campaign::dispatcher::{DispatchMode, DispatchPayload, OmnichannelDispatcher};
 use crate::campaign::evaluator::{ConditionResult, StepConditionEvaluator};
 use crate::campaign::throttling::{AccountRotator, AntiBanThrottler};
@@ -43,6 +44,21 @@ impl CampaignScheduler {
             Arc::new(AccountRotator::with_round_robin()),
             None,
         )
+    }
+
+    fn cancel_removed_step_execution(
+        conn: &Connection,
+        exec_id: i64,
+        now_iso: &str,
+    ) -> Result<(), String> {
+        crate::db::update_campaign_execution_status(
+            conn,
+            exec_id,
+            "CANCELLED",
+            Some(STEP_REMOVED_NOTE),
+            Some(now_iso),
+        )
+        .map_err(|e| format!("DB error updating execution to CANCELLED: {}", e))
     }
 
     /// Processes due campaign executions synchronously in a single cycle.
@@ -95,21 +111,14 @@ impl CampaignScheduler {
                 continue;
             }
 
-            // 3. Load step definition
+            // 3. Load active step definition (must exist and not be retired)
             let step = match crate::db::get_campaign_step(conn, execution.step_id)
                 .map_err(|e| format!("DB error loading step: {}", e))?
             {
                 Some(s) => s,
                 None => {
-                    crate::db::update_campaign_execution_status(
-                        conn,
-                        exec_id,
-                        "FAILED",
-                        Some("Campaign step definition not found"),
-                        Some(&now_iso),
-                    )
-                    .map_err(|e| format!("DB error updating execution to FAILED: {}", e))?;
-                    summary.failed_count += 1;
+                    Self::cancel_removed_step_execution(conn, exec_id, &now_iso)?;
+                    summary.skipped_count += 1;
                     continue;
                 }
             };
@@ -146,6 +155,17 @@ impl CampaignScheduler {
                                 error = %throttle_err,
                                 "Account throttled; delaying execution"
                             );
+                            // Never return an execution to PENDING if its step was removed/retired.
+                            if crate::db::get_campaign_step(conn, execution.step_id)
+                                .map_err(|e| {
+                                    format!("DB error verifying step before throttle reset: {}", e)
+                                })?
+                                .is_none()
+                            {
+                                Self::cancel_removed_step_execution(conn, exec_id, &now_iso)?;
+                                summary.skipped_count += 1;
+                                continue;
+                            }
                             // Release claim back to PENDING so it can be retried when rate limit lifts
                             crate::db::update_campaign_execution_status(
                                 conn,
@@ -160,6 +180,16 @@ impl CampaignScheduler {
                             summary.throttled_count += 1;
                             continue;
                         }
+                    }
+
+                    // Re-verify right before dispatch that the step still exists and has not been retired.
+                    if crate::db::get_campaign_step(conn, execution.step_id)
+                        .map_err(|e| format!("DB error verifying step before dispatch: {}", e))?
+                        .is_none()
+                    {
+                        Self::cancel_removed_step_execution(conn, exec_id, &now_iso)?;
+                        summary.skipped_count += 1;
+                        continue;
                     }
 
                     // 6. Dispatch message
@@ -284,6 +314,16 @@ impl CampaignScheduler {
                             };
 
                             if retry_count < 3 {
+                                if crate::db::get_campaign_step(conn, execution.step_id)
+                                    .map_err(|e| {
+                                        format!("DB error verifying step before retry: {}", e)
+                                    })?
+                                    .is_none()
+                                {
+                                    Self::cancel_removed_step_execution(conn, exec_id, &now_iso)?;
+                                    summary.skipped_count += 1;
+                                    continue;
+                                }
                                 let next_retry = retry_count + 1;
                                 let retry_delay_mins = next_retry * 5;
                                 let retry_iso: String = conn

@@ -67,10 +67,16 @@ pub fn save_unified_campaign(
     core: tauri::State<'_, CoreHandle>,
     campaign: Campaign,
     steps: Vec<CampaignStep>,
+    confirm_remove_pending: Option<bool>,
 ) -> Result<i64, String> {
     let app = core.handle();
     let st_state = app.state::<DbState>().map_err(|e| e.to_string())?;
-    rustsale_core::campaign::commands::save_unified_campaign(campaign, steps, st_state)
+    rustsale_core::campaign::commands::save_unified_campaign(
+        campaign,
+        steps,
+        confirm_remove_pending,
+        st_state,
+    )
 }
 
 #[tauri::command]

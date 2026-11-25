@@ -118,7 +118,7 @@ Conventions to keep when exporting to TSX:
 | `get_unified_campaign_steps` | n | `campaign_id: i64` | `Result<Vec<CampaignStep>, String>` (v3-only; `Err` if the campaign does not exist) |
 | `get_unified_campaign_save_impact` | n | `campaign_id: i64`, `steps: Vec<CampaignStep>` | `Result<Vec<RemovedStepImpact>, String>` (v3-only, read-only; the steps the edit removes that still have `PENDING` customers, with `pending_leads`; `Err` if the campaign does not exist or a step id is not its own) |
 | `get_all_unified_campaigns` | n | — | `Result<Vec<Campaign>, String>` |
-| `save_unified_campaign` | n | `campaign: Campaign`, `steps: Vec<CampaignStep>` | `Result<i64, String>` (v3: editing updates steps by id; removed steps cancel their `PENDING` sends and are retired, not cascade-deleted) |
+| `save_unified_campaign` | n | `campaign: Campaign`, `steps: Vec<CampaignStep>`, `confirm_remove_pending: Option<bool>` | `Result<i64, String>` (v3: editing updates steps by id; removing a step with `PENDING` leads requires `confirm_remove_pending = true` or returns an error without mutating the DB; confirmed removals cancel `PENDING` sends and retire steps with history rather than cascade-deleting) |
 | `delete_unified_campaign` | n | `campaign_id: i64` | `Result<(), String>` |
 
 #### `commands` (74)

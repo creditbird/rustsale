@@ -1610,7 +1610,7 @@ pub fn get_campaign_step(
 ) -> Result<Option<crate::models::CampaignStep>> {
     let mut stmt = conn.prepare(
         "SELECT id, campaign_id, step_order, channel, delay_minutes, condition_type, template_content, ai_prompt_override, created_at, template_id
-         FROM campaign_steps WHERE id = ?1",
+         FROM campaign_steps WHERE id = ?1 AND retired_at IS NULL",
     )?;
     let mut rows = stmt.query([id])?;
     if let Some(row) = rows.next()? {

@@ -120,13 +120,19 @@ pub fn get_unified_campaign_save_impact(
 pub fn save_unified_campaign(
     campaign: Campaign,
     steps: Vec<CampaignStep>,
+    confirm_remove_pending: Option<bool>,
     state: State<'_, DbState>,
 ) -> Result<i64, String> {
     let mut conn = state
         .conn
         .lock()
         .map_err(|e| format!("Database lock error: {}", e))?;
-    save_unified_campaign_internal(&mut conn, campaign, steps)
+    save_unified_campaign_internal(
+        &mut conn,
+        campaign,
+        steps,
+        confirm_remove_pending.unwrap_or(false),
+    )
 }
 
 pub fn delete_unified_campaign(campaign_id: i64, state: State<'_, DbState>) -> Result<(), String> {
@@ -458,7 +464,7 @@ pub fn get_all_unified_campaigns_internal(conn: &Connection) -> Result<Vec<Campa
 }
 
 /// Cancelled execution: the customer was waiting at a step the edit removed. Kept as history.
-const STEP_REMOVED_NOTE: &str = "Step removed while editing the campaign";
+pub(crate) const STEP_REMOVED_NOTE: &str = "Step removed while editing the campaign";
 
 /// The live steps of `campaign_id` and, of those, the ones `submitted` leaves out.
 ///
@@ -542,6 +548,7 @@ pub fn save_unified_campaign_internal(
     conn: &mut Connection,
     campaign: Campaign,
     steps: Vec<CampaignStep>,
+    confirm_remove_pending: bool,
 ) -> Result<i64, String> {
     let tx = conn
         .transaction()
@@ -553,6 +560,25 @@ pub fn save_unified_campaign_internal(
                 .map_err(|e| format!("DB error: {}", e))?
                 .ok_or_else(|| format!("Campaign {} not found", id))?;
             let removed = plan_step_changes(&tx, id, &steps)?;
+            if !confirm_remove_pending {
+                let mut impacted: Vec<String> = Vec::new();
+                for step in &removed {
+                    let Some(step_id) = step.id else { continue };
+                    let pending = pending_leads_at_step(&tx, step_id)?;
+                    if pending > 0 {
+                        impacted.push(format!(
+                            "step {} (id {}): {} pending lead(s)",
+                            step.step_order, step_id, pending
+                        ));
+                    }
+                }
+                if !impacted.is_empty() {
+                    return Err(format!(
+                        "Confirmation required: removing step(s) with pending leads ({}); set confirm_remove_pending=true to proceed",
+                        impacted.join(", ")
+                    ));
+                }
+            }
             crate::db::update_campaign(
                 &tx,
                 id,

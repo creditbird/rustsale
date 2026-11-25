@@ -165,6 +165,7 @@ export function stepsToDrafts(rows: StepRecord[]): StepDraft[] {
 /**
  * What `Campaigns.saveUnifiedCampaign` takes. Without `existing` it is a new DRAFT campaign (the core assigns the ids);
  * with it the campaign keeps its id, status, channel type, audience and schedule, and only name, description and steps change.
+ * Pass `confirmRemovePending = true` as the third argument only after the user confirms removing steps that still have `PENDING` leads.
  */
 export function buildPayload(name: string, description: string, steps: StepDraft[], existing?: UnifiedCampaign) {
   const stamp = new Date().toISOString();
