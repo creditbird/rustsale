@@ -149,6 +149,131 @@ fn search_is_case_insensitive_and_wildcards_are_literal() {
 }
 
 #[test]
+fn search_matches_vietnamese_accented_letters_in_both_case_directions() {
+    let conn = conn();
+    conn.execute(
+        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+         VALUES (?1, ?2, 'New', 1.0, '2026-01-01', ?3, ?4, ?5)",
+        rusqlite::params![
+            "Đặng Văn B",
+            "Công ty Ổ Khóa",
+            "Nguyễn Thị Ánh",
+            "Đặng.B@example.test",
+            "0901112222"
+        ],
+    )
+    .expect("insert upper-accented lead");
+    conn.execute(
+        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone)
+         VALUES (?1, ?2, 'New', 2.0, '2026-01-01', ?3, ?4, ?5)",
+        rusqlite::params![
+            "đặng thị c",
+            "xưởng ổ cắm",
+            "trần ánh dương",
+            "ánh.c@example.test",
+            "0903334444"
+        ],
+    )
+    .expect("insert lower-accented lead");
+    insert(&conn, "Khách Thường", "Acme", "New", 3.0);
+
+    let by = |text: &str| {
+        let query = LeadQuery {
+            search: Some(text.to_string()),
+            ..LeadQuery::default()
+        };
+        get_leads_page_internal(&conn, &query, None, 50).expect("page")
+    };
+
+    // Lowercase queries match uppercase Vietnamese columns and vice versa.
+    assert_eq!(by("đặng").total, 2);
+    assert_eq!(by("ĐẶNG").total, 2);
+    assert_eq!(by("Đặng").total, 2);
+    assert_eq!(by("đặng văn b").total, 1);
+    assert_eq!(by("ĐẶNG THỊ C").total, 1);
+
+    // Owner and email with "Ánh" / "ánh" in both directions.
+    assert_eq!(by("ánh").total, 2);
+    assert_eq!(by("ÁNH").total, 2);
+    assert_eq!(by("Ánh").total, 2);
+    assert_eq!(by("nguyễn thị ánh").total, 1);
+    assert_eq!(by("TRẦN ÁNH DƯƠNG").total, 1);
+    assert_eq!(by("đặng.b@example.test").total, 1);
+    assert_eq!(by("ÁNH.C@EXAMPLE.TEST").total, 1);
+
+    // Company with "Ổ" / "ổ" in both directions.
+    assert_eq!(by("ổ").total, 2);
+    assert_eq!(by("Ổ").total, 2);
+    assert_eq!(by("công ty ổ khóa").total, 1);
+    assert_eq!(by("XƯỞNG Ổ CẮM").total, 1);
+
+    // Phone still matches and unrelated text returns nothing.
+    assert_eq!(by("0901112222").total, 1);
+    assert_eq!(by("đặng%").total, 0, "% must stay literal");
+}
+
+#[test]
+fn unicode_sort_folds_vietnamese_case_consistently_across_pages() {
+    let conn = conn();
+    // Insert out of sorted order so ORDER BY unicode_lower(...) must reorder them.
+    let id_lower_dang = insert(&conn, "đặng bình", "đặng ltd", "New", 4.0);
+    let id_upper_o = insert(&conn, "Ổ Khóa", "Ánh Co", "New", 5.0);
+    let id_lower_anh = insert(&conn, "ánh mai", "ổ cắm b", "New", 2.0);
+    let id_upper_dang = insert(&conn, "Đặng An", "Đặng Corp", "New", 3.0);
+    let id_lower_o = insert(&conn, "ổ đĩa", "ánh inc", "New", 6.0);
+    let id_upper_anh = insert(&conn, "Ánh Dương", "Ổ Cắm A", "New", 1.0);
+
+    for sort in [LeadSort::Name, LeadSort::Company] {
+        for descending in [false, true] {
+            let query = LeadQuery {
+                sort,
+                descending,
+                ..LeadQuery::default()
+            };
+            let whole = get_leads_page_internal(&conn, &query, None, 50).expect("whole");
+            let whole_ids: Vec<_> = whole.items.iter().filter_map(|l| l.id).collect();
+            assert_eq!(
+                walk(&conn, &query, 2),
+                whole_ids,
+                "{sort:?} desc={descending}: paged order must match unpaged"
+            );
+        }
+    }
+
+    // By Name ascending: unicode_lower folds uppercase and lowercase accented letters together.
+    let by_name = LeadQuery {
+        sort: LeadSort::Name,
+        ..LeadQuery::default()
+    };
+    let names: Vec<String> = get_leads_page_internal(&conn, &by_name, None, 50)
+        .expect("sorted names")
+        .items
+        .into_iter()
+        .map(|l| l.name)
+        .collect();
+    let expected_ids = vec![
+        i32::try_from(id_upper_anh).expect("id"),
+        i32::try_from(id_lower_anh).expect("id"),
+        i32::try_from(id_upper_dang).expect("id"),
+        i32::try_from(id_lower_dang).expect("id"),
+        i32::try_from(id_upper_o).expect("id"),
+        i32::try_from(id_lower_o).expect("id"),
+    ];
+    assert_eq!(walk(&conn, &by_name, 2), expected_ids);
+    assert_eq!(
+        names,
+        vec![
+            "Ánh Dương",
+            "ánh mai",
+            "Đặng An",
+            "đặng bình",
+            "Ổ Khóa",
+            "ổ đĩa",
+        ]
+    );
+}
+
+#[test]
 fn status_and_category_filters_apply_before_paging() {
     let conn = conn();
     seed(&conn, 12);

@@ -1,9 +1,9 @@
 //! Paged, filtered and sorted leads for the leads table.
 //!
 //! New commands next to the v2 `get_leads` / `get_leads_by_category`, which stay
-//! unchanged for the Tauri adapter. Sorting is by SQLite binary collation of the
-//! lower-cased ASCII column (`lower()` does not fold Vietnamese capitals); the
-//! unique `l.id` tie-break makes the order total.
+//! unchanged for the Tauri adapter. Text sorting and search use the registered
+//! `unicode_lower(...)` SQL function so Vietnamese capitals fold consistently;
+//! the unique `l.id` tie-break makes the order total.
 
 use super::{like_pattern, page_size, Cursor, KeyValue, Page, PageError};
 use crate::commands::DbState;
@@ -44,11 +44,11 @@ impl LeadSort {
     const fn key_sql(self) -> (&'static str, KeyKind) {
         match self {
             Self::Id => ("l.id", KeyKind::Int),
-            Self::Name => ("lower(COALESCE(l.name, ''))", KeyKind::Text),
-            Self::Company => ("lower(COALESCE(l.company, ''))", KeyKind::Text),
-            Self::Status => ("lower(COALESCE(l.status, ''))", KeyKind::Text),
+            Self::Name => ("unicode_lower(COALESCE(l.name, ''))", KeyKind::Text),
+            Self::Company => ("unicode_lower(COALESCE(l.company, ''))", KeyKind::Text),
+            Self::Status => ("unicode_lower(COALESCE(l.status, ''))", KeyKind::Text),
             Self::Value => ("COALESCE(l.value, 0.0)", KeyKind::Num),
-            Self::Owner => ("lower(COALESCE(l.owner, ''))", KeyKind::Text),
+            Self::Owner => ("unicode_lower(COALESCE(l.owner, ''))", KeyKind::Text),
             Self::LastActivity => ("COALESCE(l.last_activity, '')", KeyKind::Text),
         }
     }
@@ -136,9 +136,9 @@ fn filter_sql(query: &LeadQuery, usd_vnd: f64) -> (String, Vec<Value>) {
         params.push(Value::Text(like_pattern(search)));
         let n = params.len();
         sql.push_str(&format!(
-            " AND (lower(l.name) LIKE ?{n} ESCAPE '\\' OR lower(l.company) LIKE ?{n} ESCAPE '\\' \
-             OR lower(l.email) LIKE ?{n} ESCAPE '\\' OR lower(l.phone) LIKE ?{n} ESCAPE '\\' \
-             OR lower(l.owner) LIKE ?{n} ESCAPE '\\')"
+            " AND (unicode_lower(l.name) LIKE ?{n} ESCAPE '\\' OR unicode_lower(l.company) LIKE ?{n} ESCAPE '\\' \
+             OR unicode_lower(l.email) LIKE ?{n} ESCAPE '\\' OR unicode_lower(l.phone) LIKE ?{n} ESCAPE '\\' \
+             OR unicode_lower(l.owner) LIKE ?{n} ESCAPE '\\')"
         ));
     }
     if let Some(status) = query.status.as_deref().filter(|s| !s.is_empty()) {
@@ -325,7 +325,7 @@ pub fn get_leads_by_category_page(
 pub fn get_lead_owners(conn: &Connection) -> Result<Vec<String>, PageError> {
     let mut stmt = conn.prepare(
         "SELECT DISTINCT trim(owner) FROM leads \
-         WHERE trim(COALESCE(owner, '')) <> '' ORDER BY lower(trim(owner))",
+         WHERE trim(COALESCE(owner, '')) <> '' ORDER BY unicode_lower(trim(owner))",
     )?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
     let mut owners = Vec::new();

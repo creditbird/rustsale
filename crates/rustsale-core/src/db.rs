@@ -1,3 +1,4 @@
+use rusqlite::functions::FunctionFlags;
 use rusqlite::{Connection, Result};
 use std::time::Duration;
 
@@ -39,12 +40,31 @@ fn add_column_if_missing(
     Ok(())
 }
 
+/// Registers Unicode-aware SQL helper functions on `conn`.
+///
+/// Bundled SQLite `lower()` only folds ASCII, so queries that match or sort
+/// Vietnamese text case-insensitively call `unicode_lower(...)` instead.
+pub fn register_sql_functions(conn: &Connection) -> Result<()> {
+    conn.create_scalar_function(
+        "unicode_lower",
+        1,
+        FunctionFlags::SQLITE_UTF8
+            | FunctionFlags::SQLITE_DETERMINISTIC
+            | FunctionFlags::SQLITE_INNOCUOUS,
+        |ctx| {
+            let value: Option<String> = ctx.get(0)?;
+            Ok(value.map(|text| text.to_lowercase()))
+        },
+    )
+}
+
 pub fn open_db_connection(db_path: &str) -> Result<Connection> {
     let conn = Connection::open(db_path)?;
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.pragma_update(None, "foreign_keys", "ON")?;
     conn.busy_timeout(Duration::from_secs(5))?;
+    register_sql_functions(&conn)?;
     Ok(conn)
 }
 
