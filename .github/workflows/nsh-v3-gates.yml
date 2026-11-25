@@ -1,7 +1,7 @@
 name: NSH v3 gates
 
 # Gate v3 on GitHub runners, so developers do not queue `heavy-job` on the shared dev machine (issue: RS CI gates).
-# Runs on push / PR into feat/nsh-v3* (and on the CI branch itself). No secrets, no network side effects:
+# Runs on push / PR into master and feat/nsh-v3* (and on the CI branch itself). No secrets, no network side effects:
 # RUSTSALE_DEMO=1 is set only for the `app` job (synthetic data for screen tests); never for a release build.
 # How to read the result: docs/v3/ci-gates.md
 on:
@@ -12,9 +12,9 @@ on:
         required: false
         default: ''
   push:
-    branches: ['feat/nsh-v3*', 'chore/nsh-v3-ci-gates']
+    branches: ['master', 'feat/nsh-v3*', 'chore/nsh-v3-ci-gates']
   pull_request:
-    branches: ['feat/nsh-v3*']
+    branches: ['master', 'feat/nsh-v3*']
 
 permissions:
   contents: read
@@ -199,15 +199,23 @@ jobs:
       - name: Result table
         env:
           GH_TOKEN: ${{ github.token }}
+          TESTED_REF: ${{ inputs.ref || github.ref_name }}
+          GH_REPO: ${{ github.repository }}
+          GH_RUN_ID: ${{ github.run_id }}
         run: |
           {
             echo "### NSH v3 gates"
-            echo "Tested ref: \`${{ inputs.ref || github.ref_name }}\`"
+            printf 'Tested ref: `%s`\n' "$TESTED_REF"
             echo "| Job | Result | Duration |"
             echo "|---|---|---|"
-            gh api "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/jobs" --paginate \
+            gh api "repos/$GH_REPO/actions/runs/$GH_RUN_ID/jobs" --paginate \
               --jq '.jobs[] | select(.name != "gate summary") | "| \(.name) | \(.conclusion // "running") | \(if .completed_at then ((.completed_at | fromdate) - (.started_at | fromdate)) else 0 end)s |"'
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Fail if a gate failed
+        env:
+          CORE_RESULT: ${{ needs.core.result }}
+          NATIVE_RESULT: ${{ needs.native.result }}
+          NATIVE_TESTS_RESULT: ${{ needs.native-tests.result }}
+          APP_RESULT: ${{ needs.app.result }}
         run: |
-          [ "${{ needs.core.result }}" = success ] && [ "${{ needs.native.result }}" = success ] && [ "${{ needs.native-tests.result }}" = success ] && [ "${{ needs.app.result }}" = success ]
+          [ "$CORE_RESULT" = success ] && [ "$NATIVE_RESULT" = success ] && [ "$NATIVE_TESTS_RESULT" = success ] && [ "$APP_RESULT" = success ]
