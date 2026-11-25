@@ -5,8 +5,8 @@ Workflow: `.github/workflows/nsh-v3-gates.yml`. It runs the v3 gates on GitHub r
 
 ## When it runs
 
-- push to `feat/nsh-v3*` (and to `chore/nsh-v3-ci-gates`)
-- pull request into `feat/nsh-v3*`
+- push to `master`, `feat/nsh-v3*` (and to `chore/nsh-v3-ci-gates`)
+- pull request into `master` or `feat/nsh-v3*`
 - manually, on any branch without pushing to it: `gh workflow run nsh-v3-gates.yml -R creditbird/rustsale --ref <branch-that-has-this-file> -f ref=<branch-to-test>`
   (the workflow file comes from `--ref`, the code under test from `ref`; until this file is merged use `--ref chore/nsh-v3-ci-gates`).
   The run summary shows the tested ref and commit sha.

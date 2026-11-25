@@ -89,21 +89,30 @@ jobs:
 
       - name: Setup Private Signing Key
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
         run: |
           mkdir -p ~/.tauri
-          echo "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" > ~/.tauri/rustsale.key
+          umask 077
+          printf '%s\n' "$TAURI_SIGNING_PRIVATE_KEY" > ~/.tauri/rustsale.key
           chmod 600 ~/.tauri/rustsale.key || true
 
       - name: Setup .env for Frontend Build
         shell: bash
+        env:
+          VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_ANON_KEY: ${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY }}
+          VITE_VIETQR_BANK_ID: ${{ vars.VITE_VIETQR_BANK_ID || 'ICB' }}
+          VITE_VIETQR_ACCOUNT_NO: ${{ vars.VITE_VIETQR_ACCOUNT_NO || '101874355801' }}
+          VITE_VIETQR_ACCOUNT_NAME: ${{ vars.VITE_VIETQR_ACCOUNT_NAME || 'TRAN TRONG TRI' }}
         run: |
-          cat << 'EOF' > .env
-          VITE_SUPABASE_URL=${{ secrets.VITE_SUPABASE_URL || vars.VITE_SUPABASE_URL }}
-          VITE_SUPABASE_ANON_KEY=${{ secrets.VITE_SUPABASE_ANON_KEY || vars.VITE_SUPABASE_ANON_KEY }}
-          VITE_VIETQR_BANK_ID=${{ vars.VITE_VIETQR_BANK_ID || 'ICB' }}
-          VITE_VIETQR_ACCOUNT_NO=${{ vars.VITE_VIETQR_ACCOUNT_NO || '101874355801' }}
-          VITE_VIETQR_ACCOUNT_NAME=${{ vars.VITE_VIETQR_ACCOUNT_NAME || 'TRAN TRONG TRI' }}
-          EOF
+          {
+            printf 'VITE_SUPABASE_URL=%s\n' "$VITE_SUPABASE_URL"
+            printf 'VITE_SUPABASE_ANON_KEY=%s\n' "$VITE_SUPABASE_ANON_KEY"
+            printf 'VITE_VIETQR_BANK_ID=%s\n' "$VITE_VIETQR_BANK_ID"
+            printf 'VITE_VIETQR_ACCOUNT_NO=%s\n' "$VITE_VIETQR_ACCOUNT_NO"
+            printf 'VITE_VIETQR_ACCOUNT_NAME=%s\n' "$VITE_VIETQR_ACCOUNT_NAME"
+          } > .env
 
       - name: Build Tauri Desktop App & Sign
         uses: tauri-apps/tauri-action@v0
