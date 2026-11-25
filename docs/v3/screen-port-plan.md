@@ -25,7 +25,7 @@ Dùng chung: `stores/core.ts` (`startCore`, `failure`), `stores/paged.ts` (`page
 | 3 | Khách hàng `leads` | UI-05..07 | **xong phần lõi** | mục 1 |
 | 4 | Danh mục `categories` | UI-09 | còn | |
 | 5 | Hội thoại `conversation` | UI-15..27, 47, 48 | **xong phần lõi** | mục 1 |
-| 6 | Chiến dịch `campaign_center` | UI-32, 33 | còn | khó, giữ lại |
+| 6 | Chiến dịch `campaign_center` | UI-32, 33, 35 | **xong phần lõi** (tạo, sửa, mẫu) | parity trong `feature-parity.md` |
 | 7 | Thư viện Mẫu `template_center` | UI-34, 35 | **xong phần lõi** | mục 1 |
 | 8 | Duyệt AI `ai_approval` | UI-28 | còn | |
 | 9 | Facebook `facebook_hub` | UI-36, 40 | còn | khó, giữ lại |
