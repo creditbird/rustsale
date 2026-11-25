@@ -1,5 +1,5 @@
 use std::io::{Cursor, Write};
-use zip::write::FileOptions;
+use zip::write::SimpleFileOptions;
 use zip::ZipWriter;
 
 pub const TEMPLATE_HEADERS: &[&str] = &[
@@ -70,7 +70,7 @@ pub fn generate_csv_lead_template() -> Vec<u8> {
 pub fn generate_excel_lead_template() -> Result<Vec<u8>, String> {
     let buffer = Cursor::new(Vec::new());
     let mut zip = ZipWriter::new(buffer);
-    let options: FileOptions<'_, ()> = FileOptions::default()
+    let options = SimpleFileOptions::default()
         .compression_method(zip::CompressionMethod::Deflated)
         .unix_permissions(0o644);
 
