@@ -2,11 +2,14 @@
 
 export interface TimelineMessage {
   id: number;
+  conversationId?: number;
+  channel?: string;
   direction: string;
   contentType?: string;
   textContent: string | null;
   occurredAt: string;
   status: string;
+  senderDisplayName?: string | null;
   attachments?: unknown[];
 }
 
