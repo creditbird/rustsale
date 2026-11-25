@@ -191,7 +191,10 @@ mod tests {
         assert_eq!(error.message, text);
         // A sheet named like a not-found message must not change the code.
         assert_eq!(
-            CoreApiError::from("Trang tính 'not found' quá lớn: 9 dòng x 9 cột (giới hạn tối đa 5 dòng, 5 cột).").code,
+            CoreApiError::from(
+                "Trang tính 'not found' quá lớn: 9 dòng x 9 cột (giới hạn tối đa 5 dòng, 5 cột)."
+            )
+            .code,
             "invalid_request"
         );
     }
