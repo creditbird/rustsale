@@ -2,6 +2,8 @@
 // the native dialog calls are stubbed; the CSV itself, the mapping and the core query are real.
 import { expect, open, test } from "nsh/test";
 import { Host, Leads } from "rustsale/native";
+import { importSay } from "./components/LeadImportDialog";
+import { failure, MESSAGE_FOR_CODE } from "./stores/core";
 
 const dir = `/tmp/rustsale-v3-ui-l5b-csv-${Date.now()}`;
 
@@ -95,7 +97,23 @@ test("a mapped column can be replaced before the import runs", async () => {
 const coreError = (code: string, message: string) => Object.assign(new Error(message), { code });
 const tooLarge = "Trang tính 'Sheet2' quá lớn: 1048576 dòng x 16384 cột (giới hạn tối đa 100000 dòng, 200 cột). Vui lòng xóa các ô thừa ở xa hoặc tách nhỏ tệp trước khi nhập.";
 
-test("a sheet the core rejects as too large shows the core's Vietnamese message and leaves nothing importable", async () => {
+// A stubbed native call cannot carry a code (the host stamps every thrown error ERR_NSH_HOST_ERROR),
+// so the code-to-sentence step is checked as a pure function and the screen tests check the state a
+// failure leaves behind.
+test("the importer's own sentence shows for invalid_request only, never for other codes", () => {
+  const rejected = coreError("invalid_request", tooLarge);
+  expect(importSay(rejected)).toEqual({ invalid_request: tooLarge });
+  const f = failure(rejected, importSay(rejected));
+  expect(f.action).toBe("fix");
+  expect(f.message).toBe(tooLarge);
+  const other = coreError("internal", "disk exploded");
+  expect(importSay(other)).toEqual({});
+  expect(failure(other, importSay(other)).message).toBe(MESSAGE_FOR_CODE.internal);
+  expect(importSay(coreError("invalid_request", ""))).toEqual({});
+  expect(importSay(null)).toEqual({});
+});
+
+test("a failed re-inspect leaves nothing importable from the previous sheet", async () => {
   const state = { executed: [] as Options[], exported: null as { filename: string; content: string } | null };
   let calls = 0;
   const app = await openLeads(state, {
@@ -112,9 +130,7 @@ test("a sheet the core rejects as too large shows the core's Vietnamese message 
 
   await app.press("id:import-sheet-trigger");
   await app.press("id:import-sheet-item-Sheet2");
-  await app.waitFor("id:import-error");
-  expect(has(app, "quá lớn")).toBe(true);
-  expect(has(app, "Có lỗi khi xử lý")).toBe(false);
+  await app.waitUntil(() => has(app, MESSAGE_FOR_CODE.internal));
   // The first sheet's headers and mapping are gone, so nothing stale can be imported.
   expect(app.shows("id:import-estimate")).toBe(false);
   expect(app.shows("id:import-map-name_col-trigger")).toBe(false);
@@ -132,8 +148,7 @@ test("a failed import clears its progress", async () => {
   await app.press("id:import-pick");
   await app.waitFor("id:import-estimate");
   await app.press("id:import-run");
-  await app.waitFor("id:import-error");
-  expect(has(app, "quá lớn")).toBe(true);
+  await app.waitUntil(() => has(app, MESSAGE_FOR_CODE.internal));
   expect(app.shows("id:import-progress")).toBe(false);
 });
 
