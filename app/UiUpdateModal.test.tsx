@@ -53,7 +53,7 @@ test("background update check shows sidebar badge and opens UpdateModal with rel
 });
 
 test("download locks closing while in progress, then prompts to restart and calls installAndRestart", async () => {
-  let finishDownload: (() => void) | null = null;
+  const pending: { finish: (() => void) | null } = { finish: null };
   let downloadCalls = 0;
   let restartCalls = 0;
 
@@ -66,7 +66,7 @@ test("download locks closing while in progress, then prompts to restart and call
     downloadUpdate: () => {
       downloadCalls += 1;
       return new Promise<void>((resolve) => {
-        finishDownload = resolve;
+        pending.finish = resolve;
       });
     },
     installAndRestart: () => {
@@ -91,8 +91,8 @@ test("download locks closing while in progress, then prompts to restart and call
   expect(app.shows("id:update-progress-box")).toBe(true);
 
   // Finish download -> downloaded banner + restart CTA.
-  if (!finishDownload) throw new Error("expected downloadUpdate stub to be active");
-  finishDownload();
+  if (!pending.finish) throw new Error("expected downloadUpdate stub to be active");
+  pending.finish();
 
   await app.waitFor("id:update-downloaded-banner");
   await app.waitFor("id:update-restart");
