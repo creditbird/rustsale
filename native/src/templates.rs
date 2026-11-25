@@ -125,8 +125,9 @@ impl Templates {
         .await
     }
 
-    /// The multi-channel templates matching `filter` (`{ channel?, folder_id?, stage?,
-    /// search_query?, tag? }`); absent or `null` means all.
+    /// The multi-channel templates matching `filter` (`{ channel?, folder_id?, unfiled?, stage?,
+    /// search_query?, tag? }`); absent or `null` means all. `unfiled: true` means templates with
+    /// no folder.
     pub async fn list(filter: Option<JsonValue>) -> Result<JsonValue, JsError> {
         let mut filter: TemplateFilter = args(filter)?;
         filter.folder_id = checked_optional_id64(filter.folder_id)?;

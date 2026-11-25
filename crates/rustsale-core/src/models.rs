@@ -371,6 +371,8 @@ pub struct UpdateTemplateInput {
 pub struct TemplateFilter {
     pub channel: Option<String>,
     pub folder_id: Option<i64>,
+    /// `true` for templates with no folder, `false` for filed ones; `none` means any folder.
+    pub unfiled: Option<bool>,
     pub stage: Option<String>,
     pub search_query: Option<String>,
     pub tag: Option<String>,

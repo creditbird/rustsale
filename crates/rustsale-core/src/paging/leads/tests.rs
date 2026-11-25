@@ -245,3 +245,173 @@ fn empty_table_gives_an_empty_last_page() {
     assert_eq!(page.total, 0);
     assert!(page.next_cursor.is_none());
 }
+
+fn insert_filtered(
+    conn: &Connection,
+    name: &str,
+    owner: &str,
+    value: f64,
+    currency: &str,
+    has_zalo: Option<i32>,
+    zalo_reached: i32,
+) -> i64 {
+    conn.execute(
+        "INSERT INTO leads (name, company, status, value, last_activity, owner, email, phone,
+                            currency, has_zalo, zalo_reached)
+         VALUES (?1, 'Acme', 'New', ?2, '2026-01-01', ?3, ?4, '0900000000', ?5, ?6, ?7)",
+        rusqlite::params![
+            name,
+            value,
+            owner,
+            format!("{name}@example.test"),
+            currency,
+            has_zalo,
+            zalo_reached
+        ],
+    )
+    .expect("insert lead");
+    conn.last_insert_rowid()
+}
+
+#[test]
+fn owner_filter_matches_the_listed_owner_and_counts_only_its_rows() {
+    let conn = conn();
+    insert_filtered(&conn, "A", "An", 1.0, "VND", None, 0);
+    insert_filtered(&conn, "B", "an", 2.0, "VND", None, 0);
+    insert_filtered(&conn, "C", "Binh", 3.0, "VND", None, 0);
+
+    let by = |owner: &str| {
+        let query = LeadQuery {
+            owner: Some(owner.to_string()),
+            ..LeadQuery::default()
+        };
+        get_leads_page_internal(&conn, &query, None, 50).expect("page")
+    };
+
+    let upper = by("An");
+    assert_eq!(upper.total, 1);
+    assert_eq!(upper.items[0].owner, "An");
+    let lower = by("an");
+    assert_eq!(lower.total, 1);
+    assert_eq!(lower.items[0].owner, "an");
+    assert_eq!(by("  an  ").total, 1, "surrounding spaces are ignored");
+
+    let blank = LeadQuery {
+        owner: Some("   ".to_string()),
+        ..LeadQuery::default()
+    };
+    assert_eq!(
+        walk(&conn, &blank, 2).len(),
+        3,
+        "blank owner means no filter"
+    );
+}
+
+#[test]
+fn owner_filter_finds_accented_names_as_the_owner_list_shows_them() {
+    let conn = conn();
+    insert_filtered(&conn, "A", "Đặng Văn B", 1.0, "VND", None, 0);
+    insert_filtered(&conn, "B", "Ưng Văn C", 2.0, "VND", None, 0);
+    insert_filtered(&conn, "C", "Nguyễn Thị Ánh", 3.0, "VND", None, 0);
+    insert_filtered(&conn, "D", "An", 4.0, "VND", None, 0);
+
+    let owners = get_lead_owners(&conn).expect("owners");
+    for owner in ["Đặng Văn B", "Ưng Văn C", "Nguyễn Thị Ánh"] {
+        assert!(
+            owners.iter().any(|listed| listed == owner),
+            "{owner} is in the owner list"
+        );
+        let query = LeadQuery {
+            owner: Some(owner.to_string()),
+            ..LeadQuery::default()
+        };
+        let page = get_leads_page_internal(&conn, &query, None, 50).expect("page");
+        assert_eq!(page.total, 1, "the listed {owner} selects its lead");
+        assert_eq!(page.items[0].owner, owner);
+    }
+}
+
+#[test]
+fn zalo_states_split_verified_no_zalo_and_unchecked() {
+    let conn = conn();
+    insert_filtered(&conn, "A", "one", 1.0, "VND", Some(1), 0);
+    insert_filtered(&conn, "B", "one", 1.0, "VND", Some(0), 0);
+    insert_filtered(&conn, "C", "one", 1.0, "VND", None, 0);
+    let by = |zalo| {
+        let query = LeadQuery {
+            zalo: Some(zalo),
+            ..LeadQuery::default()
+        };
+        get_leads_page_internal(&conn, &query, None, 50)
+            .expect("page")
+            .total
+    };
+    assert_eq!(by(ZaloFilter::Verified), 1);
+    assert_eq!(by(ZaloFilter::NoZalo), 1);
+    assert_eq!(by(ZaloFilter::Unchecked), 1);
+}
+
+#[test]
+fn outreach_filter_counts_unreached_rows_without_a_flag() {
+    let conn = conn();
+    insert_filtered(&conn, "A", "one", 1.0, "VND", None, 1);
+    insert_filtered(&conn, "B", "one", 1.0, "VND", None, 0);
+    let reached = LeadQuery {
+        zalo_reached: Some(true),
+        ..LeadQuery::default()
+    };
+    let unreached = LeadQuery {
+        zalo_reached: Some(false),
+        ..LeadQuery::default()
+    };
+    assert_eq!(
+        get_leads_page_internal(&conn, &reached, None, 50)
+            .expect("page")
+            .total,
+        1
+    );
+    assert_eq!(
+        get_leads_page_internal(&conn, &unreached, None, 50)
+            .expect("page")
+            .total,
+        1
+    );
+}
+
+#[test]
+fn value_range_converts_usd_leads_with_the_stored_rate() {
+    let conn = conn();
+    conn.execute(
+        "INSERT INTO app_metadata (key, value) VALUES ('usd_vnd_exchange_rate', '25000')
+         ON CONFLICT(key) DO UPDATE SET value = '25000'",
+        [],
+    )
+    .expect("rate");
+    insert_filtered(&conn, "vnd", "one", 20_000_000.0, "VND", None, 0);
+    insert_filtered(&conn, "usd small", "one", 100.0, "USD", None, 0);
+    insert_filtered(&conn, "usd big", "one", 1_000.0, "USD", None, 0);
+    let by = |min_value, max_value| {
+        let query = LeadQuery {
+            min_value,
+            max_value,
+            ..LeadQuery::default()
+        };
+        get_leads_page_internal(&conn, &query, None, 50).expect("page")
+    };
+    let middle = by(Some(10_000_000.0), Some(30_000_000.0));
+    assert_eq!(middle.total, 2, "20m VND and 1000 USD at 25k");
+    let small = by(None, Some(9_999_999.0));
+    assert_eq!(small.total, 1);
+    assert_eq!(small.items[0].name, "usd small");
+    assert_eq!(by(Some(40_000_000.0), None).total, 0);
+}
+
+#[test]
+fn owners_are_distinct_sorted_and_skip_blank_names() {
+    let conn = conn();
+    insert_filtered(&conn, "A", "Binh", 1.0, "VND", None, 0);
+    insert_filtered(&conn, "B", "an", 1.0, "VND", None, 0);
+    insert_filtered(&conn, "C", "an", 1.0, "VND", None, 0);
+    insert_filtered(&conn, "D", "", 1.0, "VND", None, 0);
+    assert_eq!(get_lead_owners(&conn).expect("owners"), vec!["an", "Binh"]);
+}

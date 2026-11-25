@@ -1,9 +1,11 @@
 import { List, signal, Text, View } from "nsh";
-import { Button as Base } from "nsh/base";
-import { Leads, LeadsMore } from "rustsale/native";
+import { Button as Base, Select } from "nsh/base";
+import { Deals, Leads, LeadsMore } from "rustsale/native";
 import { Badge, Button, EmptyState, Input, Modal, Skeleton } from "../ui";
-import { LeadDetail, STATUSES, money, tone, validateLeadEdit, type Activity, type Lead, type LeadEditDraft } from "../components/LeadDetail";
+import { LeadDetail, STATUSES, money, tone, validateLeadEdit, type Activity, type Deal, type Lead, type LeadEditDraft } from "../components/LeadDetail";
+import { LeadImportDialog } from "../components/LeadImportDialog";
 import { startCore, type Page } from "../stores/core";
+import { fetchAllLeads, saveLeadsCsv } from "../stores/leadCsv";
 import { pager } from "../stores/paged";
 import { notify, report } from "../stores/toast";
 
@@ -15,10 +17,67 @@ const SORTS: { key: string; label: string; w: string }[] = [
   { key: "value", label: "Giá trị", w: "flex-1" },
 ];
 
+/** The value ranges the second filter row offers, in VND like the core's query. */
+const VALUE_RANGES: { key: string; label: string; min?: number; max?: number }[] = [
+  { key: "", label: "Mọi giá trị" },
+  { key: "under10m", label: "Dưới 10 tr", max: 9_999_999 },
+  { key: "10to50m", label: "10 – 50 tr", min: 10_000_000, max: 50_000_000 },
+  { key: "above50m", label: "Trên 50 tr", min: 50_000_001 },
+];
+
+const ZALO_FILTERS: { key: string; label: string }[] = [
+  { key: "", label: "Zalo: tất cả" },
+  { key: "verified", label: "Có Zalo" },
+  { key: "noZalo", label: "Không có Zalo" },
+  { key: "unchecked", label: "Chưa kiểm tra" },
+];
+
+const OUTREACH_FILTERS: { key: string; label: string }[] = [
+  { key: "", label: "Đã nhắn: tất cả" },
+  { key: "reached", label: "Đã nhắn" },
+  { key: "notReached", label: "Chưa nhắn" },
+];
+
+interface FilterSelectProps {
+  testID: string;
+  value: string;
+  title: string;
+  items: { value: string; title: string }[];
+  onChange: (value: string) => void;
+}
+
+/** One dropdown of the filter row: the trigger names the current choice, each item has its id. */
+function FilterSelect(props: FilterSelectProps) {
+  return (
+    <Select testID={props.testID}
+      items={props.items}
+      value={props.value}
+      placeholder={props.title}
+      onChange={({ value }) => props.onChange(value ?? "")}
+      trigger={
+        <View testID={`${props.testID}-trigger`} class="h-9 w-52 flex-row items-center justify-between rounded-(--radius) border border-input bg-background px-3">
+          <Text class="truncate text-sm text-foreground">{props.title}</Text>
+          <Text class="text-xs text-muted-foreground">▾</Text>
+        </View>
+      }
+      itemClass="px-3 py-2 selected:bg-accent"
+      renderItem={(entry) => (
+        <View testID={`${props.testID}-item-${entry.value === "" ? "all" : entry.value}`}>
+          <Text class="text-sm text-foreground">{entry.title}</Text>
+        </View>
+      )} />
+  );
+}
+
 /** Leads: a cursor-paged table filtered and sorted in the core, a detail panel and an add dialog. */
 export function LeadsScreen() {
   const search = signal("");
   const status = signal("");
+  const owner = signal("");
+  const valueKey = signal("");
+  const zalo = signal("");
+  const outreach = signal("");
+  const owners = signal<string[]>([]);
   const sort = signal("name");
   const desc = signal(false);
   const categoryId = signal<number | null>(null);
@@ -27,23 +86,35 @@ export function LeadsScreen() {
   const editError = signal<string | null>(null);
   const selected = signal<Lead | null>(null);
   const activities = signal<Activity[]>([]);
+  const deals = signal<Deal[]>([]);
   const adding = signal(false);
   const newName = signal("");
   const newCompany = signal("");
   const formError = signal<string | null>(null);
   const failed = signal(false);
+  const importOpen = signal(false);
+  const exporting = signal(false);
+
+  const query = () => {
+    const range = VALUE_RANGES.find((r) => r.key === valueKey());
+    return {
+      search: search().trim() || undefined,
+      status: status() || undefined,
+      categoryId: categoryId() ?? undefined,
+      owner: owner() || undefined,
+      minValue: range?.min,
+      maxValue: range?.max,
+      zalo: zalo() || undefined,
+      zaloReached: outreach() === "" ? undefined : outreach() === "reached",
+      sort: sort(),
+      descending: desc(),
+    };
+  };
 
   const list = pager<Lead>(
     async (cursor) => {
       await startCore();
-      const query = {
-        search: search().trim() || undefined,
-        status: status() || undefined,
-        categoryId: categoryId() ?? undefined,
-        sort: sort(),
-        descending: desc(),
-      };
-      return (await Leads.page(query, cursor, 50)) as Page<Lead>;
+      return (await Leads.page(query(), cursor, 50)) as Page<Lead>;
     },
     (e, retry) => { failed.set(true); report(e, { retry }); },
   );
@@ -59,6 +130,23 @@ export function LeadsScreen() {
     if (sort() === key) desc.set(!desc());
     else { sort.set(key); desc.set(false); }
     reload();
+  };
+  const pickOwner = (name: string) => { owner.set(name); reload(); };
+  const pickValue = (key: string) => { valueKey.set(key); reload(); };
+  const pickZalo = (key: string) => { zalo.set(key); reload(); };
+  const pickOutreach = (key: string) => { outreach.set(key); reload(); };
+  const clearFilters = () => {
+    search.set(""); status.set(""); owner.set(""); valueKey.set("");
+    zalo.set(""); outreach.set("");
+    reload();
+  };
+  const loadOwners = async () => {
+    try {
+      await startCore();
+      owners.set((await Leads.owners()) as string[]);
+    } catch (e) {
+      report(e, { retry: () => { void loadOwners(); } });
+    }
   };
 
   const loadCategories = async () => {
@@ -78,11 +166,17 @@ export function LeadsScreen() {
     selected.set(lead);
     activities.set([]);
     editError.set(null);
+    deals.set([]);
     try {
-      const [fresh, acts] = await Promise.all([Leads.details(lead.id), LeadsMore.activities(lead.id)]);
+      const [fresh, acts, allDeals] = await Promise.all([
+        Leads.details(lead.id),
+        LeadsMore.activities(lead.id),
+        Deals.list(),
+      ]);
       if (selected()?.id === lead.id) {
         selected.set(fresh as Lead);
         activities.set(acts as Activity[]);
+        deals.set((allDeals as Deal[]).filter((deal) => deal.lead_id === lead.id));
       }
     } catch (e) {
       report(e, { refresh: () => { selected.set(null); reload(); }, retry: () => { void open(lead); } });
@@ -149,9 +243,27 @@ export function LeadsScreen() {
       if (f.action === "fix") formError.set(f.message);
     }
   };
+  const exportCsv = async () => {
+    if (exporting()) return;
+    exporting.set(true);
+    try {
+      const rows = await fetchAllLeads(query());
+      if (rows.length === 0) {
+        notify("Không có khách nào để xuất", "warning");
+        return;
+      }
+      const saved = await saveLeadsCsv(rows);
+      if (saved !== null) notify(`Đã lưu ${rows.length} khách`, "success");
+    } catch (e) {
+      report(e, { retry: () => { void exportCsv(); } });
+    } finally {
+      exporting.set(false);
+    }
+  };
 
   reload();
   loadCategories();
+  loadOwners();
 
   return (
     <View class="flex-1 flex-row">
@@ -160,6 +272,8 @@ export function LeadsScreen() {
           <Text class="text-xl font-semibold text-foreground">Khách hàng</Text>
           <View class="flex-row items-center gap-3">
             <Text testID="lead-caption" class="text-sm text-muted-foreground">{list.ready() ? `${list.items().length} / ${list.total()} khách` : (failed() ? "Chưa tải được" : "Đang mở dữ liệu…")}</Text>
+            <Button testID="lead-import-open" label="Nhập tệp" size="sm" onPress={() => importOpen.set(true)} />
+            <Button testID="lead-export" label="Xuất CSV" size="sm" onPress={() => { void exportCsv(); }} />
             <Button testID="lead-add" label="Thêm khách" variant="primary" size="sm" onPress={() => { formError.set(null); adding.set(true); }} />
           </View>
         </View>
@@ -187,6 +301,29 @@ export function LeadsScreen() {
                 onPress={() => pickCategory(c().id)} />
             )}
           </Each>
+          <FilterSelect testID="lead-filter-owner"
+            title={owner() || "Tất cả phụ trách"}
+            value={owner()}
+            items={[{ value: "", title: "Tất cả phụ trách" },
+              ...owners().map((name) => ({ value: name, title: name }))]}
+            onChange={pickOwner} />
+          <FilterSelect testID="lead-filter-value"
+            title={VALUE_RANGES.find((r) => r.key === valueKey())?.label ?? "Mọi giá trị"}
+            value={valueKey()}
+            items={VALUE_RANGES.map((r) => ({ value: r.key, title: r.label }))}
+            onChange={pickValue} />
+          <FilterSelect testID="lead-filter-zalo"
+            title={ZALO_FILTERS.find((r) => r.key === zalo())?.label ?? "Zalo: tất cả"}
+            value={zalo()}
+            items={ZALO_FILTERS.map((r) => ({ value: r.key, title: r.label }))}
+            onChange={pickZalo} />
+          <FilterSelect testID="lead-filter-outreach"
+            title={OUTREACH_FILTERS.find((r) => r.key === outreach())?.label ?? "Đã nhắn: tất cả"}
+            value={outreach()}
+            items={OUTREACH_FILTERS.map((r) => ({ value: r.key, title: r.label }))}
+            onChange={pickOutreach} />
+          <Button testID="lead-filter-clear" label="Bỏ lọc" size="sm" variant="ghost"
+            onPress={clearFilters} />
         </View>
         <View class="flex-1 overflow-hidden rounded-(--radius) border border-border bg-card">
           <View class="flex-row border-b border-border bg-muted px-4 py-2">
@@ -227,11 +364,13 @@ export function LeadsScreen() {
           <LeadDetail
             lead={lead}
             activities={activities}
+            deals={deals}
             onClose={() => selected.set(null)}
             onStatus={(next) => { void setStatus(lead(), next); }}
             onSave={saveLead}
             saving={() => saving()}
             saveError={() => editError()}
+            onSent={() => { const lead = selected(); if (lead !== null) void open(lead); }}
           />
         )}
       </If>
@@ -246,6 +385,7 @@ export function LeadsScreen() {
           </View>
         </View>
       </Modal>
+      <LeadImportDialog open={importOpen()} onClose={() => importOpen.set(false)} onImported={reload} />
     </View>
   );
 }

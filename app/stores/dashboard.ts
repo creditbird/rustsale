@@ -84,3 +84,72 @@ export function displayMoney(value: number, currency: string): string {
   const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ".");
   return fraction ? `${grouped},${fraction} ${unit}` : `${grouped} ${unit}`;
 }
+
+/** The window of deals the dashboard shows, as the person picks it. */
+export type Period = "" | "30" | "90" | "year";
+
+/** Midnight at the start of `period`, or `null` for every deal. */
+export function periodStart(period: Period, now: Date = new Date()): Date | null {
+  if (period === "") return null;
+  const start = new Date(now.getTime());
+  start.setHours(0, 0, 0, 0);
+  if (period === "year") {
+    start.setMonth(0, 1);
+    return start;
+  }
+  const days = period === "30" ? 30 : 90;
+  start.setDate(start.getDate() - (days - 1));
+  return start;
+}
+
+/** Whether a deal created at `created_at` falls inside `period`. */
+export function dealInPeriod(
+  deal: { created_at: string },
+  period: Period,
+  now: Date = new Date(),
+): boolean {
+  const start = periodStart(period, now);
+  if (start === null) return true;
+  const time = new Date(deal.created_at).getTime();
+  return Number.isFinite(time) && time >= start.getTime();
+}
+
+/** The pipeline stages the distribution shows, in the order the v2 dashboard used. */
+export const DASHBOARD_STAGES: { stage: string; label: string }[] = [
+  { stage: "Prospecting", label: "Tìm kiếm Tiềm năng" },
+  { stage: "Demo", label: "Demo / Giới thiệu" },
+  { stage: "Proposal", label: "Gửi Báo giá" },
+  { stage: "Negotiation", label: "Đàm phán" },
+  { stage: "Won", label: "Thành công" },
+  { stage: "Lost", label: "Thất bại" },
+];
+
+export interface StageSlice {
+  stage: string;
+  label: string;
+  count: number;
+  value: number;
+  /** The share of all these deals' value, rounded to a whole percent. */
+  pct: number;
+}
+
+/** Counts and converted value per pipeline stage, with each stage's share of the total. */
+export function stageBreakdown(
+  deals: DashboardDeal[],
+  currency: CurrencySettings,
+): StageSlice[] {
+  const amountOf = (deal: DashboardDeal) =>
+    convertAmount(deal.value, deal.currency, currency.base_currency, currency.exchange_rate);
+  const total = deals.reduce((sum, deal) => sum + amountOf(deal), 0);
+  return DASHBOARD_STAGES.map(({ stage, label }) => {
+    const rows = deals.filter((deal) => deal.stage === stage);
+    const value = rows.reduce((sum, deal) => sum + amountOf(deal), 0);
+    return {
+      stage,
+      label,
+      count: rows.length,
+      value,
+      pct: total > 0 ? Math.round((value / total) * 100) : 0,
+    };
+  });
+}
