@@ -1,10 +1,22 @@
-//! Small utilities: the kept greeting command, the license hardware id and image saving.
+//! Small utilities: the kept greeting command, the license hardware id, build-time Supabase config
+//! and image saving.
 
+use crate::config::SupabaseConfig;
 use crate::error::CoreApiError;
 use crate::runtime::on_core;
 use nsh_core::JsonValue;
 use nsh_core::prelude::*;
 use rustsale_core::commands;
+
+fn supabase_config_value(cfg: Option<SupabaseConfig>) -> JsonValue {
+    match cfg {
+        Some(cfg) => serde_json::json!({
+            "url": cfg.url,
+            "anon_key": cfg.anon_key,
+        }),
+        None => JsonValue::Null,
+    }
+}
 
 /// Utility commands kept from the v2 shell.
 #[module]
@@ -24,6 +36,12 @@ impl Util {
             .await
     }
 
+    /// Build-time Supabase project settings (`{ url, anon_key }`), or `null` when this build had
+    /// no real `VITE_SUPABASE_URL` and `VITE_SUPABASE_ANON_KEY` (dev builds).
+    pub fn supabase_config() -> Result<JsonValue, JsError> {
+        Ok(supabase_config_value(crate::config::supabase()))
+    }
+
     /// Saves an image from `url` or `base64Data` through the save dialog using `defaultFilename`
     /// and resolves the chosen path, or `null` when cancelled. Give exactly one source.
     pub async fn save_image(
@@ -37,5 +55,25 @@ impl Util {
             )
         })
         .await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn supabase_config_value_is_null_when_unconfigured() {
+        assert_eq!(supabase_config_value(None), JsonValue::Null);
+    }
+
+    #[test]
+    fn supabase_config_value_serializes_url_and_anon_key() {
+        let value = supabase_config_value(Some(SupabaseConfig {
+            url: "https://license.example.test",
+            anon_key: "anon-key",
+        }));
+        assert_eq!(value["url"], "https://license.example.test");
+        assert_eq!(value["anon_key"], "anon-key");
     }
 }
