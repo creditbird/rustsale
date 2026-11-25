@@ -76,6 +76,17 @@ pub fn get_unified_campaign_analytics(
     get_unified_campaign_analytics_internal(&conn, campaign_id)
 }
 
+pub fn get_unified_campaign_steps(
+    campaign_id: i64,
+    state: State<'_, DbState>,
+) -> Result<Vec<CampaignStep>, String> {
+    let conn = state
+        .conn
+        .lock()
+        .map_err(|e| format!("Database lock error: {}", e))?;
+    get_unified_campaign_steps_internal(&conn, campaign_id)
+}
+
 pub fn get_all_unified_campaigns(state: State<'_, DbState>) -> Result<Vec<Campaign>, String> {
     let conn = state
         .conn
@@ -403,6 +414,21 @@ pub fn get_unified_campaign_analytics_internal(
         conversion_rate,
         step_breakdown,
     })
+}
+
+/// Real steps of campaign `campaign_id`, in `step_order` (ties by id). Read-only.
+///
+/// The campaign must exist: an unknown id is an error rather than an empty list, so an edit
+/// screen cannot mistake "no such campaign" for "campaign with no steps" and save over it.
+/// Steps are matched on `campaign_id` only, so another campaign's steps are never returned.
+pub fn get_unified_campaign_steps_internal(
+    conn: &Connection,
+    campaign_id: i64,
+) -> Result<Vec<CampaignStep>, String> {
+    crate::db::get_campaign(conn, campaign_id)
+        .map_err(|e| format!("DB error: {}", e))?
+        .ok_or_else(|| format!("Campaign {} not found", campaign_id))?;
+    crate::db::get_campaign_steps(conn, campaign_id).map_err(|e| format!("DB error: {}", e))
 }
 
 pub fn get_all_unified_campaigns_internal(conn: &Connection) -> Result<Vec<Campaign>, String> {

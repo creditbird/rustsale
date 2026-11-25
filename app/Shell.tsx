@@ -15,6 +15,7 @@ import { AiApprovalScreen } from "./screens/AiApprovalScreen";
 import { PipelineScreen } from "./screens/PipelineScreen";
 import { SettingsScreen } from "./screens/SettingsScreen";
 import { DashboardScreen } from "./screens/DashboardScreen";
+import { CampaignCenterScreen } from "./screens/CampaignCenterScreen";
 import { Placeholder } from "./screens/Placeholder";
 
 function SidebarItem(props: { id: (typeof NAV)[number]["id"]; label: string; glyph: string }) {
@@ -46,6 +47,7 @@ function pick(r: RouteId) {
   if (r === "ai_approval") return <AiApprovalScreen />;
   if (r === "pipeline") return <PipelineScreen />;
   if (r === "settings") return <SettingsScreen />;
+  if (r === "campaign_center") return <CampaignCenterScreen />;
   return <Placeholder title={NAV.find((n) => n.id === r)?.label ?? ""} />;
 }
 

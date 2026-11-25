@@ -307,6 +307,139 @@ fn test_sequence_save_and_enrollment() {
     assert_eq!(journey1.current_stage, "ENROLLED");
 }
 
+fn sample_campaign(name: &str) -> Campaign {
+    Campaign {
+        id: None,
+        name: name.to_string(),
+        description: None,
+        channel_type: "OMNICHANNEL".to_string(),
+        status: "DRAFT".to_string(),
+        audience_filter_json: None,
+        schedule_config_json: None,
+        created_at: "".to_string(),
+        updated_at: "".to_string(),
+    }
+}
+
+fn sample_step(order: i32, channel: &str, content: &str) -> CampaignStep {
+    CampaignStep {
+        id: None,
+        campaign_id: 0,
+        step_order: order,
+        channel: channel.to_string(),
+        delay_minutes: order * 60,
+        condition_type: "ALWAYS".to_string(),
+        template_content: content.to_string(),
+        ai_prompt_override: Some(format!("hint {order}")),
+        created_at: "".to_string(),
+        template_id: None,
+    }
+}
+
+#[test]
+fn test_get_unified_campaign_steps_returns_own_steps_in_order() {
+    let mut conn = setup_test_db();
+
+    // Saved out of order on purpose: the read must return them by step_order.
+    let first = save_unified_campaign_internal(
+        &mut conn,
+        sample_campaign("First"),
+        vec![
+            sample_step(2, "EMAIL", "second of first"),
+            sample_step(1, "ZALO", "first of first"),
+        ],
+    )
+    .expect("save first campaign");
+    let second = save_unified_campaign_internal(
+        &mut conn,
+        sample_campaign("Second"),
+        vec![sample_step(1, "ZALO", "only step of second")],
+    )
+    .expect("save second campaign");
+
+    let steps = get_unified_campaign_steps_internal(&conn, first).expect("read first steps");
+    assert_eq!(steps.len(), 2);
+    assert_eq!(steps[0].step_order, 1);
+    assert_eq!(steps[0].channel, "ZALO");
+    assert_eq!(steps[0].template_content, "first of first");
+    assert_eq!(steps[0].ai_prompt_override.as_deref(), Some("hint 1"));
+    assert_eq!(steps[0].delay_minutes, 60);
+    assert_eq!(steps[1].step_order, 2);
+    assert_eq!(steps[1].channel, "EMAIL");
+    assert!(steps.iter().all(|s| s.campaign_id == first));
+    assert!(steps.iter().all(|s| s.id.is_some_and(|id| id > 0)));
+
+    // Another campaign's steps never leak in.
+    let other = get_unified_campaign_steps_internal(&conn, second).expect("read second steps");
+    assert_eq!(other.len(), 1);
+    assert_eq!(other[0].template_content, "only step of second");
+    assert_eq!(other[0].campaign_id, second);
+}
+
+#[test]
+fn test_get_unified_campaign_steps_unknown_campaign_is_an_error() {
+    let mut conn = setup_test_db();
+    let id = save_unified_campaign_internal(
+        &mut conn,
+        sample_campaign("Exists"),
+        vec![sample_step(1, "ZALO", "hello")],
+    )
+    .expect("save campaign");
+
+    let err = get_unified_campaign_steps_internal(&conn, id + 1000)
+        .expect_err("unknown campaign must be refused, not read as empty");
+    assert!(err.contains("not found"), "unexpected error: {err}");
+    assert!(get_unified_campaign_steps_internal(&conn, 0).is_err());
+    assert!(get_unified_campaign_steps_internal(&conn, -1).is_err());
+}
+
+#[test]
+fn test_get_unified_campaign_steps_empty_campaign_and_read_only() {
+    let mut conn = setup_test_db();
+    let empty = save_unified_campaign_internal(&mut conn, sample_campaign("No steps"), vec![])
+        .expect("save campaign without steps");
+    let with_steps = save_unified_campaign_internal(
+        &mut conn,
+        sample_campaign("With steps"),
+        vec![sample_step(1, "ZALO", "a"), sample_step(2, "ZALO", "b")],
+    )
+    .expect("save campaign with steps");
+
+    // An existing campaign with no steps is an empty list, not an error.
+    assert!(get_unified_campaign_steps_internal(&conn, empty)
+        .expect("read empty campaign")
+        .is_empty());
+
+    // Reading changes nothing: same rows (ids included) before and after, repeated reads equal.
+    let before = get_unified_campaign_steps_internal(&conn, with_steps).expect("first read");
+    let again = get_unified_campaign_steps_internal(&conn, with_steps).expect("second read");
+    assert_eq!(before.len(), 2);
+    assert_eq!(
+        before.iter().map(|s| s.id).collect::<Vec<_>>(),
+        again.iter().map(|s| s.id).collect::<Vec<_>>()
+    );
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM campaign_steps", [], |r| r.get(0))
+        .expect("count steps");
+    assert_eq!(total, 2);
+
+    // Round trip: the read result is what save takes, so an edit keeps the real steps.
+    let mut campaign = sample_campaign("With steps");
+    campaign.id = Some(with_steps);
+    let edited: Vec<CampaignStep> = before
+        .into_iter()
+        .map(|mut s| {
+            s.template_content.push_str(" (edited)");
+            s
+        })
+        .collect();
+    save_unified_campaign_internal(&mut conn, campaign, edited).expect("save edit");
+    let after = get_unified_campaign_steps_internal(&conn, with_steps).expect("read after edit");
+    assert_eq!(after.len(), 2);
+    assert_eq!(after[0].template_content, "a (edited)");
+    assert_eq!(after[1].template_content, "b (edited)");
+}
+
 #[test]
 fn test_condition_evaluator_all_variants() {
     let conn = setup_test_db();
