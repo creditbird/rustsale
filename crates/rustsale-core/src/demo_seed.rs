@@ -121,6 +121,9 @@ pub fn seed_demo_scrape(conn: &Connection, places: u32) -> rusqlite::Result<()> 
     for (job, status, stage, count, keyword) in [
         ("demo-job-1", "completed", "cleanup", places, "quán cà phê"),
         ("demo-job-2", "paused", "scraping", 5, "nhà hàng"),
+        // Two finished-with-gaps jobs, the retry buttons' fixtures: 3 has one failed cell, 4 one failed email lookup.
+        ("demo-job-3", "partial", "scraping", 3, "tiệm làm tóc"),
+        ("demo-job-4", "partial", "email_enrichment", 3, "phòng gym"),
     ] {
         conn.execute(
             "INSERT INTO google_maps_scrape_jobs
@@ -153,6 +156,22 @@ pub fn seed_demo_scrape(conn: &Connection, places: u32) -> rusqlite::Result<()> 
             )?;
         }
     }
+    conn.execute(
+        "INSERT INTO google_maps_scrape_units
+         (id, job_id, unit_key, unit_type, payload_json, status, attempt_count, last_error_kind,
+          last_error_message, created_at, updated_at)
+         VALUES ('demo-job-3-failed', 'demo-job-3', 'unit-failed', 'keyword', '{}', 'failed', 4,
+                 'navigation_timeout', 'navigation timed out', ?1, ?1)",
+        params![now],
+    )?;
+    conn.execute(
+        "UPDATE google_maps_scrape_jobs SET failed_units = 1, total_units = 2, processed_units = 1 WHERE id = 'demo-job-3'",
+        [],
+    )?;
+    conn.execute(
+        "UPDATE google_maps_scrape_results SET enrichment_status = 'failed' WHERE id = 'demo-job-4-p000'",
+        [],
+    )?;
     Ok(())
 }
 
