@@ -4,7 +4,14 @@ members = ["crates/rustsale-core", "src-tauri"]
 # zca-rs is vendored code kept byte-for-byte; it denies clippy lints its own source does not
 # satisfy (unwrap/indexing), so it is not linted as a workspace member. Test it with
 # `cargo test --manifest-path crates/zca-rs/Cargo.toml` (same target dir).
-exclude = ["crates/zca-rs"]
+# vendor/whatsapp-rust-sqlite-storage is a temporary 3-line dependency patch for RUSTSEC-2026-0459;
+# test it with `cargo test --manifest-path vendor/whatsapp-rust-sqlite-storage/Cargo.toml`.
+exclude = ["crates/zca-rs", "vendor/whatsapp-rust-sqlite-storage"]
+
+[patch.crates-io]
+# RUSTSEC-2026-0459: bump libsqlite3-sys to 0.40.0 (SQLite 3.54.1) and diesel to 2.4.0
+# per upstream oxidezap/whatsapp-rust commit cd2d885. Remove once whatsapp-rust > 0.7.0 is released.
+whatsapp-rust-sqlite-storage = { path = "vendor/whatsapp-rust-sqlite-storage" }
 
 [profile.release]
 opt-level = 3

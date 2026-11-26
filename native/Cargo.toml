@@ -8,6 +8,11 @@ description = "RustSale v3 native module: the only place TSX reaches rustsale-co
 # Own workspace so the NSH hosts build this crate alone; the core joins by path.
 [workspace]
 
+[patch.crates-io]
+# RUSTSEC-2026-0459: bump libsqlite3-sys to 0.40.0 (SQLite 3.54.1) and diesel to 2.4.0
+# per upstream oxidezap/whatsapp-rust commit cd2d885. Remove once whatsapp-rust > 0.7.0 is released.
+whatsapp-rust-sqlite-storage = { path = "../vendor/whatsapp-rust-sqlite-storage" }
+
 [features]
 # Synthetic data for screen tests (`Demo.prepare`, `Demo.seed`). Off by default: a release or
 # `nsh package` build has no such export. `nsh` cannot pass cargo features, so `build.rs` also turns
