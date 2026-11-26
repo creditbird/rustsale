@@ -1606,7 +1606,7 @@ fn count_lead_scans(event: rusqlite::trace::TraceEvent<'_>) {
 
 #[test]
 fn test_reconcile_scans_lead_phones_once_for_all_unlinked_whatsapp_identities() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
     conn.execute(
         "CREATE TABLE leads (id INTEGER PRIMARY KEY, name TEXT, phone TEXT)",
         [],
@@ -1645,12 +1645,17 @@ fn test_reconcile_scans_lead_phones_once_for_all_unlinked_whatsapp_identities() 
     conn.trace_v2(
         rusqlite::trace::TraceEventCodes::SQLITE_TRACE_STMT,
         Some(count_lead_scans),
-    );
+    )
+    .unwrap();
     crate::conversation::migration::reconcile_duplicate_whatsapp_conversations_and_identities(
         &conn,
     )
     .unwrap();
-    conn.trace_v2(rusqlite::trace::TraceEventCodes::empty(), None);
+    conn.trace_v2(
+        rusqlite::trace::TraceEventCodes::empty(),
+        None::<fn(rusqlite::trace::TraceEvent<'_>)>,
+    )
+    .unwrap();
 
     let linked: Option<i64> = conn
         .query_row(

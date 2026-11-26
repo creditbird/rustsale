@@ -1909,4 +1909,14 @@ mod tests {
         // Count must still be exactly 2
         assert_eq!(templates_after_second.len(), 2);
     }
+
+    #[test]
+    fn bundled_sqlite_version_fixes_rustsec_2026_0459() {
+        let ver = rusqlite::version_number();
+        assert!(
+            ver >= 3_054_000,
+            "bundled SQLite must be >= 3.54.0 for RUSTSEC-2026-0459, got {ver} ({})",
+            rusqlite::version()
+        );
+    }
 }

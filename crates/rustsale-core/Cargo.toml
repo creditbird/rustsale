@@ -29,7 +29,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 scraper = "0.23"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-rusqlite = { version = "0.39.0", features = ["bundled", "functions"] }
+rusqlite = { version = "0.42.0", features = ["bundled", "functions"] }
 cdp-lite = "0.1"
 rand = "0.8"
 aes-gcm = "0.10"
@@ -59,7 +59,7 @@ axum = "0.8"
 [dev-dependencies]
 tempfile = "3"
 # `trace` lets tests count the statements a migration runs.
-rusqlite = { version = "0.39.0", features = ["bundled", "trace"] }
+rusqlite = { version = "0.42.0", features = ["bundled", "trace"] }
 tower = { version = "0.5", features = ["util"] }
 http-body-util = "0.1"
 # RS#53 verification only: virtual time for the A-U5 enrichment test.

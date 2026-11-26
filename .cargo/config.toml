@@ -1,0 +1,8 @@
+# RUSTSEC-2026-0459: nsh 0.6.1 generates its own Cargo workspace under `.nsh/rust/Cargo.toml`
+# without forwarding `[patch.crates-io]` from `native/Cargo.toml`. Placing `[patch.crates-io]`
+# here lets Cargo automatically apply the vendored patch across the root workspace, `native/`,
+# and all `nsh`-generated host workspaces using a path relative to the repository root.
+# Remove this file together with `vendor/whatsapp-rust-sqlite-storage/` once `whatsapp-rust`
+# publishes a release > 0.7.0 to crates.io.
+[patch.crates-io]
+whatsapp-rust-sqlite-storage = { path = "vendor/whatsapp-rust-sqlite-storage" }
