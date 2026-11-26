@@ -29,6 +29,8 @@ env:
   CARGO_NET_RETRY: '10'
   RUST_VERSION: '1.98.1'   # same toolchain as packaging/linux/container/Containerfile.deb
   NSH_VERSION: 'v0.6.1'
+  # sha256 of nsh-linux-x86_64.tar.gz for NSH_VERSION; update both together
+  NSH_LINUX_X86_64_SHA256: '9a7ac692f1c229df476be8ff83a3c5912d271453b644e313f02cb19d18696070'
   DEBIAN_FRONTEND: noninteractive
 
 jobs:
@@ -38,16 +40,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref }}
       - name: Tested commit
         run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain passed via input)
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: rustfmt, clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: nsh-v3-core
           workspaces: '. -> target'
@@ -66,16 +68,16 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref }}
       - name: Tested commit
         run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain passed via input)
         with:
           toolchain: ${{ env.RUST_VERSION }}
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: nsh-v3-native
           workspaces: 'native -> target'
@@ -100,22 +102,22 @@ jobs:
     env:
       RUSTSALE_DEMO: '1'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref }}
       - name: Tested commit
         run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain passed via input)
         with:
           toolchain: ${{ env.RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: nsh-v3-app
           workspaces: |
             native -> target
             app/.nsh
       - name: nsh cache (binary, TypeScript 7, components, fonts)
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.nsh
@@ -127,7 +129,19 @@ jobs:
       - name: Install nsh
         run: |
           if [ ! -x "$HOME/.local/bin/nsh" ]; then
-            curl -fsSL https://nsh.dev/install.sh | NSH_VERSION="$NSH_VERSION" sh
+            # Same layout as nsh.dev/install.sh (~/.nsh + ~/.local/bin/nsh link), but the
+            # tarball is checked against a sha256 pinned in this file instead of one
+            # fetched from the same release.
+            tmp="$(mktemp -d)"
+            curl -fsSL "https://github.com/longbridge/nsh/releases/download/${NSH_VERSION}/nsh-linux-x86_64.tar.gz" -o "$tmp/nsh.tar.gz"
+            echo "${NSH_LINUX_X86_64_SHA256}  $tmp/nsh.tar.gz" | sha256sum -c -
+            tar -xzf "$tmp/nsh.tar.gz" -C "$tmp"
+            test -x "$tmp/nsh/bin/nsh"
+            rm -rf "$HOME/.nsh"
+            mkdir -p "$HOME/.local/bin"
+            mv "$tmp/nsh" "$HOME/.nsh"
+            ln -sf "$HOME/.nsh/bin/nsh" "$HOME/.local/bin/nsh"
+            rm -rf "$tmp"
           fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/nsh" --version
@@ -145,20 +159,20 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           ref: ${{ inputs.ref }}
       - name: Tested commit
         run: git log -1 --format='tested %H %s' | tee -a "$GITHUB_STEP_SUMMARY"
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc # master (toolchain passed via input)
         with:
           toolchain: ${{ env.RUST_VERSION }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           prefix-key: nsh-v3-native-tests
           workspaces: 'native -> target'
       - name: nsh cache (binary, TypeScript 7, components, fonts)
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.nsh
@@ -170,7 +184,19 @@ jobs:
       - name: Install nsh
         run: |
           if [ ! -x "$HOME/.local/bin/nsh" ]; then
-            curl -fsSL https://nsh.dev/install.sh | NSH_VERSION="$NSH_VERSION" sh
+            # Same layout as nsh.dev/install.sh (~/.nsh + ~/.local/bin/nsh link), but the
+            # tarball is checked against a sha256 pinned in this file instead of one
+            # fetched from the same release.
+            tmp="$(mktemp -d)"
+            curl -fsSL "https://github.com/longbridge/nsh/releases/download/${NSH_VERSION}/nsh-linux-x86_64.tar.gz" -o "$tmp/nsh.tar.gz"
+            echo "${NSH_LINUX_X86_64_SHA256}  $tmp/nsh.tar.gz" | sha256sum -c -
+            tar -xzf "$tmp/nsh.tar.gz" -C "$tmp"
+            test -x "$tmp/nsh/bin/nsh"
+            rm -rf "$HOME/.nsh"
+            mkdir -p "$HOME/.local/bin"
+            mv "$tmp/nsh" "$HOME/.nsh"
+            ln -sf "$HOME/.nsh/bin/nsh" "$HOME/.local/bin/nsh"
+            rm -rf "$tmp"
           fi
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
           "$HOME/.local/bin/nsh" --version
